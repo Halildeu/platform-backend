@@ -407,6 +407,15 @@ public class AudioGatewayProperties {
         private final LiveAnalyze liveAnalyze = new LiveAnalyze();
 
         /**
+         * Faz 24 — fold consecutive committed chunks into sentence-level lines so one
+         * spoken sentence stops arriving as five to ten transcript rows. DEFAULT-OFF:
+         * enabling adds a second, differently-statused event per line, and a client that
+         * has not been taught to distinguish them would render both the line and the
+         * fragments it was folded from.
+         */
+        private final SentenceAssembly sentenceAssembly = new SentenceAssembly();
+
+        /**
          * Fail-closed validation (Codex {@code 019eeb5f} REVISE point 10): when enabled,
          * a missing/blank/non-http(s) {@code transcribe-url} or a non-positive bound is a
          * startup error — silent fallback that hides misconfiguration is YASAK.
@@ -418,6 +427,18 @@ public class AudioGatewayProperties {
                             "audio.gateway.direct-stt.enabled must be true when streaming is enabled");
                 }
                 return;
+            }
+            if (sentenceAssembly.isEnabled() && !aggregation.isEnabled()) {
+                // Sentence assembly reconciles order and detects a reconnect by the
+                // sequence-space epoch, and only the aggregation window can name a space.
+                // Without it the sink would fall back to comparing transports, which
+                // cannot see a socket reconnecting and lets a straggler flip the session
+                // back and forth. Refusing to start is honest; silently degrading to a
+                // weaker ordering guarantee is not.
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.aggregation.enabled must be true when "
+                                + "sentence-assembly.enabled is true (assembly needs the "
+                                + "aggregation window to identify a sequence space)");
             }
             if (transcribeUrl == null || transcribeUrl.isBlank()) {
                 throw new IllegalStateException(
@@ -531,6 +552,71 @@ public class AudioGatewayProperties {
 
         public LiveAnalyze getLiveAnalyze() {
             return liveAnalyze;
+        }
+
+        public SentenceAssembly getSentenceAssembly() {
+            return sentenceAssembly;
+        }
+
+        /**
+         * Faz 24 — sentence assembly bounds.
+         *
+         * <p>live-stt commits on an acoustic boundary (a forced commit every few
+         * seconds, or 0.7 s of silence), so a speaker who pauses mid-sentence has the
+         * sentence cut and each cut renders as its own row. These bounds decide when the
+         * gateway closes an assembled line, and they live here — one canonical policy —
+         * rather than in each client, so desktop and web cannot drift apart.
+         */
+        public static class SentenceAssembly {
+            private boolean enabled = false;
+            /** Close a line after this much buffered speech even without punctuation. */
+            private int maxSpeechMs = 12_000;
+            /** Close a line after this much buffered text even without punctuation. */
+            private int maxChars = 200;
+            /** Close a line when committed speech stops for this long. */
+            private long idleMs = 2_000L;
+            /** How often the idle/eviction sweep runs. */
+            private long sweepIntervalMs = 1_000L;
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public int getMaxSpeechMs() {
+                return maxSpeechMs;
+            }
+
+            public void setMaxSpeechMs(int maxSpeechMs) {
+                this.maxSpeechMs = maxSpeechMs;
+            }
+
+            public int getMaxChars() {
+                return maxChars;
+            }
+
+            public void setMaxChars(int maxChars) {
+                this.maxChars = maxChars;
+            }
+
+            public long getIdleMs() {
+                return idleMs;
+            }
+
+            public void setIdleMs(long idleMs) {
+                this.idleMs = idleMs;
+            }
+
+            public long getSweepIntervalMs() {
+                return sweepIntervalMs;
+            }
+
+            public void setSweepIntervalMs(long sweepIntervalMs) {
+                this.sweepIntervalMs = sweepIntervalMs;
+            }
         }
 
         /**

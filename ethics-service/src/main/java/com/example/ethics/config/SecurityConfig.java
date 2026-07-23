@@ -1,6 +1,7 @@
 package com.example.ethics.config;
 
 import com.example.ethics.security.PublicCredentialBoundaryFilter;
+import com.example.ethics.security.PublicRateLimitFilter;
 import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.beans.factory.annotation.Value;
@@ -29,11 +30,15 @@ public class SecurityConfig {
 
     @Bean
     @Order(1)
-    SecurityFilterChain publicApi(HttpSecurity http, PublicCredentialBoundaryFilter boundary) throws Exception {
+    SecurityFilterChain publicApi(HttpSecurity http, PublicCredentialBoundaryFilter boundary,
+            PublicRateLimitFilter rateLimit) throws Exception {
         http.securityMatcher("/api/v1/public/ethics/**")
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .addFilterBefore(boundary, AnonymousAuthenticationFilter.class)
+                // Rate-limit must sit BEFORE the boundary filter — throttled
+                // traffic never reaches credential checks or the JPA layer.
+                .addFilterBefore(rateLimit, AnonymousAuthenticationFilter.class)
+                .addFilterAfter(boundary, PublicRateLimitFilter.class)
                 .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
         return http.build();
     }

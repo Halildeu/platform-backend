@@ -11,7 +11,8 @@ public record EthicsProperties(
         int secretIterations,
         String staffAudience,
         String staffRole,
-        Boolean secureTransportRequired) {
+        Boolean secureTransportRequired,
+        Integer rateLimitPerMinute) {
     public EthicsProperties {
         if (publicOrgId == null) throw new IllegalArgumentException("ethics.public-org-id is required");
         if (mailboxSessionTtl == null) mailboxSessionTtl = Duration.ofMinutes(15);
@@ -19,5 +20,6 @@ public record EthicsProperties(
         if (staffAudience == null || staffAudience.isBlank()) throw new IllegalArgumentException("ethics.staff-audience is required");
         if (staffRole == null || staffRole.isBlank()) throw new IllegalArgumentException("ethics.staff-role is required");
         if (secureTransportRequired == null) secureTransportRequired = true;
+        if (rateLimitPerMinute == null || rateLimitPerMinute < 0) rateLimitPerMinute = 30;
     }
 }

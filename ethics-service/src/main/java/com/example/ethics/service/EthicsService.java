@@ -6,6 +6,8 @@ import com.example.ethics.model.*;
 import com.example.ethics.repository.*;
 import com.example.ethics.security.StaffContext;
 import com.example.ethics.security.EthicsAuthorization;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.*;
 import org.springframework.http.HttpStatus;
@@ -27,18 +29,20 @@ public class EthicsService {
     private final EthicsAuthorization authorization;
     private final TransactionKeyLock transactionLocks;
     private final PublicIntakeSanitizer publicIntakeSanitizer;
+    private final ObjectMapper auditMapper;
     private final String dummyMailboxHash;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
             EthicsReportRepository reports, ReporterAccessGrantRepository grants, EthicsMessageRepository messages,
             MailboxSessionRepository sessions, AuditOutboxRepository audit, IntakeIdempotencyRepository idempotency,
             EthicsAuthorization authorization, TransactionKeyLock transactionLocks,
-            PublicIntakeSanitizer publicIntakeSanitizer) {
+            PublicIntakeSanitizer publicIntakeSanitizer, ObjectMapper auditMapper) {
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
         this.messages=messages;this.sessions=sessions;this.audit=audit;this.idempotency=idempotency;
         this.authorization=authorization;
         this.transactionLocks=transactionLocks;
         this.publicIntakeSanitizer=publicIntakeSanitizer;
+        this.auditMapper=auditMapper;
         // Missing receipts, wrong channels and locked grants must spend the
         // same PBKDF work as a wrong secret. This process-local value is never
         // persisted or exposed and exists solely to close the timing oracle.
@@ -70,7 +74,13 @@ public class EthicsService {
         cases.save(new EthicsCase(caseId,orgId,now));
         reports.save(new EthicsReport(reportId,caseId,request.mode().name(),request.category().name(),request.subject(),request.description(),request.locale(),request.noticeVersion(),now));
         grants.save(new ReporterAccessGrant(receiptId,caseId,normalizedChannel,secrets.hash(request.accessSecret(),properties.secretIterations()),now));
-        audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.report.created","{\"mode\":\""+request.mode().name()+"\",\"category\":\""+request.category().name()+"\",\"channel\":\""+normalizedChannel+"\",\"noticeVersion\":\""+request.noticeVersion()+"\"}",now));
+        audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.report.created",
+                encodeAuditPayload(Map.of(
+                        "mode", request.mode().name(),
+                        "category", request.category().name(),
+                        "channel", normalizedChannel,
+                        "noticeVersion", request.noticeVersion())),
+                now));
         idempotency.save(new IntakeIdempotency(UUID.randomUUID(),orgId,normalizedChannel,key,requestHash,receiptId,now));
         return new CreateReportResponse(receiptId,now,"/mailbox",false);
     }
@@ -143,7 +153,12 @@ public class EthicsService {
         }
         if(request.assignedTo()!=null) item.setAssignedTo(request.assignedTo().isBlank()?null:request.assignedTo());
         cases.saveAndFlush(item);
-        audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,"ethics.case.updated","{\"status\":\""+item.getStatus()+"\",\"assigned\":"+(item.getAssignedTo()!=null)+",\"actorHash\":\""+secrets.sha256(staff.subject())+"\"}",Instant.now()));
+        audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,"ethics.case.updated",
+                encodeAuditPayload(Map.of(
+                        "status", item.getStatus(),
+                        "assigned", item.getAssignedTo() != null,
+                        "actorHash", secrets.sha256(staff.subject()))),
+                Instant.now()));
         return summary(item);
     }
 
@@ -162,7 +177,11 @@ public class EthicsService {
         if(prior.isPresent()) { if(!prior.get().getBody().equals(body)||!prior.get().getVisibility().equals(visibility)) throw new ResponseStatusException(HttpStatus.CONFLICT,"IDEMPOTENCY_CONFLICT"); return messageResponse(prior.get()); }
         beforeCreate.run();
         EthicsMessage message=new EthicsMessage(UUID.randomUUID(),caseId,author,visibility,body,key,Instant.now()); messages.save(message);
-        audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.mailbox.message.created","{\"visibility\":\""+visibility+"\",\"actorHash\":\""+actorHash+"\"}",Instant.now()));
+        audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.mailbox.message.created",
+                encodeAuditPayload(Map.of(
+                        "visibility", visibility,
+                        "actorHash", actorHash)),
+                Instant.now()));
         return messageResponse(message);
     }
 
@@ -204,5 +223,22 @@ public class EthicsService {
         if(!Set.of("etik.acik.com","speakup.acik.com").contains(value)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"PUBLIC_CHANNEL_INVALID");
         return value;
     }
+    /**
+     * Faz 35 ES-306 residual — audit outbox payload construction moved from
+     * hand-rolled string concatenation to Jackson to eliminate JSON injection
+     * (a reporter subject/description with an embedded quote or backslash used
+     * to corrupt the {@code AuditOutbox.payload} record). All values are
+     * emitted with the object mapper's escape rules; missing values raise a
+     * {@link IllegalStateException} instead of silently producing an invalid
+     * JSON document.
+     */
+    private String encodeAuditPayload(Map<String, Object> payload) {
+        try {
+            return auditMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException error) {
+            throw new IllegalStateException("Audit payload could not be serialised.", error);
+        }
+    }
+
     public record SessionGrant(String token,Instant expiresAt){}
 }

@@ -16,6 +16,7 @@ import com.example.ethics.repository.IntakeIdempotencyRepository;
 import com.example.ethics.repository.MailboxSessionRepository;
 import com.example.ethics.repository.ReporterAccessGrantRepository;
 import com.example.ethics.security.EthicsAuthorization;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
@@ -46,9 +47,9 @@ class EthicsServiceMailboxTimingTest {
         when(secrets.hash(anyString(), anyInt())).thenReturn("process-local-dummy-hash");
         service = new EthicsService(
                 new EthicsProperties(UUID.randomUUID(), Duration.ofMinutes(15), 120_000,
-                        "ethics-manager", "ethics-manager", true),
+                        "ethics-manager", "ethics-manager", true, 30),
                 secrets, cases, reports, grants, messages, sessions, audit, idempotency,
-                authorization, transactionLocks, new PublicIntakeSanitizer());
+                authorization, transactionLocks, new PublicIntakeSanitizer(), new ObjectMapper());
     }
 
     @Test

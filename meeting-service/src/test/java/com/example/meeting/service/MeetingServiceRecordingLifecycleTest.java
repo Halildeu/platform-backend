@@ -3,6 +3,7 @@ package com.example.meeting.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -12,6 +13,7 @@ import static org.mockito.Mockito.when;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.dto.v1.admin.MeetingSessionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingSessionUpdateRequest;
+import com.example.meeting.dto.v1.admin.MeetingUpdateRequest;
 import com.example.meeting.dto.v1.admin.RecordingLifecycleResponse;
 import com.example.meeting.dto.v1.admin.RecordingLifecycleSyncRequest;
 import com.example.meeting.model.Meeting;
@@ -98,6 +100,9 @@ class MeetingServiceRecordingLifecycleTest {
                 .thenAnswer(invocation -> invocation.getArgument(0));
         lenient().when(sessionRepository.findByMeetingIdVisibleToOrg(MEETING_ID, TENANT_ID))
                 .thenAnswer(ignored -> savedSession.get() == null ? List.of() : List.of(savedSession.get()));
+        lenient().when(sessionRepository.findEarliestStartedAtVisibleToOrg(MEETING_ID, TENANT_ID))
+                .thenAnswer(ignored -> Optional.ofNullable(savedSession.get())
+                        .map(MeetingSession::getStartedAt));
     }
 
     @Test
@@ -114,6 +119,9 @@ class MeetingServiceRecordingLifecycleTest {
         assertThat(session.getExternalSessionId()).isEqualTo("SES-1");
         assertThat(session.getStartedAt()).isEqualTo(STARTED_AT);
         assertThat(session.getEndedAt()).isNull();
+        assertThat(meeting.getStartedAt())
+                .as("the first attended recording replaces the scheduled history key")
+                .isEqualTo(STARTED_AT);
 
         when(sessionRepository.findByExternalSessionIdVisibleToOrg(MEETING_ID, "SES-1", TENANT_ID))
                 .thenReturn(Optional.of(session));
@@ -162,8 +170,6 @@ class MeetingServiceRecordingLifecycleTest {
     void genericSessionUpdateCannotCreateClearOrRetimeRecordingEnd() {
         MeetingSession active = session(null);
         MeetingSession finished = session(ENDED_AT);
-        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
-                .thenReturn(Optional.of(meeting));
         when(sessionRepository.findByIdAndMeetingIdVisibleToOrg(SESSION_ID, MEETING_ID, TENANT_ID))
                 .thenReturn(Optional.of(active), Optional.of(finished), Optional.of(finished));
 
@@ -177,9 +183,6 @@ class MeetingServiceRecordingLifecycleTest {
 
     @Test
     void genericSessionCreateCannotBypassRecordingLifecycleWithEndedAt() {
-        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
-                .thenReturn(Optional.of(meeting));
-
         assertThatThrownBy(() -> service.createSession(
                 TENANT,
                 MEETING_ID,
@@ -189,6 +192,93 @@ class MeetingServiceRecordingLifecycleTest {
 
         verify(sessionRepository, never()).save(any());
         verify(eventOutboxRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void genericSessionCreateSynchronizesCanonicalHistoryStart() {
+        Instant scheduledFallback = STARTED_AT.minusSeconds(3600);
+        meeting.setScheduledStart(scheduledFallback);
+        meeting.setStartedAt(scheduledFallback);
+
+        service.createSession(
+                TENANT,
+                MEETING_ID,
+                new MeetingSessionCreateRequest("manual", STARTED_AT, null, null));
+
+        assertThat(meeting.getStartedAt()).isEqualTo(STARTED_AT);
+        verify(meetingRepository).saveAndFlush(meeting);
+    }
+
+    @Test
+    void genericSessionUpdateCanMoveCanonicalHistoryStartEarlier() {
+        MeetingSession active = session(null);
+        savedSession.set(active);
+        when(sessionRepository.findByIdAndMeetingIdVisibleToOrg(SESSION_ID, MEETING_ID, TENANT_ID))
+                .thenReturn(Optional.of(active));
+        Instant earlierStart = STARTED_AT.minusSeconds(120);
+
+        service.updateSession(
+                TENANT,
+                MEETING_ID,
+                SESSION_ID,
+                new MeetingSessionUpdateRequest(
+                        active.getSessionLabel(),
+                        earlierStart,
+                        null,
+                        active.getRecordingUri(),
+                        active.getTranscriptStatus(),
+                        null));
+
+        assertThat(meeting.getStartedAt()).isEqualTo(earlierStart);
+        verify(meetingRepository).saveAndFlush(meeting);
+    }
+
+    @Test
+    void genericSessionDeleteRestoresScheduledHistoryFallback() {
+        MeetingSession active = session(null);
+        savedSession.set(active);
+        Instant scheduledFallback = STARTED_AT.minusSeconds(3600);
+        meeting.setScheduledStart(scheduledFallback);
+        meeting.setStartedAt(STARTED_AT);
+        // PR #870 merge landed sessionErasureService.request(...) as the
+        // delete-session pathway (soft-erasure model), not the direct
+        // sessionRepository.delete(...) the initial test assumed. Route the
+        // savedSession → null side effect through the erasure service so
+        // history-start recompute sees the session gone as expected.
+        doAnswer(invocation -> {
+            savedSession.set(null);
+            return null;
+        }).when(sessionErasureService).request(TENANT, MEETING_ID, SESSION_ID);
+
+        service.deleteSession(TENANT, MEETING_ID, SESSION_ID);
+
+        assertThat(meeting.getStartedAt()).isEqualTo(scheduledFallback);
+        verify(sessionErasureService).request(TENANT, MEETING_ID, SESSION_ID);
+        verify(sessionRepository).flush();
+        verify(meetingRepository).saveAndFlush(meeting);
+    }
+
+    @Test
+    void meetingUpdateUsesParentLockAndPreservesEarliestSessionStart() {
+        MeetingSession active = session(null);
+        savedSession.set(active);
+        Instant rescheduledStart = STARTED_AT.plusSeconds(3600);
+        when(meetingRepository.save(meeting)).thenReturn(meeting);
+
+        service.updateMeeting(
+                TENANT,
+                MEETING_ID,
+                new MeetingUpdateRequest(
+                        meeting.getTitle(),
+                        null,
+                        MeetingStatus.SCHEDULED,
+                        meeting.getOrganizerSubject(),
+                        rescheduledStart,
+                        null,
+                        null));
+
+        assertThat(meeting.getStartedAt()).isEqualTo(STARTED_AT);
+        verify(meetingRepository).findVisibleToOrgAndIdForUpdate(TENANT_ID, MEETING_ID);
     }
 
     @Test
@@ -328,6 +418,7 @@ class MeetingServiceRecordingLifecycleTest {
     @Test
     void aNewRecordingSessionCanMoveACompletedMeetingBackToInProgress() {
         meeting.setStatus(MeetingStatus.COMPLETED);
+        meeting.setStartedAt(STARTED_AT.minusSeconds(3600));
         when(sessionRepository.findByExternalSessionIdVisibleToOrg(MEETING_ID, "SES-2", TENANT_ID))
                 .thenReturn(Optional.empty());
 
@@ -336,6 +427,7 @@ class MeetingServiceRecordingLifecycleTest {
 
         assertThat(response.meetingStatus()).isEqualTo(MeetingStatus.IN_PROGRESS);
         assertThat(savedSession.get().getExternalSessionId()).isEqualTo("SES-2");
+        assertThat(meeting.getStartedAt()).isEqualTo(STARTED_AT);
         verify(meetingRepository).saveAndFlush(meeting);
     }
 
@@ -375,6 +467,9 @@ class MeetingServiceRecordingLifecycleTest {
         value.setOrgId(TENANT_ID);
         value.setTitle("Attended recording");
         value.setStatus(status);
+        value.setStartedAt(STARTED_AT);
+        value.setScheduledStart(STARTED_AT.minusSeconds(3600));
+        ReflectionTestUtils.setField(value, "createdAt", STARTED_AT.minusSeconds(7200));
         value.setOrganizerSubject("stable-user");
         value.setCreatedBySubject("stable-user");
         value.setLastUpdatedBySubject("stable-user");

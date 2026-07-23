@@ -3,6 +3,7 @@ package com.example.meeting.model;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.UUID;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -35,6 +36,17 @@ class MeetingEntityTest {
     @Test
     void meeting_defaultStatusIsScheduled() {
         assertThat(new Meeting().getStatus()).isEqualTo(MeetingStatus.SCHEDULED);
+    }
+
+    @Test
+    void meeting_prePersistUsesScheduledStartAsCanonicalHistoryStart() {
+        Meeting meeting = new Meeting();
+        Instant scheduledStart = Instant.parse("2026-07-18T09:00:00Z");
+        meeting.setScheduledStart(scheduledStart);
+
+        meeting.prePersist();
+
+        assertThat(meeting.getStartedAt()).isEqualTo(scheduledStart);
     }
 
     @Test

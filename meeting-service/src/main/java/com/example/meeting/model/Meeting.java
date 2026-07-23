@@ -69,6 +69,13 @@ public class Meeting {
     @Column(name = "scheduled_end")
     private Instant scheduledEnd;
 
+    /**
+     * Canonical meeting-history key. It starts as the scheduled start (or
+     * creation time) and is replaced by the first attended recording start.
+     */
+    @Column(name = "started_at", nullable = false)
+    private Instant startedAt;
+
     @Column(name = "organizer_subject", nullable = false, length = 255)
     private String organizerSubject;
 
@@ -96,6 +103,9 @@ public class Meeting {
         }
         if (updatedAt == null) {
             updatedAt = now;
+        }
+        if (startedAt == null) {
+            startedAt = scheduledStart != null ? scheduledStart : createdAt;
         }
     }
 
@@ -172,6 +182,14 @@ public class Meeting {
 
     public void setScheduledEnd(Instant scheduledEnd) {
         this.scheduledEnd = scheduledEnd;
+    }
+
+    public Instant getStartedAt() {
+        return startedAt;
+    }
+
+    public void setStartedAt(Instant startedAt) {
+        this.startedAt = startedAt;
     }
 
     public String getOrganizerSubject() {

@@ -49,6 +49,14 @@ public class OpenFgaAuthzService {
     private final Counter allowCounter;
     private final Counter denyCounter;
 
+    /**
+     * Board #2543 — exact count of pre-ADR-0008 (bare numeric) scope object ids still being read.
+     * This is the authoritative migration signal; the aggregated WARN beside it is only a human
+     * sample. Alert on {@code > 0} after the #2542 backfill to catch a writer that regressed, and
+     * use "sustained zero" as the entry condition for retiring the codec's legacy decode branch.
+     */
+    private final Counter legacyObjectIdCounter;
+
     public OpenFgaAuthzService(OpenFgaClient client, OpenFgaProperties properties) {
         this(client, properties, null);
     }
@@ -81,9 +89,15 @@ public class OpenFgaAuthzService {
                     circuitBreaker, cb -> cb.getState().ordinal())
                     .description("OpenFGA circuit breaker state: 0=CLOSED, 1=OPEN, 2=HALF_OPEN")
                     .register(meterRegistry);
+            // #2543: legacy (pre-ADR-0008) object-id reads — migration progress signal.
+            this.legacyObjectIdCounter = Counter.builder("openfga_legacy_object_id_total")
+                    .description("Pre-ADR-0008 bare-numeric scope object ids accepted on read "
+                            + "(board #2542 writer migration; target: sustained zero)")
+                    .register(meterRegistry);
         } else {
             this.allowCounter = null;
             this.denyCounter = null;
+            this.legacyObjectIdCounter = null;
         }
 
         if (!enabled) {
@@ -261,6 +275,9 @@ public class OpenFgaAuthzService {
             return devFallbackLongIds(objectType);
         }
         Set<Long> ids = new java.util.LinkedHashSet<>();
+        // Board #2543: legacy ids are counted and reported ONCE per call, not once per id.
+        // Rationale below, next to the summary emit.
+        List<Long> legacyIds = new ArrayList<>();
         for (String raw : listObjects(userId, relation, objectType)) {
             // ADR-0008 § "Object id encoding": the canonical id is the slug (project:wc-project-1204),
             // NOT a bare number. The previous bare Long.parseLong here dropped every canonical id
@@ -271,22 +288,66 @@ public class OpenFgaAuthzService {
                     ScopeObjectIdCodec.decode(objectType, raw);
             if (decoded.isEmpty()) {
                 // Unknown shape: do NOT guess. Skipping stays the behaviour, but it is now a real
-                // anomaly (not the normal canonical path), so keep it loud.
+                // anomaly (not the normal canonical path), so keep it loud. Deliberately NOT
+                // aggregated like the legacy case below: an undecodable id is unbounded-cardinality
+                // corruption, not an expected migration state, so every occurrence is worth a line.
                 log.warn("Undecodable OpenFGA object id skipped: type={} id={} (expected ADR-0008 "
                         + "canonical slug or legacy numeric)", objectType, raw);
                 continue;
             }
             if (decoded.get().legacyNumeric() && ScopeObjectIdCodec.supports(objectType)) {
-                // Pre-ADR-0008 tuple (TupleSyncService writes bare numerics). Still honoured so
-                // live access is not revoked, but surfaced for the migration to canonical slugs.
-                log.warn("Legacy non-canonical OpenFGA object id accepted: type={} id={} "
-                        + "(ADR-0008 canonical form is {}) — migrate writer to canonical encoding",
-                        objectType, raw, ScopeObjectIdCodec.encode(objectType, decoded.get().id()));
+                // Pre-ADR-0008 tuple (TupleSyncService wrote bare numerics before #2542). Still
+                // honoured so live access is not revoked; accumulated for the per-call summary.
+                legacyIds.add(decoded.get().id());
             }
             ids.add(decoded.get().id());
         }
+        emitLegacyObjectIdSignal(objectType, legacyIds);
         return ids;
     }
+
+    /**
+     * Board #2543 — report legacy (pre-ADR-0008) scope object ids as ONE aggregated signal per
+     * {@link #listObjectIds} call plus a counter metric.
+     *
+     * <p><b>Why the previous shape did not survive production.</b> The #2531 migration WARN fired
+     * once per legacy id. {@code listObjectIds} runs on every scope-cache miss, so the log volume
+     * was <em>users x scopes x cache-miss rate</em> — a user with 200 legacy project scopes
+     * produced 200 identical lines per miss. That is the classic pattern where a migration hint
+     * becomes log flood, the flood gets muted, and the muting then hides the real signal.
+     *
+     * <p><b>The durable shape.</b> The authoritative signal is the
+     * {@code openfga_legacy_object_id_total} counter — it is exact, aggregatable, alertable, and
+     * costs nothing per event, so it stays correct at any volume. The log line is a bounded
+     * <em>sample</em> for a human reading the pod log: one line per call, carrying the count and
+     * at most {@value #LEGACY_SAMPLE_LIMIT} example ids in canonical form so the operator can see
+     * which writer still needs migrating. Log volume is now bounded by call rate rather than
+     * tuple count.
+     *
+     * <p>This is a transition-period instrument: once the #2542 backfill/cleanup lands and the
+     * counter sits at zero, the legacy branch of {@link ScopeObjectIdCodec#decode} can be retired
+     * and this method removed with it.
+     */
+    private void emitLegacyObjectIdSignal(String objectType, List<Long> legacyIds) {
+        if (legacyIds.isEmpty()) {
+            return;
+        }
+        if (legacyObjectIdCounter != null) {
+            legacyObjectIdCounter.increment(legacyIds.size());
+        }
+        String samples = legacyIds.stream()
+                .limit(LEGACY_SAMPLE_LIMIT)
+                .map(id -> ScopeObjectIdCodec.encode(objectType, id))
+                .collect(Collectors.joining(", "));
+        log.warn("Legacy non-canonical OpenFGA object ids accepted: type={} count={} "
+                        + "(ADR-0008 canonical forms e.g. [{}]{}) — writer migration is board #2542; "
+                        + "metric openfga_legacy_object_id_total",
+                objectType, legacyIds.size(), samples,
+                legacyIds.size() > LEGACY_SAMPLE_LIMIT ? ", …" : "");
+    }
+
+    /** Max legacy ids named in one aggregated WARN — a sample for humans, not the full set. */
+    private static final int LEGACY_SAMPLE_LIMIT = 5;
 
     /**
      * Read a user's ACTUAL stored relationship tuples for the given object

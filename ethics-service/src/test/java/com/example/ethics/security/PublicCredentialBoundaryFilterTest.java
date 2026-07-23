@@ -20,7 +20,8 @@ class PublicCredentialBoundaryFilterTest {
                     210_000,
                     "ethics-manager",
                     "ethics-manager",
-                    true));
+                    true,
+                    30));
 
     @Test
     void publicApiRejectsRequestsWithoutIngressTransportProof() throws Exception {

@@ -184,6 +184,30 @@ class AudioGatewayPropertiesTest {
     }
 
     @Test
+    void sentenceAssemblyRequiresAggregation() {
+        // Assembly identifies a sequence space by the aggregation window's epoch. Without
+        // aggregation there is no epoch, and the sink would silently fall back to
+        // comparing transports — which cannot see a socket reconnecting and lets a
+        // straggler flip the session back and forth. Fail closed instead of degrading.
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getSentenceAssembly().setEnabled(true);
+        props.getDirectStt().getAggregation().setEnabled(false);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("aggregation.enabled must be true");
+    }
+
+    @Test
+    void sentenceAssemblyWithAggregationStarts() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getSentenceAssembly().setEnabled(true);
+        props.getDirectStt().getAggregation().setEnabled(true);
+
+        assertThatCode(props::validate).doesNotThrowAnyException();
+    }
+
+    @Test
     void liveStreamingAcceptsWsUrlAndDefaultBounds() {
         final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
         props.getDirectStt().getStreaming().setEnabled(true);

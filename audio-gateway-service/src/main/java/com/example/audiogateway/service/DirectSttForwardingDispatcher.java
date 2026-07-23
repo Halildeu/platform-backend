@@ -379,7 +379,8 @@ public class DirectSttForwardingDispatcher
                 ? pcmDurationMs(audio.length, cmd.sampleRateHz(), cmd.channels())
                 : 0;
         return new ForwardTask(
-                audio, cmd.sessionId(), cmd.tenantId(), cmd.userId(),
+                // No aggregation window here, so there is no sequence space to name.
+                audio, 0L, cmd.sessionId(), cmd.tenantId(), cmd.userId(),
                 cmd.chunkSeq(), cmd.chunkSeq(), cmd.chunkSeq(),
                 cmd.chunkStartedAtMs(), durationMs, "chunk",
                 cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.audioFormat().name(),
@@ -412,7 +413,8 @@ public class DirectSttForwardingDispatcher
                             + ", channels=" + window.channels() + ") — refund would be ambiguous");
         }
         return new ForwardTask(
-                window.audio(), window.sessionId(), window.tenantId(), window.userId(),
+                window.audio(), window.epoch(), window.sessionId(), window.tenantId(),
+                window.userId(),
                 window.windowSeq(), window.firstChunkSeq(), window.lastChunkSeq(),
                 window.startedAtMs(), window.durationMs(), flushReason,
                 window.meetingId(), window.deviceId(), window.language(), AudioFormat.PCM16.name(),
@@ -662,7 +664,9 @@ public class DirectSttForwardingDispatcher
                 task.channels(),
                 task.correlationId(),
                 task.sha256(),
-                task.length());
+                task.length(),
+                DirectSttTranscriptResultContext.Transport.REST,
+                task.epoch());
     }
 
     private void releaseOnce(final AtomicBoolean released) {
@@ -756,6 +760,8 @@ public class DirectSttForwardingDispatcher
      */
     record ForwardTask(
             byte[] audio,
+            /** Sequence space this task's windowSeq belongs to; 0 when unknown. */
+            long epoch,
             String sessionId,
             Long tenantId,
             Long userId,

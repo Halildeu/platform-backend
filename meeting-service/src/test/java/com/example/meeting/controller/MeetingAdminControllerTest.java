@@ -3,6 +3,7 @@ package com.example.meeting.controller;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -12,19 +13,23 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.meeting.config.SecurityConfigLocal;
 import com.example.meeting.dto.v1.admin.MeetingResponse;
+import com.example.meeting.dto.v1.admin.MeetingSearchCriteria;
 import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.TenantContextResolver;
 import com.example.meeting.service.MeetingService;
+import com.example.meeting.service.MeetingHistorySearchMetrics;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
@@ -58,6 +63,9 @@ class MeetingAdminControllerTest {
     @MockitoBean
     private TenantContextResolver tenantContextResolver;
 
+    @MockitoBean
+    private MeetingHistorySearchMetrics searchMetrics;
+
     private AdminTenantContext tenant() {
         AdminTenantContext ctx = new AdminTenantContext(TENANT_ID, "admin@example.com", "admin@example.com");
         when(tenantContextResolver.resolveRequired()).thenReturn(ctx);
@@ -68,6 +76,7 @@ class MeetingAdminControllerTest {
         return new MeetingResponse(
                 MEETING_ID, TENANT_ID, "weekly sync", "desc",
                 MeetingStatus.SCHEDULED,
+                Instant.parse("2026-06-16T09:00:00Z"),
                 Instant.parse("2026-06-16T09:00:00Z"),
                 Instant.parse("2026-06-16T10:00:00Z"),
                 "organizer@example.com", "admin@example.com",
@@ -81,7 +90,8 @@ class MeetingAdminControllerTest {
     void list_returnsPagedEnvelopeScopedToTenant() throws Exception {
         AdminTenantContext ctx = tenant();
         Page<MeetingResponse> page = new PageImpl<>(List.of(sampleResponse()));
-        when(meetingService.listMeetings(eq(ctx), any(), any(Pageable.class))).thenReturn(page);
+        when(meetingService.listMeetings(eq(ctx), any(MeetingSearchCriteria.class), any(Pageable.class)))
+                .thenReturn(page);
 
         mockMvc.perform(get("/api/v1/admin/meetings").param("page", "0").param("size", "25"))
                 .andExpect(status().isOk())
@@ -89,7 +99,94 @@ class MeetingAdminControllerTest {
                 .andExpect(jsonPath("$.content[0].title").value("weekly sync"))
                 .andExpect(jsonPath("$.totalElements").value(1));
 
-        verify(meetingService).listMeetings(eq(ctx), any(), any(Pageable.class));
+        verify(meetingService).listMeetings(
+                eq(ctx), any(MeetingSearchCriteria.class), any(Pageable.class));
+        verify(searchMetrics).recordSuccess(any(MeetingSearchCriteria.class));
+    }
+
+    @Test
+    void list_passesValidatedFiltersAndBoundsPageSize() throws Exception {
+        AdminTenantContext ctx = tenant();
+        when(meetingService.listMeetings(
+                eq(ctx), any(MeetingSearchCriteria.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(2, 100), 0));
+
+        mockMvc.perform(get("/api/v1/admin/meetings")
+                        .param("status", "COMPLETED")
+                        .param("title", "  Roadmap  ")
+                        .param("meetingId", MEETING_ID.toString())
+                        .param("dateFrom", "2026-06-01T00:00:00Z")
+                        .param("dateTo", "2026-07-01T00:00:00Z")
+                        .param("page", "2")
+                        .param("size", "1000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page").value(2))
+                .andExpect(jsonPath("$.size").value(100));
+
+        ArgumentCaptor<MeetingSearchCriteria> criteria =
+                ArgumentCaptor.forClass(MeetingSearchCriteria.class);
+        ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(meetingService).listMeetings(eq(ctx), criteria.capture(), pageable.capture());
+        org.assertj.core.api.Assertions.assertThat(criteria.getValue())
+                .extracting(
+                        MeetingSearchCriteria::status,
+                        MeetingSearchCriteria::title,
+                        MeetingSearchCriteria::meetingId,
+                        MeetingSearchCriteria::dateFrom,
+                        MeetingSearchCriteria::dateTo)
+                .containsExactly(
+                        MeetingStatus.COMPLETED,
+                        "Roadmap",
+                        MEETING_ID,
+                        Instant.parse("2026-06-01T00:00:00Z"),
+                        Instant.parse("2026-07-01T00:00:00Z"));
+        org.assertj.core.api.Assertions.assertThat(pageable.getValue().getPageNumber()).isEqualTo(2);
+        org.assertj.core.api.Assertions.assertThat(pageable.getValue().getPageSize()).isEqualTo(100);
+        org.assertj.core.api.Assertions.assertThat(pageable.getValue().getSort().isUnsorted()).isTrue();
+    }
+
+    @Test
+    void list_blankOrShortTitleFailsClosed() throws Exception {
+        tenant();
+
+        mockMvc.perform(get("/api/v1/admin/meetings").param("title", " "))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("BAD_REQUEST"));
+        mockMvc.perform(get("/api/v1/admin/meetings").param("title", "x"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("BAD_REQUEST"));
+
+        verifyNoInteractions(meetingService);
+        verify(searchMetrics, org.mockito.Mockito.times(2)).recordValidationDenied();
+    }
+
+    @Test
+    void list_incompleteOrReversedDateRangeFailsClosed() throws Exception {
+        tenant();
+
+        mockMvc.perform(get("/api/v1/admin/meetings")
+                        .param("dateFrom", "2026-06-01T00:00:00Z"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/v1/admin/meetings")
+                        .param("dateFrom", "2026-07-01T00:00:00Z")
+                        .param("dateTo", "2026-06-01T00:00:00Z"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(meetingService);
+        verify(searchMetrics, org.mockito.Mockito.times(2)).recordValidationDenied();
+    }
+
+    @Test
+    void list_invalidPageOrSizeFailsClosed() throws Exception {
+        tenant();
+
+        mockMvc.perform(get("/api/v1/admin/meetings").param("page", "-1"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/v1/admin/meetings").param("size", "0"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(meetingService);
+        verify(searchMetrics, org.mockito.Mockito.times(2)).recordValidationDenied();
     }
 
     @Test

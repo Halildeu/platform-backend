@@ -31,8 +31,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -698,32 +696,13 @@ public class EndpointUninstallService {
 
     private String resolveIdempotencyKey(UUID deviceId, UUID catalogUuid, String requestedKey) {
         // Canonical key shape: `admin-uninstall:{deviceId(36)}:{catalogUuid(36)}:{body}`.
-        // Fixed prefix = 90 chars; body MUST fit 38 chars so the canonical
-        // string stays ≤ 128 (endpoint_uninstall_requests.idempotency_key
-        // VARCHAR(128)). DTO @Size(max=40) covers normal callers; the >38
-        // fall-through here covers programmatic callers (parity with the
-        // install path's SHA-256-prefix-hash).
-        String key = trimToNull(requestedKey);
-        if (key == null) {
-            key = UUID.randomUUID().toString();
-        } else if (key.length() > 38) {
-            key = sha256Prefix(key);
-        }
-        return "admin-uninstall:" + deviceId + ":" + catalogUuid + ":" + key;
-    }
-
-    private static String sha256Prefix(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(16);
-            for (int i = 0; i < 8; i++) {
-                sb.append(String.format("%02x", bytes[i]));
-            }
-            return sb.toString();
-        } catch (NoSuchAlgorithmException ex) {
-            return Integer.toHexString(value.hashCode());
-        }
+        // DTO @Size(max=40) covers normal callers; the > 38 fall-through covers
+        // programmatic callers (parity with the install path). The VARCHAR(128)
+        // bound itself is enforced by CommandIdempotencyKeys — the arithmetic
+        // used to live only in this comment, which is how the agent-update path
+        // shipped one character over (platform-backend#921).
+        return CommandIdempotencyKeys.build(
+                "admin-uninstall:" + deviceId + ":" + catalogUuid + ":", requestedKey, 38);
     }
 
     private static String trimToNull(String value) {

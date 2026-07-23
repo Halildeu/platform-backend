@@ -21,6 +21,8 @@ import com.example.permission.service.PermissionModulePolicy;
 import com.example.permission.service.PermissionService;
 import com.example.permission.service.AuthzVersionService;
 import com.example.permission.service.TupleSyncService;
+import com.example.commonauth.identity.AuthenticatedPrincipalResolver;
+import com.example.commonauth.identity.ResolvedUserIdentity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.CacheControl;
@@ -45,6 +47,7 @@ public class AuthorizationControllerV1 {
 
     private final AuthorizationQueryService authorizationQueryService;
     private final AuthenticatedUserLookupService authenticatedUserLookupService;
+    private final AuthenticatedPrincipalResolver principalResolver;
     private final PermissionService permissionService;
     private final PermissionCatalogService catalogService;
     private final TupleSyncService tupleSyncService;
@@ -56,6 +59,7 @@ public class AuthorizationControllerV1 {
     public AuthorizationControllerV1(
             AuthorizationQueryService authorizationQueryService,
             AuthenticatedUserLookupService authenticatedUserLookupService,
+            AuthenticatedPrincipalResolver principalResolver,
             PermissionService permissionService,
             PermissionCatalogService catalogService,
             @org.springframework.lang.Nullable TupleSyncService tupleSyncService,
@@ -66,6 +70,7 @@ public class AuthorizationControllerV1 {
     ) {
         this.authorizationQueryService = authorizationQueryService;
         this.authenticatedUserLookupService = authenticatedUserLookupService;
+        this.principalResolver = principalResolver;
         this.permissionService = permissionService;
         this.catalogService = catalogService;
         this.tupleSyncService = tupleSyncService;
@@ -96,6 +101,12 @@ public class AuthorizationControllerV1 {
     public ResponseEntity<AuthzMeResponseDto> getMe(@AuthenticationPrincipal Jwt jwt) {
         try {
             return doGetMe(jwt);
+        } catch (ResponseStatusException ex) {
+            // board #2532 wire step: the principal resolver now surfaces distinct outcomes as
+            // typed ResponseStatusException (401/403/404/503). Rethrowing preserves the specific
+            // status — the broad RuntimeException catch below is for unexpected downstream faults
+            // only, not for the resolver's deliberate signals.
+            throw ex;
         } catch (RuntimeException ex) {
             // Codex 019dddb7 iter-42 — never return 5xx with a null body.
             // The legacy ResponseEntity.status(503).body(null) produced a
@@ -138,20 +149,28 @@ public class AuthorizationControllerV1 {
             return ResponseEntity.ok(devDto);
         }
         AuthzMeResponseDto dto = new AuthzMeResponseDto();
-        var resolvedUser = resolveAuthenticatedUser(jwt);
-        dto.setUserId(resolvedUser.responseUserId());
 
-            Long numericUserId = resolvedUser.numericUserId();
-
-            // Slice 2b (#727, Codex 019ef3ca REVISE): when the cheap guard
-            // DISTRUSTED a numeric claim and no verified id could be resolved,
-            // /authz/me MUST fail closed — it must NOT rebuild permissions /
-            // modules / superAdmin / scopes from the JWT permissions/roles
-            // claims (that is the same claim-as-authority hole this slice
-            // closes). Return an empty, non-privileged snapshot keyed to the
-            // verified subject (already set above as responseUserId).
-            if (resolvedUser.claimDistrusted() && numericUserId == null) {
-                log.warn("authz/me: distrusted userId claim with no verified identity — failing closed (empty authz).");
+        // board #2532 wire step: principal resolution now flows through the canonical
+        // AuthenticatedPrincipalResolver. The Outcome enum surfaces the distinctions the
+        // pre-existing lookup code had to guess at — most importantly it separates
+        // "directory unavailable" from "no such user", so an outage stops silently
+        // becoming a deny (that fallback is the exact defect umbrella #2530 removes).
+        AuthenticatedPrincipalResolver.Resolution resolution = principalResolver.resolve(jwt);
+        Long numericUserId;
+        switch (resolution.outcome()) {
+            case DIRECTORY_UNAVAILABLE ->
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                        "AUTHZ_DEGRADED: identity directory unavailable; retry");
+            case ACCOUNT_DISABLED ->
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "ACCOUNT_DISABLED");
+            case USER_DELETED ->
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "USER_DELETED");
+            case UNAUTHENTICATED, PROFILE_MISSING, IDENTITY_MISMATCH -> {
+                // Fail-closed but preserve the 200+empty-snapshot contract the FE already
+                // handles for the Slice 2b (#727) claim-distrusted case: the response body
+                // shape is unchanged, only the resolver reasoning is now canonical.
+                log.warn("authz/me: {} — failing closed (empty authz).", resolution.outcome());
+                dto.setUserId(fallbackResponseUserId(jwt));
                 dto.setSubscriberId(null);
                 dto.setPermissions(Set.of());
                 dto.setAllowedModules(List.of());
@@ -162,9 +181,20 @@ public class AuthorizationControllerV1 {
                 dto.setActions(Map.of());
                 dto.setReports(Map.of());
                 dto.setSuperAdmin(false);
-                dto.setAuthzVersion(authzVersionService != null ? authzVersionService.getCurrentVersion() : 0L);
+                dto.setAuthzVersion(
+                        authzVersionService != null ? authzVersionService.getCurrentVersion() : 0L);
                 return ResponseEntity.ok(dto);
             }
+            case RESOLVED -> {
+                ResolvedUserIdentity identity = resolution.identity();
+                numericUserId = identity.userId();
+                dto.setUserId(Long.toString(numericUserId));
+            }
+            default ->
+                throw new IllegalStateException(
+                        "Unhandled resolution outcome: " + resolution.outcome());
+        }
+
             // Faz 23.5 hardening (Codex thread 019e0316 iter-3 AGREE):
             // additive `subscriberId` mirrors the numeric DB user id when
             // resolution succeeds; UUID/sub fallbacks leave it null so the
@@ -728,20 +758,6 @@ public class AuthorizationControllerV1 {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         resolved.addAll(dbPermissions);
         return resolved;
-    }
-
-    private AuthenticatedUserLookupService.ResolvedAuthenticatedUser resolveAuthenticatedUser(Jwt jwt) {
-        try {
-            return authenticatedUserLookupService.resolve(jwt);
-        } catch (RuntimeException ex) {
-            log.warn("Authz /me kullanıcı çözümleme başarısız; JWT fallback kullanılacak. cause={}", ex.getMessage());
-            return new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
-                    null,
-                    fallbackResponseUserId(jwt),
-                    fallbackEmail(jwt),
-                    false
-            );
-        }
     }
 
     /**
