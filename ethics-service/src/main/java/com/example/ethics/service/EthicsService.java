@@ -6,6 +6,7 @@ import com.example.ethics.model.*;
 import com.example.ethics.repository.*;
 import com.example.ethics.security.StaffContext;
 import com.example.ethics.security.EthicsAuthorization;
+import com.example.ethics.security.PublicTenantResolver;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
@@ -28,18 +29,24 @@ public class EthicsService {
     private final IntakeIdempotencyRepository idempotency;
     private final EthicsAuthorization authorization;
     private final TransactionKeyLock transactionLocks;
+    private final PublicIntakeSanitizer publicIntakeSanitizer;
     private final ObjectMapper auditMapper;
+    private final PublicTenantResolver tenantResolver;
     private final String dummyMailboxHash;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
             EthicsReportRepository reports, ReporterAccessGrantRepository grants, EthicsMessageRepository messages,
             MailboxSessionRepository sessions, AuditOutboxRepository audit, IntakeIdempotencyRepository idempotency,
-            EthicsAuthorization authorization, TransactionKeyLock transactionLocks, ObjectMapper auditMapper) {
+            EthicsAuthorization authorization, TransactionKeyLock transactionLocks,
+            PublicIntakeSanitizer publicIntakeSanitizer, ObjectMapper auditMapper,
+            PublicTenantResolver tenantResolver) {
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
         this.messages=messages;this.sessions=sessions;this.audit=audit;this.idempotency=idempotency;
         this.authorization=authorization;
         this.transactionLocks=transactionLocks;
+        this.publicIntakeSanitizer=publicIntakeSanitizer;
         this.auditMapper=auditMapper;
+        this.tenantResolver=tenantResolver;
         // Missing receipts, wrong channels and locked grants must spend the
         // same PBKDF work as a wrong secret. This process-local value is never
         // persisted or exposed and exists solely to close the timing oracle.
@@ -49,8 +56,12 @@ public class EthicsService {
     @Transactional
     public CreateReportResponse createReport(String channel, String key, CreateReportRequest request) {
         if (key == null || key.isBlank() || key.length() > 200) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency-Key is required.");
+        publicIntakeSanitizer.validateReport(request);
         String normalizedChannel = normalizeChannel(channel);
-        UUID orgId = properties.publicOrgId();
+        // Faz 35 ES multi-tenant — the owning org is resolved from the inbound
+        // host (threaded here as `channel`); unmapped hosts fall back to the
+        // default public-org-id, preserving single-tenant behaviour.
+        UUID orgId = tenantResolver.resolve(channel);
         if (request.mode()!=ReportMode.ANONYMOUS) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,"REPORT_MODE_NOT_ENABLED");
         transactionLocks.lock("intake\n"+orgId+"\n"+normalizedChannel+"\n"+key);
         String requestHash = secrets.sha256(canonicalField(request.mode().name())
@@ -113,9 +124,15 @@ public class EthicsService {
 
     @Transactional
     public MessageResponse reporterReply(String channel,String token,String key,MessageRequest request) {
+        publicIntakeSanitizer.validateMessage(request);
         UUID caseId=caseForSession(channel,token);
-        return createMessage(caseId,"REPORTER","REPORTER_VISIBLE",key,request.body(),properties.publicOrgId(),"reporter",
-                () -> ensureOpen(cases.findById(caseId).orElseThrow(EthicsService::genericMailboxDeny)));
+        // Faz 35 ES multi-tenant — a reply belongs to the case's own org, which
+        // was fixed at intake time. Read it from the case (authoritative) rather
+        // than re-resolving from the host, so an audit stamp can never drift if
+        // the host→org map later changes.
+        EthicsCase caseRow=cases.findById(caseId).orElseThrow(EthicsService::genericMailboxDeny);
+        return createMessage(caseId,"REPORTER","REPORTER_VISIBLE",key,request.body(),caseRow.getOrgId(),"reporter",
+                () -> ensureOpen(caseRow));
     }
 
     @Transactional(readOnly=true)

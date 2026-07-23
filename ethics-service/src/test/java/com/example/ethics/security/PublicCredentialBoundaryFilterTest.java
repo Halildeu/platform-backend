@@ -60,15 +60,9 @@ class PublicCredentialBoundaryFilterTest {
     }
 
     @Test
-    void publicApiAcceptsStandardForwardedProtoHttpsFallback() throws Exception {
-        // Faz 35 ES-306 hardening — ingress-nginx v1.9+ `proxy-set-headers`
-        // ConfigMap yalnızca ilk (alfabetik) header'ı render ediyor, custom
-        // `X-Etik-Speak-Transport: https` upstream'e ulaşmıyor. Standard
-        // reverse-proxy header'ı `X-Forwarded-Proto: https` fallback olarak
-        // kabul edilir (ingress-nginx `use-forwarded-headers` altında otomatik
-        // set eder).
+    void publicApiAcceptsForwardedProtoHttpsFallback() throws Exception {
         var request = publicRequest();
-        request.addHeader("X-Forwarded-Proto", "https");
+        request.addHeader(PublicCredentialBoundaryFilter.FORWARDED_PROTO_HEADER, "https");
         var response = new MockHttpServletResponse();
 
         filter.doFilter(request, response, new MockFilterChain());
@@ -78,9 +72,9 @@ class PublicCredentialBoundaryFilterTest {
     }
 
     @Test
-    void publicApiRejectsHttpForwardedProto() throws Exception {
+    void publicApiRejectsForwardedProtoHttpFallback() throws Exception {
         var request = publicRequest();
-        request.addHeader("X-Forwarded-Proto", "http");
+        request.addHeader(PublicCredentialBoundaryFilter.FORWARDED_PROTO_HEADER, "http");
         var response = new MockHttpServletResponse();
 
         filter.doFilter(request, response, new MockFilterChain());
@@ -90,12 +84,19 @@ class PublicCredentialBoundaryFilterTest {
     }
 
     @Test
-    void publicApiAcceptsEmptyAuthorizationHeader() throws Exception {
-        // Faz 35 ES-306 hardening — ingress-nginx `Authorization: ""` empty-set
-        // rendering'i (basic-auth remove sonrası boş string) backend'e null
-        // değil empty header olarak gelir. Öncesinde `getHeader() != null` check
-        // bu durumu foreign-credential olarak yorumlayıp CREDENTIAL_CONFUSION
-        // reject ediyordu. Fix: null + isBlank() birlikte kontrol.
+    void publicApiAcceptsMixedCaseHttpsTransportHeader() throws Exception {
+        var request = publicRequest();
+        request.addHeader(PublicCredentialBoundaryFilter.TRANSPORT_HEADER, "HTTPS");
+        var response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentAsString()).isEmpty();
+    }
+
+    @Test
+    void blankAuthorizationHeaderIsNotTreatedAsCredentialConfusion() throws Exception {
         var request = publicRequest();
         request.addHeader(PublicCredentialBoundaryFilter.TRANSPORT_HEADER, "https");
         request.addHeader("Authorization", "");
@@ -108,7 +109,7 @@ class PublicCredentialBoundaryFilterTest {
     }
 
     @Test
-    void publicApiAcceptsWhitespaceOnlyAuthorizationHeader() throws Exception {
+    void whitespaceOnlyAuthorizationHeaderIsNotTreatedAsCredentialConfusion() throws Exception {
         var request = publicRequest();
         request.addHeader(PublicCredentialBoundaryFilter.TRANSPORT_HEADER, "https");
         request.addHeader("Authorization", "   ");
