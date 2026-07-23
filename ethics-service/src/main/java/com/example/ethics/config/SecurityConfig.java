@@ -25,7 +25,7 @@ import java.util.Collection;
 import java.util.Map;
 
 @Configuration
-@EnableConfigurationProperties(EthicsProperties.class)
+@EnableConfigurationProperties({EthicsProperties.class, PublicTenantProperties.class})
 public class SecurityConfig {
 
     @Bean
