@@ -196,8 +196,9 @@ public interface TranscriptSessionAssociationRepository
                 ELSE 'PENDING'
             END,
             next_retry_at = CASE
-                WHEN :forceDead OR resolution_attempts + 1 >= :maxAttempts THEN NULL
-                ELSE :nextRetryAt
+                WHEN :forceDead OR resolution_attempts + 1 >= :maxAttempts
+                    THEN CAST(NULL AS timestamptz)
+                ELSE CAST(:nextRetryAt AS timestamptz)
             END,
             last_error_code = :errorCode,
             claim_token = NULL,
