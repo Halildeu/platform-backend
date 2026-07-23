@@ -9,8 +9,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 import com.example.ethics.security.PublicCredentialBoundaryFilter;
+import com.example.ethics.repository.AuditOutboxRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.Cookie;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -43,6 +45,8 @@ class EthicsClosedLoopIntegrationTest {
     private static final UUID ORG=UUID.fromString("00000000-0000-0000-0000-000000000035");
     private static final String CLIENT_SECRET="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdef";
     @Autowired MockMvc mvc; @Autowired ObjectMapper mapper;
+    @Autowired AuditOutboxRepository auditOutbox;
+    @Autowired MeterRegistry metrics;
     @MockitoBean com.example.ethics.security.EthicsAuthorization authorization;
     @MockitoBean com.example.ethics.security.EthicsEntitlementVerifier entitlements;
 
@@ -147,6 +151,24 @@ class EthicsClosedLoopIntegrationTest {
                         .header("Idempotency-Key","closed-reporter-reply").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"body\":\"Kapanmış vakaya yazılmamalı\"}"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("CASE_CLOSED"));
+    }
+
+    @Test
+    void unavailableAuditSinkDoesNotRollbackIntakeAndBacklogIsObservable() throws Exception {
+        long pendingBefore = auditOutbox.countByStatusIn(List.of("PENDING", "PROCESSING"));
+        String payload="{\"mode\":\"ANONYMOUS\",\"category\":\"OTHER\",\"subject\":\"Audit outage\",\"description\":\"Sentetik backlog kanıtı\",\"locale\":\"tr\",\"accessSecret\":\""+CLIENT_SECRET+"\",\"noticeVersion\":\"tr-test-pilot-v1\"}";
+
+        mvc.perform(post("/api/v1/public/ethics/reports")
+                        .header("Host","etik.acik.com")
+                        .header("Idempotency-Key","audit-outage-intake")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isCreated());
+
+        assertThat(auditOutbox.countByStatusIn(List.of("PENDING", "PROCESSING")),
+                equalTo(pendingBefore + 1));
+        assertThat(metrics.get("ethics.audit.outbox.pending.entries").gauge().value(),
+                greaterThanOrEqualTo((double) (pendingBefore + 1)));
     }
 
     @Test

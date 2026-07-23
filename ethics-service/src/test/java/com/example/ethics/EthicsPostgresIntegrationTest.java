@@ -1,16 +1,22 @@
 package com.example.ethics;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.ethics.api.EthicsDtos.CreateReportRequest;
 import com.example.ethics.api.EthicsDtos.ReportCategory;
 import com.example.ethics.api.EthicsDtos.ReportMode;
+import com.example.ethics.audit.AuditOutboxWorker;
+import com.example.ethics.audit.EthicsAuditIntegrityVerifier;
 import com.example.ethics.model.AuditOutbox;
 import com.example.ethics.repository.AuditOutboxRepository;
+import com.example.ethics.repository.WormAuditRepository;
 import com.example.ethics.service.EthicsService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.HashSet;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -18,6 +24,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -31,7 +39,61 @@ class EthicsPostgresIntegrationTest {
 
     @Autowired EthicsService service;
     @Autowired AuditOutboxRepository auditOutbox;
+    @Autowired WormAuditRepository wormAudit;
+    @Autowired AuditOutboxWorker auditWorker;
+    @Autowired EthicsAuditIntegrityVerifier integrityVerifier;
     @Autowired ObjectMapper objectMapper;
+    @Autowired JdbcTemplate jdbc;
+
+    @Test
+    void outboxDeliversOnceToHashChainedAppendOnlyLedgerAndCheckpoints() {
+        var existingIds = new HashSet<>(auditOutbox.findAll().stream()
+                .map(AuditOutbox::getId)
+                .toList());
+        var request = new CreateReportRequest(
+                ReportMode.ANONYMOUS,
+                ReportCategory.OTHER,
+                "Sentetik WORM zinciri",
+                "Outbox teslim ve append-only negatif testi",
+                "tr",
+                "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_worm1",
+                "tr-test-pilot-v1");
+        service.createReport(
+                "etik.acik.com",
+                "worm-delivery-" + UUID.randomUUID(),
+                request);
+        AuditOutbox created = auditOutbox.findAll().stream()
+                .filter(row -> !existingIds.contains(row.getId()))
+                .findFirst()
+                .orElseThrow();
+
+        long before = wormAudit.count();
+        AuditOutboxWorker.CycleResult result = auditWorker.runCycle();
+        assertThat(result.delivered()).isGreaterThanOrEqualTo(1);
+        assertThat(wormAudit.count()).isGreaterThanOrEqualTo(before + 1);
+
+        var ledger = wormAudit.findBySourceOutboxId(created.getId()).orElseThrow();
+        assertThat(ledger.getEntryHash()).matches("[0-9a-f]{64}");
+        assertThat(auditOutbox.findById(created.getId()).orElseThrow().getStatus())
+                .isEqualTo("DELIVERED");
+        assertThat(integrityVerifier.verify(
+                wormAudit.findByOrgIdOrderBySeqAsc(created.getOrgId())).valid()).isTrue();
+
+        long afterFirstDelivery = wormAudit.count();
+        AuditOutboxWorker.CycleResult replayCycle = auditWorker.runCycle();
+        assertThat(replayCycle.claimed()).isZero();
+        assertThat(wormAudit.count()).isEqualTo(afterFirstDelivery);
+
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE ethics_worm_audit SET payload = payload WHERE seq = ?",
+                ledger.getSeq()))
+                .isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> jdbc.update(
+                "DELETE FROM ethics_worm_audit WHERE seq = ?",
+                ledger.getSeq()))
+                .isInstanceOf(DataAccessException.class);
+        assertThat(wormAudit.findBySourceOutboxId(created.getId())).isPresent();
+    }
 
     @Test
     void auditOutboxPayloadIsValidJsonEvenWhenInputContainsQuotesAndBackslashes() throws Exception {

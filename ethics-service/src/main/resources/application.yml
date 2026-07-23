@@ -20,6 +20,7 @@ spring:
     default-schema: ${ETHICS_DB_SCHEMA:ethics_service}
     schemas: ${ETHICS_DB_SCHEMA:ethics_service}
     table: ethics_flyway_history
+    locations: classpath:db/migration,classpath:db/vendor/{vendor}
   security:
     oauth2:
       resourceserver:
@@ -45,6 +46,17 @@ ethics:
   # Public mutations are accepted only after ingress-nginx overwrites the
   # transport proof header. The NetworkPolicy admits only that namespace.
   secure-transport-required: ${ETHICS_SECURE_TRANSPORT_REQUIRED:true}
+  audit-delivery:
+    # Source/runtime separation: the worker is wired in every environment but
+    # only an explicit overlay may activate scheduled delivery.
+    enabled: ${ETHICS_AUDIT_DELIVERY_ENABLED:false}
+    poll-delay: ${ETHICS_AUDIT_POLL_DELAY:5s}
+    batch-size: ${ETHICS_AUDIT_BATCH_SIZE:50}
+    lease-duration: ${ETHICS_AUDIT_LEASE_DURATION:60s}
+    retry-base-delay: ${ETHICS_AUDIT_RETRY_BASE_DELAY:5s}
+    retry-max-delay: ${ETHICS_AUDIT_RETRY_MAX_DELAY:15m}
+    max-attempts: ${ETHICS_AUDIT_MAX_ATTEMPTS:8}
+    owner: ${ETHICS_AUDIT_OWNER:${HOSTNAME:ethics-audit-worker}}
 
 erp:
   openfga:
