@@ -15,6 +15,8 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <spring.boot.version>3.5.6</spring.boot.version>
         <tomcat.version>10.1.53</tomcat.version>
+            <!-- Overridden by the `integration-tests` profile below. -->
+        <surefire.excludedGroups>integration</surefire.excludedGroups>
     </properties>
 
     <dependencyManagement>
@@ -128,7 +130,15 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.1.2</version>
                 <configuration>
-                    <excludedGroups>integration</excludedGroups>
+                    <!--
+                    Default run excludes Docker-backed tests. The `integration-tests`
+                    profile below flips this, mirroring permission-service. Without a way
+                    to flip it these tests were unrunnable anywhere: the literal value
+                    wins over any -DexcludedGroups on the command line, so
+                    `mvn test -Dtest=RlsPostgresContainerTest` reported
+                    "Tests run: 0 ... BUILD SUCCESS" (#929).
+                    -->
+                    <excludedGroups>${surefire.excludedGroups}</excludedGroups>
                 </configuration>
             </plugin>
             <!-- JaCoCo: baseline coverage report (no threshold) — CNS-003 PR2 -->
@@ -149,4 +159,39 @@
             </plugin>
         </plugins>
     </build>
+    <profiles>
+        <!--
+        Opt-in profile that flips Surefire's group filter from "exclude integration" to
+        "run everything", so the Docker-backed authorization-plane tests execute:
+        RlsPostgresContainerTest (tenant isolation), OpenFgaContainerTest (Zanzibar plane)
+        and RoleTupleCheckIntegrationTest. Same shape as permission-service's profile.
+            ./mvnw -pl common-auth test -Pintegration-tests
+        -->
+        <profile>
+            <id>integration-tests</id>
+            <properties>
+                <!--
+                Not `<excludedGroups></excludedGroups>` in the plugin block: an empty
+                element does not override the inherited value, so the profile silently
+                had no effect and the tagged tests still did not run. Measured: with
+                the profile active, `mvn test` produced 233 tests and BUILD SUCCESS while
+                RlsPostgresContainerTest appeared in none of the 43 surefire reports.
+                Excluding a group nothing carries is what actually flips the filter.
+                -->
+                <surefire.excludedGroups>none</surefire.excludedGroups>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <excludedGroups>${surefire.excludedGroups}</excludedGroups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>
