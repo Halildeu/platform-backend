@@ -39,8 +39,13 @@ public class SecretHasher {
     }
 
     public String sha256(String value) {
+        return sha256(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    public String sha256(byte[] value) {
         try {
-            return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+            return java.util.HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(value));
         } catch (GeneralSecurityException impossible) {
             throw new IllegalStateException(impossible);
         }

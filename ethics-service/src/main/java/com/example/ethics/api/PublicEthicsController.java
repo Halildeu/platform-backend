@@ -1,6 +1,8 @@
 package com.example.ethics.api;
 
 import com.example.ethics.api.EthicsDtos.*;
+import com.example.ethics.api.EvidenceDtos.*;
+import com.example.ethics.evidence.EvidenceService;
 import com.example.ethics.security.PublicCredentialBoundaryFilter;
 import com.example.ethics.service.EthicsService;
 import io.github.resilience4j.bulkhead.annotation.Bulkhead;
@@ -16,7 +18,10 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/public/ethics")
 public class PublicEthicsController {
     private final EthicsService service;
-    public PublicEthicsController(EthicsService service){this.service=service;}
+    private final EvidenceService evidence;
+    public PublicEthicsController(EthicsService service,EvidenceService evidence){
+        this.service=service;this.evidence=evidence;
+    }
 
     @PostMapping("/reports")
     @RateLimiter(name = "publicIntake")
@@ -47,6 +52,41 @@ public class PublicEthicsController {
     @RateLimiter(name = "publicMailbox")
     @Bulkhead(name = "publicMailbox")
     ResponseEntity<MessageResponse> reply(HttpServletRequest request,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody MessageRequest body){return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(service.reporterReply(request.getServerName(),mailboxToken(request),key,body));}
+
+    @PostMapping("/mailbox/attachments")
+    @RateLimiter(name = "publicMailbox")
+    @Bulkhead(name = "publicMailbox")
+    ResponseEntity<EvidenceDeclarationResponse> declareAttachment(
+            HttpServletRequest request,
+            @RequestHeader("Idempotency-Key") String key,
+            @Valid @RequestBody EvidenceDeclarationRequest body) {
+        EvidenceDeclarationResponse result =
+                evidence.declare(request.getServerName(), mailboxToken(request), key, body);
+        return ResponseEntity.status(result.idempotentReplay() ? HttpStatus.OK : HttpStatus.CREATED)
+                .cacheControl(CacheControl.noStore())
+                .body(result);
+    }
+
+    @PutMapping(value = "/evidence/uploads", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    @RateLimiter(name = "publicMailbox")
+    @Bulkhead(name = "publicMailbox")
+    ResponseEntity<EvidenceStatusResponse> uploadAttachment(
+            HttpServletRequest request,
+            @RequestHeader("X-Etik-Upload-Capability") String capability,
+            @RequestHeader(HttpHeaders.CONTENT_LENGTH) long contentLength)
+            throws java.io.IOException {
+        EvidenceStatusResponse result = evidence.upload(
+                request.getServerName(), capability, contentLength, request.getInputStream());
+        return ResponseEntity.accepted().cacheControl(CacheControl.noStore()).body(result);
+    }
+
+    @GetMapping("/mailbox/attachments")
+    ResponseEntity<java.util.List<EvidenceStatusResponse>> listAttachments(
+            HttpServletRequest request) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(
+                evidence.reporterAttachments(
+                        request.getServerName(), mailboxToken(request)));
+    }
 
     @DeleteMapping("/mailbox/session")
     ResponseEntity<Void> logout(HttpServletRequest request,HttpServletResponse response){
