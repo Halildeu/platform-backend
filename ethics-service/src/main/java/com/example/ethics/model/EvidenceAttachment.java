@@ -25,8 +25,8 @@ public class EvidenceAttachment {
     @Column(name = "quarantine_key", nullable = false, updatable = false, length = 160) private String quarantineKey;
     @Column(name = "sealed_key", nullable = false, updatable = false, length = 160) private String sealedKey;
     @Column(name = "derivative_key", nullable = false, updatable = false, length = 160) private String derivativeKey;
-    @Column(name = "upload_capability_hash", nullable = false, updatable = false, length = 64) private String uploadCapabilityHash;
-    @Column(name = "upload_expires_at", nullable = false, updatable = false) private Instant uploadExpiresAt;
+    @Column(name = "upload_capability_hash", nullable = false, length = 64) private String uploadCapabilityHash;
+    @Column(name = "upload_expires_at", nullable = false) private Instant uploadExpiresAt;
     @Column(name = "upload_consumed_at") private Instant uploadConsumedAt;
     @Column(name = "sealed_version_id", length = 240) private String sealedVersionId;
     @Column(name = "sealed_sha256", length = 64) private String sealedSha256;
@@ -86,6 +86,16 @@ public class EvidenceAttachment {
     public void startUploading(Instant now) {
         requireState("DECLARED");
         state = "UPLOADING";
+        updatedAt = now;
+    }
+
+    public void rotateUploadCapability(String capabilityHash, Instant expiresAt, Instant now) {
+        requireState("UPLOADING");
+        if (uploadConsumedAt != null) {
+            throw new IllegalStateException("Consumed upload capability cannot rotate");
+        }
+        uploadCapabilityHash = capabilityHash;
+        uploadExpiresAt = expiresAt;
         updatedAt = now;
     }
 
