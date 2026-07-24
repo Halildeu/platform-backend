@@ -241,7 +241,7 @@
 					<plugin>
 						<groupId>org.apache.maven.plugins</groupId>
 						<artifactId>maven-surefire-plugin</artifactId>
-						<configuration>
+						<configuration combine.self="override">
 							<!--
 							Clear the default `<excludedGroups>integration</excludedGroups>`
 							so every test runs (tagged + untagged). The CI integration
@@ -249,6 +249,17 @@
 							*ContractTest'` so DataAccessActivationContractTest (no @Tag,
 							runs without Docker) and DataAccessIntegrationTest (tagged,
 							needs Docker) are both exercised.
+
+							combine.self="override" is load-bearing (#929): Maven merges
+							nested element values rather than treating an empty element as
+							"clear this", so without it this block left the parent's
+							"integration" exclusion in place and the profile did nothing.
+							Measured before the fix: the CI job named "permission-service
+							Testcontainers integration test" ran exactly one test:
+							DataAccessActivationContractTest, the untagged one that needs no
+							Docker, while both Docker-backed tests it names were skipped,
+							and the job reported success. report-service already carried this
+							attribute with the same rationale; this module had drifted.
 							-->
 							<excludedGroups></excludedGroups>
 						</configuration>
