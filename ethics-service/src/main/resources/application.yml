@@ -78,6 +78,47 @@ ethics:
     locale: ${ETHICS_NOTIFICATION_LOCALE:tr-TR}
     channel: ${ETHICS_NOTIFICATION_CHANNEL:inapp}
     http-timeout: ${ETHICS_NOTIFICATION_HTTP_TIMEOUT:3s}
+  evidence:
+    # Fail-closed baseline: public text intake and mailbox remain usable while
+    # attachment declarations stay unavailable until the isolated TEST
+    # pipeline, buckets, credentials and signing key are supplied.
+    enabled: ${ETHICS_EVIDENCE_ENABLED:false}
+    policy-version: ${ETHICS_EVIDENCE_POLICY_VERSION:faz35-evidence-custody/v1}
+    max-bytes: ${ETHICS_EVIDENCE_MAX_BYTES:26214400}
+    upload-capability-ttl: ${ETHICS_EVIDENCE_UPLOAD_TTL:10m}
+    sealed-retention: ${ETHICS_EVIDENCE_SEALED_RETENTION:30d}
+    manifest-signing-key: ${ETHICS_EVIDENCE_MANIFEST_SIGNING_KEY:}
+    pipeline:
+      enabled: ${ETHICS_EVIDENCE_PIPELINE_ENABLED:false}
+      poll-delay: ${ETHICS_EVIDENCE_POLL_DELAY:5s}
+      batch-size: ${ETHICS_EVIDENCE_BATCH_SIZE:10}
+      lease-duration: ${ETHICS_EVIDENCE_LEASE_DURATION:2m}
+      retry-delay: ${ETHICS_EVIDENCE_RETRY_DELAY:1m}
+      max-attempts: ${ETHICS_EVIDENCE_MAX_ATTEMPTS:8}
+    processor:
+      # "clamav-reference" is the bounded TEST processor for UTF-8 text,
+      # JPEG and PNG. PDF remains fail-closed until the dedicated no-network
+      # CDR worker is deployed; production must not use this in-process mode.
+      mode: ${ETHICS_EVIDENCE_PROCESSOR_MODE:disabled}
+      clamav-host: ${ETHICS_EVIDENCE_CLAMAV_HOST:localhost}
+      clamav-port: ${ETHICS_EVIDENCE_CLAMAV_PORT:3310}
+      timeout: ${ETHICS_EVIDENCE_PROCESSOR_TIMEOUT:20s}
+      max-decoded-image-pixels: ${ETHICS_EVIDENCE_MAX_IMAGE_PIXELS:40000000}
+      scanner-digest: ${ETHICS_EVIDENCE_SCANNER_DIGEST:}
+      sanitizer-digest: ${ETHICS_EVIDENCE_SANITIZER_DIGEST:}
+      parser-digest: ${ETHICS_EVIDENCE_PARSER_DIGEST:}
+      rules-version: ${ETHICS_EVIDENCE_RULES_VERSION:}
+      transformation-profile: ${ETHICS_EVIDENCE_TRANSFORM_PROFILE:faz35-baseline-v1}
+    s3:
+      endpoint: ${ETHICS_EVIDENCE_S3_ENDPOINT:http://localhost:9000}
+      region: ${ETHICS_EVIDENCE_S3_REGION:us-east-1}
+      path-style-access: ${ETHICS_EVIDENCE_S3_PATH_STYLE:true}
+      access-key: ${ETHICS_EVIDENCE_S3_ACCESS_KEY:}
+      secret-key: ${ETHICS_EVIDENCE_S3_SECRET_KEY:}
+      quarantine-bucket: ${ETHICS_EVIDENCE_QUARANTINE_BUCKET:ethics-evidence-quarantine}
+      sealed-bucket: ${ETHICS_EVIDENCE_SEALED_BUCKET:ethics-evidence-sealed}
+      derivative-bucket: ${ETHICS_EVIDENCE_DERIVATIVE_BUCKET:ethics-evidence-derivative}
+      server-side-encryption: ${ETHICS_EVIDENCE_S3_SSE:AES256}
   # Faz 35 ES multi-tenant public intake — host → org mapping. Empty by default:
   # every public host falls back to public-org-id above (single-tenant cell).
   # Adding a customer = one entry here + their ingress host + staff realm org_id

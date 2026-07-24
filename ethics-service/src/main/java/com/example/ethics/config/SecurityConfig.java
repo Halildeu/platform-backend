@@ -27,6 +27,7 @@ import java.util.Map;
 @Configuration
 @EnableConfigurationProperties({
     EthicsProperties.class,
+    EvidenceProperties.class,
     AuditDeliveryProperties.class,
     NotificationDeliveryProperties.class,
     PublicTenantProperties.class

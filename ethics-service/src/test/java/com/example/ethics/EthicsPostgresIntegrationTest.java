@@ -11,6 +11,7 @@ import com.example.ethics.audit.EthicsAuditIntegrityVerifier;
 import com.example.ethics.model.AuditOutbox;
 import com.example.ethics.repository.AuditOutboxRepository;
 import com.example.ethics.repository.WormAuditRepository;
+import com.example.ethics.repository.ReporterAccessGrantRepository;
 import com.example.ethics.service.EthicsService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,6 +21,8 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.time.Instant;
+import java.sql.Timestamp;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -44,6 +47,7 @@ class EthicsPostgresIntegrationTest {
     @Autowired EthicsAuditIntegrityVerifier integrityVerifier;
     @Autowired ObjectMapper objectMapper;
     @Autowired JdbcTemplate jdbc;
+    @Autowired ReporterAccessGrantRepository reporterGrants;
 
     @Test
     void outboxDeliversOnceToHashChainedAppendOnlyLedgerAndCheckpoints() {
@@ -138,5 +142,79 @@ class EthicsPostgresIntegrationTest {
             assertThat(results.get(0).receiptId()).isEqualTo(results.get(1).receiptId());
             assertThat(results.stream().filter(result -> result.idempotentReplay()).count()).isEqualTo(1);
         }
+    }
+
+    @Test
+    void evidenceDerivationLedgerRejectsUpdateAndDeleteOnPostgres() {
+        var request = new CreateReportRequest(
+                ReportMode.ANONYMOUS,
+                ReportCategory.OTHER,
+                "Sentetik evidence ledger",
+                "Append-only PostgreSQL trigger testi",
+                "tr",
+                "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_ledger",
+                "tr-test-pilot-v1");
+        var created = service.createReport(
+                "etik.acik.com",
+                "evidence-ledger-" + UUID.randomUUID(),
+                request);
+        UUID caseId = reporterGrants.findById(created.receiptId())
+                .orElseThrow().getCaseId();
+        UUID attachmentId = UUID.randomUUID();
+        Instant now = Instant.now();
+        Timestamp nowSql = Timestamp.from(now);
+        Timestamp expirySql = Timestamp.from(now.plusSeconds(600));
+        String sha = "a".repeat(64);
+
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_evidence_attachments (
+                    id, case_id, org_id, channel, state, idempotency_key,
+                    request_hash, policy_version, declared_media_type,
+                    declared_size, declared_sha256, quarantine_key, sealed_key,
+                    derivative_key, upload_capability_hash, upload_expires_at,
+                    upload_consumed_at, sealed_version_id, sealed_sha256,
+                    sealed_size, derivative_version_id, derivative_sha256,
+                    derivative_size, derivative_media_type, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                attachmentId, caseId,
+                UUID.fromString("00000000-0000-0000-0000-000000000035"),
+                "etik.acik.com", "AVAILABLE", "ledger-test",
+                sha, "faz35-evidence-custody/v1", "text/plain; charset=utf-8",
+                4L, sha, "quarantine/" + UUID.randomUUID(),
+                "sealed/" + UUID.randomUUID(), "derivative/" + UUID.randomUUID(),
+                "b".repeat(64), expirySql, nowSql,
+                "sealed-v1", sha, 4L, "derivative-v1", sha, 4L,
+                "text/plain; charset=utf-8", nowSql, nowSql);
+
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_evidence_derivations (
+                    id, attachment_id, derivation_version, sealed_sha256,
+                    sealed_size, derivative_sha256, derivative_size,
+                    input_media_type, output_media_type, scanner_digest,
+                    sanitizer_digest, parser_digest, rules_version,
+                    policy_version, transformation_profile,
+                    previous_manifest_hash, manifest_hash, signature_alg,
+                    manifest_signature, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                UUID.randomUUID(), attachmentId, 1, sha, 4L, sha, 4L,
+                "text/plain; charset=utf-8", "text/plain; charset=utf-8",
+                "sha256:" + sha, "sha256:" + sha, "sha256:" + sha,
+                "synthetic-rules-v1", "faz35-evidence-custody/v1",
+                "synthetic-transform-v1", null, "c".repeat(64),
+                "HMAC-SHA256", "d".repeat(64), nowSql);
+
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE ethics_service.ethics_evidence_derivations SET rules_version = rules_version WHERE attachment_id = ?",
+                attachmentId))
+                .isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> jdbc.update(
+                "DELETE FROM ethics_service.ethics_evidence_derivations WHERE attachment_id = ?",
+                attachmentId))
+                .isInstanceOf(DataAccessException.class);
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM ethics_service.ethics_evidence_derivations WHERE attachment_id = ?",
+                Long.class, attachmentId)).isEqualTo(1L);
     }
 }
