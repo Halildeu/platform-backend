@@ -57,6 +57,27 @@ ethics:
     retry-max-delay: ${ETHICS_AUDIT_RETRY_MAX_DELAY:15m}
     max-attempts: ${ETHICS_AUDIT_MAX_ATTEMPTS:8}
     owner: ${ETHICS_AUDIT_OWNER:${HOSTNAME:ethics-audit-worker}}
+  notification-delivery:
+    # Provider delivery is opt-in per overlay. Business transactions only
+    # persist a case-independent signal; this worker submits it asynchronously.
+    enabled: ${ETHICS_NOTIFICATION_DELIVERY_ENABLED:false}
+    poll-delay: ${ETHICS_NOTIFICATION_POLL_DELAY:5s}
+    batch-size: ${ETHICS_NOTIFICATION_BATCH_SIZE:25}
+    lease-duration: ${ETHICS_NOTIFICATION_LEASE_DURATION:60s}
+    retry-base-delay: ${ETHICS_NOTIFICATION_RETRY_BASE_DELAY:10s}
+    retry-max-delay: ${ETHICS_NOTIFICATION_RETRY_MAX_DELAY:15m}
+    max-attempts: ${ETHICS_NOTIFICATION_MAX_ATTEMPTS:8}
+    owner: ${ETHICS_NOTIFICATION_OWNER:${HOSTNAME:ethics-notification-worker}}
+    orchestrator-base-url: ${ETHICS_NOTIFICATION_ORCHESTRATOR_URL:http://notification-orchestrator:8089}
+    token-url: ${ETHICS_NOTIFICATION_TOKEN_URL:http://auth-service:8088/oauth2/token}
+    client-id: ${ETHICS_NOTIFICATION_CLIENT_ID:ethics-service}
+    client-secret: ${ETHICS_NOTIFICATION_CLIENT_SECRET:}
+    token-audience: ${ETHICS_NOTIFICATION_TOKEN_AUDIENCE:notification-orchestrator}
+    token-permissions: ${ETHICS_NOTIFICATION_TOKEN_PERMISSIONS:notify:intents:system}
+    recipient-subscriber-id: ${ETHICS_NOTIFICATION_RECIPIENT_SUBSCRIBER_ID:}
+    locale: ${ETHICS_NOTIFICATION_LOCALE:tr-TR}
+    channel: ${ETHICS_NOTIFICATION_CHANNEL:inapp}
+    http-timeout: ${ETHICS_NOTIFICATION_HTTP_TIMEOUT:3s}
   # Faz 35 ES multi-tenant public intake — host → org mapping. Empty by default:
   # every public host falls back to public-org-id above (single-tenant cell).
   # Adding a customer = one entry here + their ingress host + staff realm org_id

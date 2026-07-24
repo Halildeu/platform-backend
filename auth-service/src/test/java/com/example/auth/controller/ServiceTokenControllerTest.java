@@ -24,6 +24,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "security.service-clients.clients.user-service.allowed-permissions[0]=permissions:read",
         "security.service-clients.clients.user-service.allowed-permissions[1]=notify:intents:system",
         "security.service-clients.clients.user-service.require-explicit-permissions=false",
+        "security.service-clients.clients.ethics-service.secret=ethics-test-secret",
+        "security.service-clients.clients.ethics-service.allowed-audiences[0]=notification-orchestrator",
+        "security.service-clients.clients.ethics-service.allowed-permissions[0]=notify:intents:system",
+        "security.service-clients.clients.ethics-service.allowed-permissions-by-audience[notification-orchestrator][0]=notify:intents:system",
+        "security.service-clients.clients.ethics-service.require-explicit-permissions=true",
         "security.service-clients.clients.rate-client.secret=test-secret2",
         "security.service-clients.clients.rate-client.allowed-audiences[0]=permission-service",
         "security.service-clients.clients.rate-client.require-explicit-permissions=false",
@@ -79,6 +84,23 @@ class ServiceTokenControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.access_token").exists())
                 .andExpect(jsonPath("$.token_type").value("Bearer"));
+    }
+
+    @Test
+    void ethicsServiceCanMintOnlyExplicitNotificationPermission() throws Exception {
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("ethics-service", "ethics-test-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=notification-orchestrator&permissions=notify:intents:system"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.access_token").exists())
+                .andExpect(jsonPath("$.token_type").value("Bearer"));
+
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("ethics-service", "ethics-test-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=notification-orchestrator&permissions=permissions:write"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
