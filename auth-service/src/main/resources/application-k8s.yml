@@ -134,6 +134,18 @@ security:
           - notify:intents:system
         # Legacy callers may request an audience-only token.
         require-explicit-permissions: false
+      ethics-service:
+        # Dedicated least-privilege identity for Faz 35 notification intents.
+        # Blank keeps provider delivery disabled until Vault/ESO provisions it.
+        secret: ${SERVICE_CLIENT_ETHICS_SERVICE_SECRET:}
+        allowed-audiences:
+          - notification-orchestrator
+        allowed-permissions:
+          - notify:intents:system
+        allowed-permissions-by-audience:
+          notification-orchestrator:
+            - notify:intents:system
+        require-explicit-permissions: true
       meeting-ai:
         # ESO-synced from Vault; blank keeps the client disabled until provisioned.
         secret: ${SERVICE_CLIENT_MEETING_AI_SECRET:}

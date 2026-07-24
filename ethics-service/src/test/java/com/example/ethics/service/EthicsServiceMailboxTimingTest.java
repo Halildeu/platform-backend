@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import com.example.ethics.api.EthicsDtos.MailboxLoginRequest;
 import com.example.ethics.config.EthicsProperties;
+import com.example.ethics.notification.NotificationOutboxPublisher;
 import com.example.ethics.repository.AuditOutboxRepository;
 import com.example.ethics.repository.EthicsCaseRepository;
 import com.example.ethics.repository.EthicsMessageRepository;
@@ -39,6 +40,7 @@ class EthicsServiceMailboxTimingTest {
     @Mock IntakeIdempotencyRepository idempotency;
     @Mock EthicsAuthorization authorization;
     @Mock TransactionKeyLock transactionLocks;
+    @Mock NotificationOutboxPublisher notifications;
     EthicsService service;
 
     @BeforeEach
@@ -52,7 +54,8 @@ class EthicsServiceMailboxTimingTest {
                 secrets, cases, reports, grants, messages, sessions, audit, idempotency,
                 authorization, transactionLocks, new PublicIntakeSanitizer(), new ObjectMapper(),
                 new com.example.ethics.security.PublicTenantResolver(
-                        props, new com.example.ethics.config.PublicTenantProperties(java.util.Map.of())));
+                        props, new com.example.ethics.config.PublicTenantProperties(java.util.Map.of())),
+                notifications);
     }
 
     @Test

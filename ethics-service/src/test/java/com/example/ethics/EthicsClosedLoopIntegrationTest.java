@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.ethics.security.PublicCredentialBoundaryFilter;
 import com.example.ethics.repository.AuditOutboxRepository;
+import com.example.ethics.repository.NotificationOutboxRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -46,6 +47,7 @@ class EthicsClosedLoopIntegrationTest {
     private static final String CLIENT_SECRET="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdef";
     @Autowired MockMvc mvc; @Autowired ObjectMapper mapper;
     @Autowired AuditOutboxRepository auditOutbox;
+    @Autowired NotificationOutboxRepository notificationOutbox;
     @Autowired MeterRegistry metrics;
     @MockitoBean com.example.ethics.security.EthicsAuthorization authorization;
     @MockitoBean com.example.ethics.security.EthicsEntitlementVerifier entitlements;
@@ -81,6 +83,7 @@ class EthicsClosedLoopIntegrationTest {
 
     @Test
     void dualHostIntakeStaffReplyAndReporterMailboxCloseTheLoop() throws Exception {
+        long notificationSignalsBefore = notificationOutbox.count();
         String payload="{\"mode\":\"ANONYMOUS\",\"category\":\"WORKPLACE_CONDUCT\",\"subject\":\"Sentetik bildirim\",\"description\":\"Sentetik test anlatımı\",\"locale\":\"tr\",\"accessSecret\":\""+CLIENT_SECRET+"\",\"noticeVersion\":\"tr-test-pilot-v1\"}";
         MvcResult created=mvc.perform(post("/api/v1/public/ethics/reports")
                         .header("Host","etik.acik.com").header("Idempotency-Key","intake-1")
@@ -151,6 +154,10 @@ class EthicsClosedLoopIntegrationTest {
                         .header("Idempotency-Key","closed-reporter-reply").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"body\":\"Kapanmış vakaya yazılmamalı\"}"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("CASE_CLOSED"));
+        // Exactly one signal for the new report and one for the reporter reply.
+        // Staff messages, idempotent replays and rejected closed-case writes do
+        // not create duplicate or content-bearing notification work.
+        assertThat(notificationOutbox.count(), equalTo(notificationSignalsBefore + 2));
     }
 
     @Test
@@ -168,6 +175,25 @@ class EthicsClosedLoopIntegrationTest {
         assertThat(auditOutbox.countByStatusIn(List.of("PENDING", "PROCESSING")),
                 equalTo(pendingBefore + 1));
         assertThat(metrics.get("ethics.audit.outbox.pending.entries").gauge().value(),
+                greaterThanOrEqualTo((double) (pendingBefore + 1)));
+    }
+
+    @Test
+    void disabledNotificationProviderDoesNotRollbackIntakeAndSignalIsDurable() throws Exception {
+        long pendingBefore =
+                notificationOutbox.countByStatusIn(List.of("PENDING", "PROCESSING"));
+        String payload="{\"mode\":\"ANONYMOUS\",\"category\":\"OTHER\",\"subject\":\"Notification outage\",\"description\":\"Sentetik provider outage kanıtı\",\"locale\":\"tr\",\"accessSecret\":\""+CLIENT_SECRET+"\",\"noticeVersion\":\"tr-test-pilot-v1\"}";
+
+        mvc.perform(post("/api/v1/public/ethics/reports")
+                        .header("Host","etik.acik.com")
+                        .header("Idempotency-Key","notification-outage-intake")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isCreated());
+
+        assertThat(notificationOutbox.countByStatusIn(List.of("PENDING", "PROCESSING")),
+                equalTo(pendingBefore + 1));
+        assertThat(metrics.get("ethics.notification.outbox.pending.entries").gauge().value(),
                 greaterThanOrEqualTo((double) (pendingBefore + 1)));
     }
 

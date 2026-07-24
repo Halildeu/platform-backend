@@ -3,6 +3,7 @@ package com.example.ethics.service;
 import com.example.ethics.api.EthicsDtos.*;
 import com.example.ethics.config.EthicsProperties;
 import com.example.ethics.model.*;
+import com.example.ethics.notification.NotificationOutboxPublisher;
 import com.example.ethics.repository.*;
 import com.example.ethics.security.StaffContext;
 import com.example.ethics.security.EthicsAuthorization;
@@ -32,6 +33,7 @@ public class EthicsService {
     private final PublicIntakeSanitizer publicIntakeSanitizer;
     private final ObjectMapper auditMapper;
     private final PublicTenantResolver tenantResolver;
+    private final NotificationOutboxPublisher notifications;
     private final String dummyMailboxHash;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
@@ -39,7 +41,8 @@ public class EthicsService {
             MailboxSessionRepository sessions, AuditOutboxRepository audit, IntakeIdempotencyRepository idempotency,
             EthicsAuthorization authorization, TransactionKeyLock transactionLocks,
             PublicIntakeSanitizer publicIntakeSanitizer, ObjectMapper auditMapper,
-            PublicTenantResolver tenantResolver) {
+            PublicTenantResolver tenantResolver,
+            NotificationOutboxPublisher notifications) {
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
         this.messages=messages;this.sessions=sessions;this.audit=audit;this.idempotency=idempotency;
         this.authorization=authorization;
@@ -47,6 +50,7 @@ public class EthicsService {
         this.publicIntakeSanitizer=publicIntakeSanitizer;
         this.auditMapper=auditMapper;
         this.tenantResolver=tenantResolver;
+        this.notifications=notifications;
         // Missing receipts, wrong channels and locked grants must spend the
         // same PBKDF work as a wrong secret. This process-local value is never
         // persisted or exposed and exists solely to close the timing oracle.
@@ -88,6 +92,7 @@ public class EthicsService {
                         "channel", normalizedChannel,
                         "noticeVersion", request.noticeVersion())),
                 now));
+        notifications.enqueue(orgId, NotificationOutboxPublisher.NEW_REPORT, now);
         idempotency.save(new IntakeIdempotency(UUID.randomUUID(),orgId,normalizedChannel,key,requestHash,receiptId,now));
         return new CreateReportResponse(receiptId,now,"/mailbox",false);
     }
@@ -194,6 +199,9 @@ public class EthicsService {
                         "visibility", visibility,
                         "actorHash", actorHash)),
                 Instant.now()));
+        if ("REPORTER".equals(author)) {
+            notifications.enqueue(orgId, NotificationOutboxPublisher.REPORTER_MESSAGE, Instant.now());
+        }
         return messageResponse(message);
     }
 
