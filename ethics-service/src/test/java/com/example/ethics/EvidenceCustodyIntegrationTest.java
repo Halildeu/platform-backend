@@ -167,6 +167,61 @@ class EvidenceCustodyIntegrationTest {
     }
 
     @Test
+    void declarationReplayRotatesLostCapabilityAndInvalidatesThePriorBearer() throws Exception {
+        ReportSession report = createReportAndOpenMailbox();
+        byte[] original = "synthetic response loss recovery".getBytes(StandardCharsets.UTF_8);
+        String key = "evidence-response-loss-" + UUID.randomUUID();
+        Map<String, Object> body = Map.of(
+                "mediaType", "text/plain",
+                "size", original.length,
+                "sha256", hashes.sha256(original));
+
+        MvcResult first = mvc.perform(post("/api/v1/public/ethics/mailbox/attachments")
+                        .header("Host", "etik.acik.com")
+                        .cookie(report.mailbox())
+                        .header("Idempotency-Key", key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(mapper.writeValueAsString(body)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        JsonNode firstJson = mapper.readTree(first.getResponse().getContentAsString());
+        String firstCapability = firstJson.get("uploadCapability").asText();
+
+        MvcResult replay = mvc.perform(post("/api/v1/public/ethics/mailbox/attachments")
+                        .header("Host", "etik.acik.com")
+                        .cookie(report.mailbox())
+                        .header("Idempotency-Key", key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(mapper.writeValueAsString(body)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.attachmentId")
+                        .value(firstJson.get("attachmentId").asText()))
+                .andExpect(jsonPath("$.state").value("UPLOADING"))
+                .andExpect(jsonPath("$.idempotentReplay").value(true))
+                .andExpect(jsonPath("$.uploadCapability").isNotEmpty())
+                .andReturn();
+        String replacementCapability = mapper
+                .readTree(replay.getResponse().getContentAsString())
+                .get("uploadCapability").asText();
+        assertThat(replacementCapability).isNotEqualTo(firstCapability);
+
+        mvc.perform(put("/api/v1/public/ethics/evidence/uploads")
+                        .header("Host", "etik.acik.com")
+                        .header("X-Etik-Upload-Capability", firstCapability)
+                        .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                        .content(original))
+                .andExpect(status().isNotFound());
+
+        mvc.perform(put("/api/v1/public/ethics/evidence/uploads")
+                        .header("Host", "etik.acik.com")
+                        .header("X-Etik-Upload-Capability", replacementCapability)
+                        .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                        .content(original))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.state").value("ORIGINAL_SEALED"));
+    }
+
+    @Test
     void malwareNeverBecomesStaffVisible() throws Exception {
         processor.mode.set(FakeEvidenceProcessor.Mode.MALICIOUS);
         ReportSession report = createReportAndOpenMailbox();

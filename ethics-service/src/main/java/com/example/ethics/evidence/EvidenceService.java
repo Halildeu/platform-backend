@@ -99,6 +99,19 @@ public class EvidenceService {
             if (!existing.getRequestHash().equals(requestHash)) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT");
             }
+            if ("UPLOADING".equals(existing.getState())
+                    && existing.getUploadConsumedAt() == null) {
+                String replacement = secrets.newSecret();
+                Instant now = Instant.now();
+                existing.rotateUploadCapability(
+                        secrets.sha256(replacement),
+                        now.plus(properties.getUploadCapabilityTtl()),
+                        now);
+                appendAudit(existing.getOrgId(), existing.getId(),
+                        "ethics.evidence.upload_capability_rotated",
+                        Map.of("reason", "idempotent_replay"));
+                return declarationResponse(existing, replacement, true);
+            }
             return declarationResponse(existing, null, true);
         }
 
@@ -139,8 +152,17 @@ public class EvidenceService {
             throw genericUploadDeny();
         }
         String normalizedChannel = normalizeChannel(channel);
+        String capabilityHash = secrets.sha256(capability);
+        EvidenceAttachment candidate = attachments
+                .findByUploadCapabilityHashAndChannel(capabilityHash, normalizedChannel)
+                .orElseThrow(EvidenceService::genericUploadDeny);
+        // Declaration replay can rotate a capability after a response loss. Serialize both
+        // paths on the same transaction key, then re-read by the presented hash so a bearer
+        // invalidated while this request waited can never reach the object store.
+        locks.lock("evidence-declare\n" + candidate.getCaseId()
+                + "\n" + candidate.getIdempotencyKey());
         EvidenceAttachment attachment = attachments
-                .findByUploadCapabilityHashAndChannel(secrets.sha256(capability), normalizedChannel)
+                .findByUploadCapabilityHashAndChannel(capabilityHash, normalizedChannel)
                 .orElseThrow(EvidenceService::genericUploadDeny);
         if (!"UPLOADING".equals(attachment.getState()) || attachment.getUploadConsumedAt() != null) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "EVIDENCE_UPLOAD_ALREADY_CONSUMED");
