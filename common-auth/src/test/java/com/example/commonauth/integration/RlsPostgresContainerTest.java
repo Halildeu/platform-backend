@@ -28,7 +28,18 @@ class RlsPostgresContainerTest {
             .withUsername("testuser")
             .withPassword("testpass");
 
+    /** Owner/superuser connection: schema + policy setup only. */
     private Connection conn;
+
+    /**
+     * The connection every assertion runs on. It must NOT be a superuser: Postgres lets
+     * superusers (and BYPASSRLS roles) skip row security entirely, and FORCE ROW LEVEL
+     * SECURITY does not change that -- it only extends enforcement to the table owner.
+     * Before this existed the whole class ran on the Testcontainers POSTGRES_USER, which
+     * is the bootstrap superuser, so no policy was ever applied and the suite could not
+     * have detected a broken policy. It never ran in CI, so nobody found out (#929).
+     */
+    private Connection probeConn;
 
     @BeforeEach
     void setup() throws Exception {
@@ -77,12 +88,32 @@ class RlsPostgresContainerTest {
                     )
                 )
                 """);
+            // Least-privilege subject for the assertions. Cluster-wide object, so the
+            // create is guarded for re-runs against a reused container.
+            st.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rls_probe') THEN
+                        CREATE ROLE rls_probe LOGIN NOSUPERUSER NOBYPASSRLS
+                            PASSWORD 'rls-probe-test-only';
+                    END IF;
+                END $$
+                """);
+            st.execute("GRANT USAGE ON SCHEMA user_service TO rls_probe");
+            st.execute("GRANT SELECT ON user_service.users TO rls_probe");
         }
         conn.commit();
+
+        probeConn = DriverManager.getConnection(
+                postgres.getJdbcUrl(), "rls_probe", "rls-probe-test-only");
+        probeConn.setAutoCommit(false);  // SET LOCAL needs a transaction
     }
 
     @AfterEach
     void teardown() throws Exception {
+        if (probeConn != null && !probeConn.isClosed()) {
+            probeConn.rollback();
+            probeConn.close();
+        }
         if (conn != null && !conn.isClosed()) {
             conn.rollback();
             conn.close();
@@ -92,17 +123,17 @@ class RlsPostgresContainerTest {
     @Test
     @DisplayName("No scope set → all rows visible (dev mode)")
     void noScope_allVisible() throws Exception {
-        var users = queryUsers(conn);
+        var users = queryUsers(probeConn);
         assertEquals(4, users.size(), "All users visible when no scope set");
     }
 
     @Test
     @DisplayName("Scope company 1 → only company 1 + NULL users")
     void scopeCompany1_onlyCompany1() throws Exception {
-        try (Statement st = conn.createStatement()) {
+        try (Statement st = probeConn.createStatement()) {
             st.execute("SET LOCAL app.scope.company_ids = '1'");
         }
-        var users = queryUsers(conn);
+        var users = queryUsers(probeConn);
         assertEquals(3, users.size(), "alice + bob (company 1) + global_user (NULL)");
         assertTrue(users.contains("alice"));
         assertTrue(users.contains("bob"));
@@ -113,10 +144,10 @@ class RlsPostgresContainerTest {
     @Test
     @DisplayName("Scope company 2 → only company 2 + NULL users")
     void scopeCompany2_onlyCompany2() throws Exception {
-        try (Statement st = conn.createStatement()) {
+        try (Statement st = probeConn.createStatement()) {
             st.execute("SET LOCAL app.scope.company_ids = '2'");
         }
-        var users = queryUsers(conn);
+        var users = queryUsers(probeConn);
         assertEquals(2, users.size(), "charlie (company 2) + global_user (NULL)");
         assertTrue(users.contains("charlie"));
         assertTrue(users.contains("global_user"));
@@ -125,31 +156,31 @@ class RlsPostgresContainerTest {
     @Test
     @DisplayName("Multi-company scope → both companies visible")
     void multiCompanyScope() throws Exception {
-        try (Statement st = conn.createStatement()) {
+        try (Statement st = probeConn.createStatement()) {
             st.execute("SET LOCAL app.scope.company_ids = '1,2'");
         }
-        var users = queryUsers(conn);
+        var users = queryUsers(probeConn);
         assertEquals(4, users.size(), "All users visible with both companies in scope");
     }
 
     @Test
     @DisplayName("Bypass RLS → all rows visible regardless of scope")
     void bypassRls_allVisible() throws Exception {
-        try (Statement st = conn.createStatement()) {
+        try (Statement st = probeConn.createStatement()) {
             st.execute("SET LOCAL app.scope.company_ids = '1'");
             st.execute("SET LOCAL app.scope.bypass_rls = 'true'");
         }
-        var users = queryUsers(conn);
+        var users = queryUsers(probeConn);
         assertEquals(4, users.size(), "SuperAdmin bypass: all users visible");
     }
 
     @Test
     @DisplayName("Cross-company isolation: company 1 user cannot see company 2 data")
     void crossCompanyIsolation() throws Exception {
-        try (Statement st = conn.createStatement()) {
+        try (Statement st = probeConn.createStatement()) {
             st.execute("SET LOCAL app.scope.company_ids = '1'");
         }
-        var users = queryUsers(conn);
+        var users = queryUsers(probeConn);
         assertFalse(users.contains("charlie"),
                 "CRITICAL: Company 1 scope must NOT see company 2 user (charlie)");
     }
