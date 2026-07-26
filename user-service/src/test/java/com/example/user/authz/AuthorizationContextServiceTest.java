@@ -60,60 +60,63 @@ class AuthorizationContextServiceTest {
     }
 
     private static AuthorizationContextService service(ExchangeFunction exchange) {
-        return service(exchange, "");
-    }
-
-    private static AuthorizationContextService service(ExchangeFunction exchange, String internalApiKey) {
         return new AuthorizationContextService(
                 WebClient.builder().exchangeFunction(exchange),
                 new AuthorizationContextCache(Duration.ofMinutes(1)),
-                "http://permission-service",
-                internalApiKey);
+                "http://permission-service");
     }
 
     /**
      * permission-service authenticates `/api/v1/**`, so a revision call without a credential is
      * answered 401 — and user-service reports that two layers up as an opaque 500 on
      * `/api/v1/users`, which is how listing and creating users broke cell-wide while every pod
-     * stayed green. The header is the contract; this test is what keeps it from being dropped again.
+     * stayed green.
+     *
+     * <p>The credential must be the caller's own bearer token — the same one `/authz/me` already
+     * carries. An earlier fix sent `X-Internal-Api-Key`; measured against the running cell that is
+     * answered 401 exactly like a bare call, because the filter reading that header is
+     * profile-scoped to local/dev and matches only `/api/v1/internal/**`. Asserting the *bearer*
+     * here is what makes this test able to fail on the wrong credential, which the header-only
+     * assertion could not.
      */
     @Test
-    void authz_version_call_should_carry_the_internal_api_key_header() {
+    void authz_version_call_should_carry_the_callers_bearer_token() {
         java.util.concurrent.atomic.AtomicReference<String> seen = new java.util.concurrent.atomic.AtomicReference<>();
-        AtomicInteger authzMeCalls = new AtomicInteger();
         ExchangeFunction exchange = request -> {
             if (request.url().getPath().endsWith("/api/v1/authz/version")) {
-                seen.set(request.headers().getFirst("X-Internal-Api-Key"));
+                seen.set(request.headers().getFirst("Authorization"));
                 return Mono.just(json("{\"authzVersion\":1}"));
             }
-            authzMeCalls.incrementAndGet();
             return Mono.just(json("{\"userId\":\"1\",\"permissions\":[],\"allowedScopes\":[]}"));
         };
 
-        service(exchange, "test-internal-key").buildContext(jwt(), java.util.List.of());
+        service(exchange).buildContext(jwt(), java.util.List.of());
 
-        org.assertj.core.api.Assertions.assertThat(seen.get()).isEqualTo("test-internal-key");
+        org.assertj.core.api.Assertions.assertThat(seen.get()).isEqualTo("Bearer token-value");
     }
 
     /**
-     * An empty credential is not a weaker credential — it is a claim the filter must reject. When
-     * nothing is configured the call goes out unauthenticated rather than carrying a blank header,
-     * so the failure names the real cause instead of looking like a bad key.
+     * The revision call and the projection call must present the *same* identity. If they diverge,
+     * one of them is authenticating as somebody else — and since the revision decides whether a
+     * cached grant may be reused, that divergence is a way for a stale grant to survive under a
+     * label that looks fresh.
      */
     @Test
-    void authz_version_call_should_omit_the_header_when_no_key_is_configured() {
-        java.util.concurrent.atomic.AtomicReference<Boolean> present = new java.util.concurrent.atomic.AtomicReference<>(null);
+    void authz_version_and_authz_me_should_present_the_same_credential() {
+        java.util.concurrent.atomic.AtomicReference<String> versionAuth = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<String> meAuth = new java.util.concurrent.atomic.AtomicReference<>();
         ExchangeFunction exchange = request -> {
             if (request.url().getPath().endsWith("/api/v1/authz/version")) {
-                present.set(request.headers().containsKey("X-Internal-Api-Key"));
+                versionAuth.set(request.headers().getFirst("Authorization"));
                 return Mono.just(json("{\"authzVersion\":1}"));
             }
+            meAuth.set(request.headers().getFirst("Authorization"));
             return Mono.just(json("{\"userId\":\"1\",\"permissions\":[],\"allowedScopes\":[]}"));
         };
 
-        service(exchange, "").buildContext(jwt(), java.util.List.of());
+        service(exchange).buildContext(jwt(), java.util.List.of());
 
-        org.assertj.core.api.Assertions.assertThat(present.get()).isFalse();
+        org.assertj.core.api.Assertions.assertThat(versionAuth.get()).isEqualTo(meAuth.get());
     }
 
     @Test
