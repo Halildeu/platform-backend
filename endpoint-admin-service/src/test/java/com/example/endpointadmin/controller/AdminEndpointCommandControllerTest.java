@@ -155,6 +155,45 @@ class AdminEndpointCommandControllerTest {
         verify(commandService, never()).createAgentUpdate(any(), any(), any());
     }
 
+    @Test
+    void createTpmRenewalAcceptsBrowserMetadataWithoutSecretMaterial() throws Exception {
+        AdminTenantContext context = adminContext();
+        when(tenantContextResolver.resolveRequired()).thenReturn(context);
+        when(commandService.createTpmCertificateRenewal(eq(context), eq(DEVICE_ID), any()))
+                .thenReturn(commandDto(CommandType.RENEW_TPM_CERTIFICATE));
+
+        mockMvc.perform(post("/api/v1/admin/endpoint-devices/{deviceId}/tpm-renewals", DEVICE_ID)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "idempotencyKey": "browser-renewal-001",
+                                  "reason": "scheduled certificate rotation"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.type").value("RENEW_TPM_CERTIFICATE"))
+                .andExpect(jsonPath("$.status").value("QUEUED"))
+                .andExpect(jsonPath("$.payload.enrollmentToken").doesNotExist());
+
+        verify(commandService).createTpmCertificateRenewal(eq(context), eq(DEVICE_ID), any());
+    }
+
+    @Test
+    void createTpmRenewalRejectsCallerSuppliedToken() throws Exception {
+        mockMvc.perform(post("/api/v1/admin/endpoint-devices/{deviceId}/tpm-renewals", DEVICE_ID)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "idempotencyKey": "browser-renewal-002",
+                                  "reason": "scheduled certificate rotation",
+                                  "enrollmentToken": "caller-controlled-secret"
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+
+        verify(commandService, never()).createTpmCertificateRenewal(any(), any(), any());
+    }
+
     private AdminTenantContext adminContext() {
         return new AdminTenantContext(TENANT_ID, "admin@example.com");
     }
@@ -164,12 +203,20 @@ class AdminEndpointCommandControllerTest {
     }
 
     private EndpointCommandDto commandDto(ApprovalStatus approvalStatus) {
+        return commandDto(CommandType.COLLECT_INVENTORY, approvalStatus);
+    }
+
+    private EndpointCommandDto commandDto(CommandType commandType) {
+        return commandDto(commandType, ApprovalStatus.NOT_REQUIRED);
+    }
+
+    private EndpointCommandDto commandDto(CommandType commandType, ApprovalStatus approvalStatus) {
         Instant now = Instant.parse("2026-04-28T10:00:00Z");
         return new EndpointCommandDto(
                 COMMAND_ID,
                 TENANT_ID,
                 DEVICE_ID,
-                CommandType.COLLECT_INVENTORY,
+                commandType,
                 "inventory-001",
                 CommandStatus.QUEUED,
                 approvalStatus,

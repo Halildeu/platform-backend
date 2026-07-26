@@ -23,6 +23,11 @@ public enum CommandType {
     // recognizes the command type so generic command creation can reject it
     // fail-closed until the dedicated release-catalog/trust surface lands.
     UPDATE_AGENT,
+    // Faz 22.6 #2913 — device-bound TPM/client-certificate renewal. The raw
+    // enrollment token is never stored in endpoint_commands.payload; it is
+    // delivered once through endpoint_command_secrets and this type is
+    // dedicated-path-only.
+    RENEW_TPM_CERTIFICATE,
     // #508 (Faz 22.5) — Endpoint Display Policy (screensaver + wallpaper)
     // enforcement. V58 extends endpoint_commands.command_type CHECK with this
     // value. Dedicated-path-only: the generic /commands surface rejects it

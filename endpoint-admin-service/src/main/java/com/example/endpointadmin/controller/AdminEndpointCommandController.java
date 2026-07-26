@@ -7,6 +7,7 @@ import com.example.endpointadmin.dto.v1.admin.CreateAgentUpdateRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointCommandRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateLocalPasswordChangeRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateLocalPasswordChangeResponse;
+import com.example.endpointadmin.dto.v1.admin.CreateTpmCertificateRenewalRequest;
 import com.example.endpointadmin.dto.v1.admin.EndpointCommandDto;
 import com.example.endpointadmin.security.AdminTenantContext;
 import com.example.endpointadmin.security.EndpointAdminAuthz;
@@ -44,6 +45,9 @@ public class AdminEndpointCommandController {
             "requiredDeploymentRing",
             "notBefore",
             "expiresAt");
+    private static final Set<String> CREATE_TPM_RENEWAL_ALLOWED_FIELDS = Set.of(
+            "idempotencyKey",
+            "reason");
 
     private final EndpointAdminCommandService commandService;
     private final TenantContextResolver tenantContextResolver;
@@ -81,6 +85,21 @@ public class AdminEndpointCommandController {
         AdminTenantContext context = tenantContextResolver.resolveRequired();
         CreateAgentUpdateRequest request = parseCreateAgentUpdateRequest(requestBody);
         return commandService.createAgentUpdate(context, deviceId, request);
+    }
+
+    /**
+     * Browser-managed TPM/client-certificate renewal. No enrollment token or
+     * trust field is accepted from or returned to the browser.
+     */
+    @PostMapping("/endpoint-devices/{deviceId}/tpm-renewals")
+    @RequireModule(value = EndpointAdminAuthz.MODULE, relation = EndpointAdminAuthz.MANAGER)
+    public EndpointCommandDto createTpmCertificateRenewal(
+            @PathVariable UUID deviceId,
+            @RequestBody Map<String, Object> requestBody) {
+        AdminTenantContext context = tenantContextResolver.resolveRequired();
+        CreateTpmCertificateRenewalRequest request =
+                parseCreateTpmCertificateRenewalRequest(requestBody);
+        return commandService.createTpmCertificateRenewal(context, deviceId, request);
     }
 
     /**
@@ -166,6 +185,43 @@ public class AdminEndpointCommandController {
         }
 
         Set<ConstraintViolation<CreateAgentUpdateRequest>> violations =
+                validator.validate(request);
+        if (!violations.isEmpty()) {
+            String message = violations.stream()
+                    .map(violation -> violation.getPropertyPath()
+                            + ": " + violation.getMessage())
+                    .sorted()
+                    .collect(Collectors.joining("; "));
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
+        }
+        return request;
+    }
+
+    private CreateTpmCertificateRenewalRequest parseCreateTpmCertificateRenewalRequest(
+            Map<String, Object> requestBody) {
+        if (requestBody == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "TPM renewal request body is required.");
+        }
+        Set<String> unsupported = requestBody.keySet().stream()
+                .filter(key -> !CREATE_TPM_RENEWAL_ALLOWED_FIELDS.contains(key))
+                .collect(Collectors.toCollection(java.util.TreeSet::new));
+        if (!unsupported.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "TPM renewal request contains unsupported field(s): "
+                            + String.join(", ", unsupported));
+        }
+
+        CreateTpmCertificateRenewalRequest request;
+        try {
+            request = objectMapper.convertValue(requestBody,
+                    CreateTpmCertificateRenewalRequest.class);
+        } catch (IllegalArgumentException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "TPM renewal request body could not be parsed.", ex);
+        }
+
+        Set<ConstraintViolation<CreateTpmCertificateRenewalRequest>> violations =
                 validator.validate(request);
         if (!violations.isEmpty()) {
             String message = violations.stream()

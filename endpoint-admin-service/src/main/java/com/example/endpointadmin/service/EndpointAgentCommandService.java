@@ -35,7 +35,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Service
 @ConditionalOnPrimaryEndpointPlane
@@ -47,6 +49,14 @@ public class EndpointAgentCommandService {
             CommandStatus.DELIVERED,
             CommandStatus.ACKED,
             CommandStatus.RUNNING);
+    private static final Set<String> TPM_RENEWAL_RESULT_FIELDS = Set.of(
+            "enrollmentId",
+            "certificateSha256",
+            "certificateNotAfter",
+            "renewedAt");
+    private static final Pattern SHA256_PATTERN = Pattern.compile("^[0-9a-f]{64}$");
+    private static final Pattern TPM_RENEWAL_ERROR_CODE_PATTERN =
+            Pattern.compile("^TPM_RENEWAL_[A-Z0-9_]{1,96}$");
 
     private final EndpointCommandRepository commandRepository;
     private final EndpointCommandResultRepository resultRepository;
@@ -250,6 +260,14 @@ public class EndpointAgentCommandService {
         // so neither endpoint_command_results nor the inventory
         // tables persist anything.
         Map<String, Object> effectiveDetails = request.details();
+        if (command.getCommandType() == CommandType.RENEW_TPM_CERTIFICATE) {
+            try {
+                validateTpmRenewalResult(command, request, nowForResultValidation());
+            } catch (IllegalArgumentException ex) {
+                markResultRejected(command, request, ex.getMessage());
+                throw new ResultSubmissionRejectedException(ex.getMessage());
+            }
+        }
         if (command.getCommandType() == CommandType.COLLECT_INVENTORY
                 && request.details() != null) {
             try {
@@ -687,6 +705,87 @@ public class EndpointAgentCommandService {
         }
         if (request.attemptNumber() != null && request.attemptNumber() != safeInt(command.getAttemptCount())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Command attempt number is not current.");
+        }
+    }
+
+    private void validateTpmRenewalResult(EndpointCommand command,
+                                         AgentCommandResultRequest request,
+                                         Instant now) {
+        if (request.status() == CommandResultStatus.PARTIAL) {
+            throw new IllegalArgumentException("TPM renewal does not accept PARTIAL results.");
+        }
+        if (request.status() != CommandResultStatus.SUCCEEDED) {
+            if (request.details() != null && !request.details().isEmpty()) {
+                throw new IllegalArgumentException("Failed TPM renewal result must not contain details.");
+            }
+            String errorCode = trimToNull(request.errorCode());
+            if (errorCode == null || !TPM_RENEWAL_ERROR_CODE_PATTERN.matcher(errorCode).matches()) {
+                throw new IllegalArgumentException("Failed TPM renewal result requires a bounded error code.");
+            }
+            return;
+        }
+
+        if (!"RENEW_TPM_CERTIFICATE succeeded".equals(trimToNull(request.summary()))
+                || trimToNull(request.errorCode()) != null
+                || trimToNull(request.errorMessage()) != null
+                || (request.exitCode() != null && request.exitCode() != 0)) {
+            throw new IllegalArgumentException("Successful TPM renewal result has inconsistent terminal fields.");
+        }
+        if (request.details() == null || !request.details().keySet().equals(Set.of("tpmRenewal"))) {
+            throw new IllegalArgumentException("Successful TPM renewal result requires exact tpmRenewal details.");
+        }
+        Object renewalValue = request.details().get("tpmRenewal");
+        if (!(renewalValue instanceof Map<?, ?> renewal)
+                || !renewal.keySet().equals(TPM_RENEWAL_RESULT_FIELDS)) {
+            throw new IllegalArgumentException("TPM renewal certificate evidence has an invalid shape.");
+        }
+
+        String enrollmentId = strictString(renewal.get("enrollmentId"), "enrollmentId");
+        String expectedEnrollmentId = strictString(
+                command.getPayload() == null ? null : command.getPayload().get("enrollmentId"),
+                "command enrollmentId");
+        try {
+            UUID.fromString(enrollmentId);
+        } catch (IllegalArgumentException ex) {
+            throw new IllegalArgumentException("TPM renewal enrollmentId is not a UUID.");
+        }
+        if (!expectedEnrollmentId.equals(enrollmentId)) {
+            throw new IllegalArgumentException("TPM renewal enrollmentId does not match the command.");
+        }
+
+        String certificateSha256 = strictString(
+                renewal.get("certificateSha256"), "certificateSha256");
+        if (!SHA256_PATTERN.matcher(certificateSha256).matches()) {
+            throw new IllegalArgumentException("TPM renewal certificateSha256 is invalid.");
+        }
+        Instant renewedAt = strictInstant(renewal.get("renewedAt"), "renewedAt");
+        Instant certificateNotAfter = strictInstant(
+                renewal.get("certificateNotAfter"), "certificateNotAfter");
+        if (renewedAt.isAfter(now.plus(Duration.ofMinutes(5)))
+                || certificateNotAfter.isAfter(now.plus(Duration.ofDays(397)))
+                || !certificateNotAfter.isAfter(renewedAt)
+                || !certificateNotAfter.isAfter(now)) {
+            throw new IllegalArgumentException("TPM renewal certificate timestamps are invalid.");
+        }
+    }
+
+    private Instant nowForResultValidation() {
+        return Instant.now(clock);
+    }
+
+    private static String strictString(Object value, String field) {
+        if (!(value instanceof String stringValue) || stringValue.isBlank()) {
+            throw new IllegalArgumentException("TPM renewal " + field + " is required.");
+        }
+        return stringValue.trim();
+    }
+
+    private static Instant strictInstant(Object value, String field) {
+        String stringValue = strictString(value, field);
+        try {
+            return Instant.parse(stringValue);
+        } catch (RuntimeException ex) {
+            throw new IllegalArgumentException("TPM renewal " + field + " is not an ISO-8601 instant.");
         }
     }
 

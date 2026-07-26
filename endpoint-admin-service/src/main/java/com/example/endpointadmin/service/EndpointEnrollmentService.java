@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -74,21 +75,66 @@ public class EndpointEnrollmentService {
                                                              CreateEndpointEnrollmentRequest request) {
         Instant now = Instant.now(clock);
         int ttlMinutes = resolveTtl(request == null ? null : request.expiresInMinutes());
-        String token = tokenGenerator.generate();
         EndpointDevice device = resolveRequestedDevice(context, request == null ? null : request.deviceId());
+        IssuedEnrollmentToken issued = issueEnrollment(
+                context,
+                device,
+                request == null ? null : request.note(),
+                now.plusSeconds(ttlMinutes * 60L));
 
+        return new CreateEndpointEnrollmentResponse(
+                issued.enrollmentId(),
+                issued.plainToken(),
+                issued.expiresAt(),
+                issued.deviceId()
+        );
+    }
+
+    /**
+     * Creates a short-lived, device-bound enrollment for an internal command.
+     * The caller must immediately protect {@link IssuedEnrollmentToken#plainToken}
+     * in the encrypted command-secret store in the same transaction.
+     */
+    @Transactional
+    public IssuedEnrollmentToken issueDeviceBoundEnrollment(AdminTenantContext context,
+                                                            EndpointDevice device,
+                                                            String note,
+                                                            Duration ttl) {
+        if (device == null || device.getId() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A target endpoint device is required.");
+        }
+        if (!context.tenantId().equals(device.getTenantId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Endpoint device not found.");
+        }
+        Duration effectiveTtl = ttl == null ? Duration.ofMinutes(15) : ttl;
+        if (effectiveTtl.isNegative() || effectiveTtl.isZero()
+                || effectiveTtl.compareTo(Duration.ofMinutes(maxTtlMinutes)) > 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Device-bound enrollment TTL is outside the allowed range.");
+        }
+        return issueEnrollment(context, device, note, Instant.now(clock).plus(effectiveTtl));
+    }
+
+    private IssuedEnrollmentToken issueEnrollment(AdminTenantContext context,
+                                                  EndpointDevice device,
+                                                  String note,
+                                                  Instant expiresAt) {
+        Instant now = Instant.now(clock);
+        String token = tokenGenerator.generate();
         EndpointEnrollment enrollment = new EndpointEnrollment();
         enrollment.setTenantId(context.tenantId());
         enrollment.setEnrollmentTokenHash(tokenHasher.hash(token));
         enrollment.setRequestedBySubject(context.subject());
-        enrollment.setNote(request == null ? null : request.note());
+        enrollment.setNote(note);
         enrollment.setDevice(device);
-        enrollment.setExpiresAt(now.plusSeconds(ttlMinutes * 60L));
+        enrollment.setExpiresAt(expiresAt);
         EndpointEnrollment saved = repository.saveAndFlush(enrollment);
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("enrollmentId", saved.getId().toString());
-        metadata.put("ttlMinutes", ttlMinutes);
+        metadata.put("expiresAt", saved.getExpiresAt().toString());
         if (device != null) {
             metadata.put("deviceId", device.getId().toString());
         }
@@ -102,12 +148,19 @@ public class EndpointEnrollmentService {
                 null,
                 null);
 
-        return new CreateEndpointEnrollmentResponse(
+        return new IssuedEnrollmentToken(
                 saved.getId(),
                 token,
                 saved.getExpiresAt(),
                 device == null ? null : device.getId()
         );
+    }
+
+    public record IssuedEnrollmentToken(
+            UUID enrollmentId,
+            String plainToken,
+            Instant expiresAt,
+            UUID deviceId) {
     }
 
     @Transactional(readOnly = true)

@@ -1079,6 +1079,113 @@ class EndpointAgentCommandServiceTest {
                 .hasMessageContaining("already delivered");
     }
 
+    @Test
+    void claimNextInjectsTpmTokenOnceAndAcceptsOnlyBoundedCertificateEvidence() {
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-TPM"));
+        UUID enrollmentId = UUID.randomUUID();
+        EndpointCommand saved = commandRepository.saveAndFlush(
+                tpmRenewalCommand(device, "tpm-renewal-success", enrollmentId));
+        commandSecretService.createTpmEnrollmentTokenSecret(
+                saved.getTenantId(),
+                device,
+                saved,
+                "A".repeat(43),
+                Instant.now().plusSeconds(900),
+                "admin@example.com",
+                enrollmentId,
+                "browser renewal");
+
+        AgentCommandResponse claimed = commandService.claimNext(principal(device)).orElseThrow();
+
+        assertThat(claimed.type()).isEqualTo(CommandType.RENEW_TPM_CERTIFICATE);
+        assertThat(claimed.payload())
+                .containsEntry("enrollmentToken", "A".repeat(43))
+                .containsEntry("enrollmentId", enrollmentId.toString());
+        assertThat(commandRepository.findById(saved.getId()).orElseThrow().getPayload())
+                .doesNotContainKey("enrollmentToken");
+
+        Instant renewedAt = Instant.now();
+        commandService.submitResult(
+                principal(device),
+                saved.getId(),
+                new AgentCommandResultRequest(
+                        claimed.claimId(),
+                        claimed.attemptNumber(),
+                        CommandResultStatus.SUCCEEDED,
+                        "RENEW_TPM_CERTIFICATE succeeded",
+                        Map.of("tpmRenewal", Map.of(
+                                "enrollmentId", enrollmentId.toString(),
+                                "certificateSha256", "a".repeat(64),
+                                "certificateNotAfter", renewedAt.plusSeconds(86_400).toString(),
+                                "renewedAt", renewedAt.toString())),
+                        null,
+                        null,
+                        0,
+                        renewedAt.minusSeconds(2),
+                        renewedAt));
+
+        assertThat(commandRepository.findById(saved.getId()).orElseThrow().getStatus())
+                .isEqualTo(CommandStatus.SUCCEEDED);
+        assertThat(commandSecretRepository.findByCommand_Id(saved.getId()).orElseThrow())
+                .satisfies(secret -> {
+                    assertThat(secret.getDeliveredAt()).isNotNull();
+                    assertThat(secret.getClearedAt()).isNotNull();
+                    assertThat(secret.getEncryptedSecret()).isNull();
+                });
+    }
+
+    @Test
+    void submitTpmRenewalRejectsMismatchedEnrollmentAndClearsSecret() {
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-TPM-REJECT"));
+        UUID enrollmentId = UUID.randomUUID();
+        EndpointCommand saved = commandRepository.saveAndFlush(
+                tpmRenewalCommand(device, "tpm-renewal-reject", enrollmentId));
+        commandSecretService.createTpmEnrollmentTokenSecret(
+                saved.getTenantId(),
+                device,
+                saved,
+                "B".repeat(43),
+                Instant.now().plusSeconds(900),
+                "admin@example.com",
+                enrollmentId,
+                "browser renewal");
+        AgentCommandResponse claimed = commandService.claimNext(principal(device)).orElseThrow();
+        Instant renewedAt = Instant.now();
+
+        assertThatThrownBy(() -> commandService.submitResult(
+                principal(device),
+                saved.getId(),
+                new AgentCommandResultRequest(
+                        claimed.claimId(),
+                        claimed.attemptNumber(),
+                        CommandResultStatus.SUCCEEDED,
+                        "RENEW_TPM_CERTIFICATE succeeded",
+                        Map.of("tpmRenewal", Map.of(
+                                "enrollmentId", UUID.randomUUID().toString(),
+                                "certificateSha256", "b".repeat(64),
+                                "certificateNotAfter", renewedAt.plusSeconds(86_400).toString(),
+                                "renewedAt", renewedAt.toString())),
+                        null,
+                        null,
+                        0,
+                        renewedAt.minusSeconds(2),
+                        renewedAt)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("enrollmentId does not match");
+
+        assertThat(commandRepository.findById(saved.getId()).orElseThrow())
+                .satisfies(command -> {
+                    assertThat(command.getStatus()).isEqualTo(CommandStatus.FAILED);
+                    assertThat(command.getLastError()).startsWith("RESULT_REJECTED:");
+                });
+        assertThat(resultRepository.findByCommand_Id(saved.getId())).isEmpty();
+        assertThat(commandSecretRepository.findByCommand_Id(saved.getId()).orElseThrow())
+                .satisfies(secret -> {
+                    assertThat(secret.getClearedAt()).isNotNull();
+                    assertThat(secret.getEncryptedSecret()).isNull();
+                });
+    }
+
     private DeviceCredentialResult principal(EndpointDevice device) {
         return new DeviceCredentialResult(device.getId().toString(), UUID.randomUUID().toString(), Instant.now());
     }
@@ -1276,6 +1383,22 @@ class EndpointAgentCommandServiceTest {
                 "reason", "off-network recovery",
                 "secretRef", "endpoint-command-secret:newPassword",
                 "secretName", "newPassword"));
+        command.setMaxAttempts(1);
+        return command;
+    }
+
+    private EndpointCommand tpmRenewalCommand(EndpointDevice device,
+                                              String idempotencyKey,
+                                              UUID enrollmentId) {
+        EndpointCommand command = command(device, idempotencyKey, 10);
+        command.setCommandType(CommandType.RENEW_TPM_CERTIFICATE);
+        command.setPayload(Map.of(
+                "reason", "browser renewal",
+                "enrollmentId", enrollmentId.toString(),
+                "secretRef", "endpoint-command-secret:enrollmentToken",
+                "secretName", "enrollmentToken",
+                "secretDelivery", "agent_claim_once",
+                "expiresAt", Instant.now().plusSeconds(900).toString()));
         command.setMaxAttempts(1);
         return command;
     }
