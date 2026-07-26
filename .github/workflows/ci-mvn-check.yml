@@ -367,7 +367,7 @@ jobs:
         run: ./mvnw -q -pl common-auth install -DskipTests
 
       - name: Run permission-service Testcontainers integration tests
-        run: ./mvnw -q -pl permission-service test -Pintegration-tests -Dtest='DataAccessIntegrationTest,DataAccessActivationContractTest,ImpersonationSessionIntegrationTest'
+        run: ./mvnw -pl permission-service test -Pintegration-tests -Dtest='DataAccessIntegrationTest,DataAccessActivationContractTest,ImpersonationSessionIntegrationTest'
 
   common-auth-integration-test:
     name: common-auth authorization-plane integration tests (#929)
