@@ -55,4 +55,30 @@ public class EthicsAuthorization {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Case not found.");
         }
     }
+
+    /**
+     * Records that the acting staff member has stepped away from a case (ES-203).
+     *
+     * <p>The subject is always the caller's own token — there is no parameter for <em>who</em>. A
+     * recusal able to name someone else would be a way to remove a colleague from a case they are
+     * handling, which is exactly the capability an interested party would want. Keeping the actor
+     * implicit makes that unrepresentable rather than merely forbidden.
+     *
+     * @return true when this call created the relation, false when it was already present
+     */
+    public boolean recuseSelf(StaffContext staff, UUID caseId) {
+        OpenFgaAuthzService.CheckResult existing =
+                openFga.checkNoCacheResult(staff.subject(), "recused", CASE_OBJECT, caseId.toString());
+        if (existing.allowed()) {
+            return false;
+        }
+        if (!isHealthyAbsence(existing)) {
+            // The policy engine did not answer "no such relation" — it did not answer at all.
+            // Writing an audit entry that says "recused" without having established it would put a
+            // false statement in an append-only ledger, so refuse instead of guessing.
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Case not found.");
+        }
+        openFga.writeTuple(staff.subject(), "recused", CASE_OBJECT, caseId.toString());
+        return true;
+    }
 }

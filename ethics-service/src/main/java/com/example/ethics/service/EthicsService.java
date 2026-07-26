@@ -187,6 +187,33 @@ public class EthicsService {
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."))));
     }
 
+    /**
+     * ES-203 — the acting staff member steps away from a case.
+     *
+     * <p>Ordering is deliberate: {@code requireCase} runs first, so someone who cannot already see
+     * the case gets the same 404 as for any other case. Declaring a conflict must not become a way
+     * to learn that a case exists. The narrative is never loaded on this path.
+     *
+     * <p>A repeat call is not silently absorbed — it writes its own ledger entry. A second
+     * declaration is a real event, and an append-only record that quietly drops repeats cannot
+     * answer "how many times was this attempted".
+     *
+     * <p>There is deliberately no counterpart that lifts a recusal. Reversal is an authorized action
+     * belonging to someone else; a party that could grant it to itself would make the whole
+     * declaration decorative.
+     */
+    @Transactional
+    public void declareRecusal(StaffContext staff,UUID caseId) {
+        requireCase(staff,caseId,"case_viewer");
+        boolean created=authorization.recuseSelf(staff,caseId);
+        audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,
+                created?"ethics.case.recusal.declared":"ethics.case.recusal.repeated",
+                encodeAuditPayload(Map.of(
+                        "actorHash", secrets.sha256(staff.subject()),
+                        "selfDeclared", true)),
+                Instant.now()));
+    }
+
     private MessageResponse createMessage(UUID caseId,String author,String visibility,String key,String body,UUID orgId,String actorHash,Runnable beforeCreate){
         if(key==null||key.isBlank()||key.length()>200) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Idempotency-Key is required.");
         transactionLocks.lock("message\n"+caseId+"\n"+author+"\n"+key);
