@@ -79,4 +79,61 @@ class InternalNotificationIntentControllerTest extends AbstractPostgresTest {
             .andExpect(jsonPath("$.intentId").value(intentId))
             .andExpect(jsonPath("$.status").value("ACCEPTED"));
     }
+
+    /**
+     * A rejected service-to-service intent must say which field is wrong.
+     *
+     * <p>Faz 35 notification delivery failed here for days with nothing to go
+     * on: every signal retried to exhaustion and dead-lettered carrying only
+     * "BadRequest", because this endpoint sat outside the validation advice and
+     * answered Spring's default body. A caller that cannot be told what is
+     * wrong cannot fix it, and the failure looked identical to a provider
+     * outage.
+     */
+    @Test
+    void internalSubmit_invalidPayload_surfacesTheFailingField() throws Exception {
+        String invalidJson = "{\"orgId\":\"platform-system\",\"topicKey\":\"x.y\"}";
+        mockMvc.perform(post("/api/v1/internal/notify/intents")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(invalidJson))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.error").value("validation"))
+            .andExpect(jsonPath("$.details").isArray())
+            .andExpect(jsonPath("$.details[?(@.field == 'intentId')].message",
+                    org.hamcrest.Matchers.hasItem(
+                        org.hamcrest.Matchers.containsString("intent_id required"))));
+    }
+
+    /**
+     * The exact body ethics-service builds. It was answered with an opaque 400
+     * in the live test cell; this pins the shape so the contract between the
+     * two services is asserted here rather than discovered in a dead-letter
+     * table.
+     */
+    @Test
+    void internalSubmit_ethicsServicePayloadShape_isAccepted() throws Exception {
+        String intentId = "ethics-" + UUID.randomUUID();
+        SubmitIntentRequest req = new SubmitIntentRequest(
+            intentId,
+            intentId,
+            null,
+            "00000000-0000-0000-0000-000000000003",
+            "ethics.case.activity",
+            NotificationIntent.Severity.info,
+            NotificationIntent.DataClassification.security,
+            List.of(new SubmitIntentRequest.RecipientRef(
+                SubmitIntentRequest.RecipientRef.Type.subscriber,
+                "f8a3b6f6-a984-49d1-b666-c535b11c742f", null, null, null, "tr-TR"
+            )),
+            new SubmitIntentRequest.TemplateRef("ethics.case.activity", 1, "tr-TR"),
+            List.of("in-app"),
+            Map.of(),
+            null, null, null, null, null
+        );
+
+        mockMvc.perform(post("/api/v1/internal/notify/intents")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(req)))
+            .andExpect(status().isAccepted());
+    }
 }
