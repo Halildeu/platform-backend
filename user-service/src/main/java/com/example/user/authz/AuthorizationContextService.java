@@ -12,7 +12,6 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.stereotype.Service;
-import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.ArrayList;
@@ -29,25 +28,14 @@ public class AuthorizationContextService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthorizationContextService.class);
 
-    /**
-     * permission-service authenticates every `/api/v1/**` route, and this is the header its
-     * InternalApiKeyAuthFilter reads. The revision call used to go out with no credential at all,
-     * so it was answered 401 and the failure surfaced two layers up as a 500 on `/api/v1/users` —
-     * user listing and creation were unusable cell-wide while both pods stayed green.
-     */
-    private static final String INTERNAL_API_KEY_HEADER = "X-Internal-Api-Key";
-
     private final WebClient webClient;
     private final AuthorizationContextCache cache;
-    private final String internalApiKey;
 
     public AuthorizationContextService(@Qualifier("plainWebClientBuilder") WebClient.Builder webClientBuilder,
                                        AuthorizationContextCache cache,
-                                       @Value("${permission.service.base-url:http://permission-service}") String baseUrl,
-                                       @Value("${permission.service.internal-api-key:}") String internalApiKey) {
+                                       @Value("${permission.service.base-url:http://permission-service}") String baseUrl) {
         this.webClient = webClientBuilder == null ? null : webClientBuilder.baseUrl(baseUrl).build();
         this.cache = cache;
-        this.internalApiKey = internalApiKey;
     }
 
     public AuthorizationContext buildContext(Jwt jwt, List<GrantedAuthority> authorities) {
@@ -63,7 +51,8 @@ public class AuthorizationContextService {
         // key (subject:exp:tokenHash) survived a revoke for the whole TTL, and isReusable() cached
         // exactly the decisions that grant something — the ones that must not go stale.
         String cacheKey = buildCacheKey(jwt);
-        return cache.get(cacheKey, this::fetchAuthzVersion, () -> loadContext(jwt, authorities));
+        String token = jwt.getTokenValue();
+        return cache.get(cacheKey, () -> fetchAuthzVersion(token), () -> loadContext(jwt, authorities));
     }
 
     public AuthorizationContext getCurrentUserContext() {
@@ -217,17 +206,23 @@ public class AuthorizationContextService {
      * mutation. Failure propagates deliberately: the cache turns it into "refuse to reuse a cached
      * grant" (503) instead of treating unknown as unchanged, which is exactly how a revoked grant
      * used to survive.
+     *
+     * <p><b>The call carries the caller's own bearer token, exactly like {@code /authz/me} above.</b>
+     * permission-service authenticates every {@code /api/v1/**} route, so a bare request is answered
+     * 401 — and that 401 surfaced two layers up as a 500 on {@code /api/v1/users}, leaving user
+     * listing and creation unusable cell-wide while both pods reported Ready.
+     *
+     * <p>An earlier attempt sent {@code X-Internal-Api-Key} instead. That header is read by
+     * permission-service's {@code InternalApiKeyAuthFilter}, which is {@code @Profile({"local","dev"})},
+     * matches only {@code /api/v1/internal/**}, and short-circuits entirely unless the legacy flag is
+     * on — so on this path nothing reads it. Measured against the running cell: bare → 401,
+     * {@code X-Internal-Api-Key} → 401, caller's bearer token → 200. The revision is a single global
+     * counter, so relaying the credential the request already carries widens no surface.
      */
-    private long fetchAuthzVersion() {
+    private long fetchAuthzVersion(String token) {
         Map<?, ?> body = webClient.get()
                 .uri("/api/v1/authz/version")
-                .headers(headers -> {
-                    // Sent only when configured: an empty header would be a credential claim the
-                    // filter has to reject, which is harder to read than no claim at all.
-                    if (StringUtils.hasText(internalApiKey)) {
-                        headers.set(INTERNAL_API_KEY_HEADER, internalApiKey);
-                    }
-                })
+                .headers(headers -> headers.setBearerAuth(token))
                 .retrieve()
                 .bodyToMono(Map.class)
                 .block();
