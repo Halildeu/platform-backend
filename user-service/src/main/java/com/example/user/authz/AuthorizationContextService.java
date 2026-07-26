@@ -12,6 +12,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.ArrayList;
@@ -28,14 +29,25 @@ public class AuthorizationContextService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthorizationContextService.class);
 
+    /**
+     * permission-service authenticates every `/api/v1/**` route, and this is the header its
+     * InternalApiKeyAuthFilter reads. The revision call used to go out with no credential at all,
+     * so it was answered 401 and the failure surfaced two layers up as a 500 on `/api/v1/users` —
+     * user listing and creation were unusable cell-wide while both pods stayed green.
+     */
+    private static final String INTERNAL_API_KEY_HEADER = "X-Internal-Api-Key";
+
     private final WebClient webClient;
     private final AuthorizationContextCache cache;
+    private final String internalApiKey;
 
     public AuthorizationContextService(@Qualifier("plainWebClientBuilder") WebClient.Builder webClientBuilder,
                                        AuthorizationContextCache cache,
-                                       @Value("${permission.service.base-url:http://permission-service}") String baseUrl) {
+                                       @Value("${permission.service.base-url:http://permission-service}") String baseUrl,
+                                       @Value("${permission.service.internal-api-key:}") String internalApiKey) {
         this.webClient = webClientBuilder == null ? null : webClientBuilder.baseUrl(baseUrl).build();
         this.cache = cache;
+        this.internalApiKey = internalApiKey;
     }
 
     public AuthorizationContext buildContext(Jwt jwt, List<GrantedAuthority> authorities) {
@@ -209,6 +221,13 @@ public class AuthorizationContextService {
     private long fetchAuthzVersion() {
         Map<?, ?> body = webClient.get()
                 .uri("/api/v1/authz/version")
+                .headers(headers -> {
+                    // Sent only when configured: an empty header would be a credential claim the
+                    // filter has to reject, which is harder to read than no claim at all.
+                    if (StringUtils.hasText(internalApiKey)) {
+                        headers.set(INTERNAL_API_KEY_HEADER, internalApiKey);
+                    }
+                })
                 .retrieve()
                 .bodyToMono(Map.class)
                 .block();

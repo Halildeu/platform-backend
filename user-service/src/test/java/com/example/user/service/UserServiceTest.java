@@ -647,7 +647,7 @@ class FakeAuthzService extends AuthorizationContextService {
     private AuthorizationContext ctx = AuthorizationContext.of(null, null, java.util.Set.of(), java.util.Set.of());
 
     FakeAuthzService() {
-        super(null, null, "");
+        super(null, null, "", "");
     }
 
     void setCtx(AuthorizationContext ctx) {

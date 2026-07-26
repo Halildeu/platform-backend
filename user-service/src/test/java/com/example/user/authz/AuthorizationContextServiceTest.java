@@ -60,10 +60,60 @@ class AuthorizationContextServiceTest {
     }
 
     private static AuthorizationContextService service(ExchangeFunction exchange) {
+        return service(exchange, "");
+    }
+
+    private static AuthorizationContextService service(ExchangeFunction exchange, String internalApiKey) {
         return new AuthorizationContextService(
                 WebClient.builder().exchangeFunction(exchange),
                 new AuthorizationContextCache(Duration.ofMinutes(1)),
-                "http://permission-service");
+                "http://permission-service",
+                internalApiKey);
+    }
+
+    /**
+     * permission-service authenticates `/api/v1/**`, so a revision call without a credential is
+     * answered 401 — and user-service reports that two layers up as an opaque 500 on
+     * `/api/v1/users`, which is how listing and creating users broke cell-wide while every pod
+     * stayed green. The header is the contract; this test is what keeps it from being dropped again.
+     */
+    @Test
+    void authz_version_call_should_carry_the_internal_api_key_header() {
+        java.util.concurrent.atomic.AtomicReference<String> seen = new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger authzMeCalls = new AtomicInteger();
+        ExchangeFunction exchange = request -> {
+            if (request.url().getPath().endsWith("/api/v1/authz/version")) {
+                seen.set(request.headers().getFirst("X-Internal-Api-Key"));
+                return Mono.just(json("{\"authzVersion\":1}"));
+            }
+            authzMeCalls.incrementAndGet();
+            return Mono.just(json("{\"userId\":\"1\",\"permissions\":[],\"allowedScopes\":[]}"));
+        };
+
+        service(exchange, "test-internal-key").buildContext(jwt(), java.util.List.of());
+
+        org.assertj.core.api.Assertions.assertThat(seen.get()).isEqualTo("test-internal-key");
+    }
+
+    /**
+     * An empty credential is not a weaker credential — it is a claim the filter must reject. When
+     * nothing is configured the call goes out unauthenticated rather than carrying a blank header,
+     * so the failure names the real cause instead of looking like a bad key.
+     */
+    @Test
+    void authz_version_call_should_omit_the_header_when_no_key_is_configured() {
+        java.util.concurrent.atomic.AtomicReference<Boolean> present = new java.util.concurrent.atomic.AtomicReference<>(null);
+        ExchangeFunction exchange = request -> {
+            if (request.url().getPath().endsWith("/api/v1/authz/version")) {
+                present.set(request.headers().containsKey("X-Internal-Api-Key"));
+                return Mono.just(json("{\"authzVersion\":1}"));
+            }
+            return Mono.just(json("{\"userId\":\"1\",\"permissions\":[],\"allowedScopes\":[]}"));
+        };
+
+        service(exchange, "").buildContext(jwt(), java.util.List.of());
+
+        org.assertj.core.api.Assertions.assertThat(present.get()).isFalse();
     }
 
     @Test
