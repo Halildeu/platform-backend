@@ -88,6 +88,71 @@ class EthicsAuthorizationTest {
         assertThat(authorization.can(staff, "case_viewer", caseId)).isTrue();
     }
 
+    /**
+     * ES-203. A recusal is written once and reported as created; a repeat reports "already there"
+     * without writing again. The caller distinguishes the two so the ledger can record a repeat
+     * attempt as its own event rather than losing it.
+     */
+    @Test
+    void selfRecusalIsWrittenOnceAndThenReportedAsAlreadyPresent() {
+        UUID caseId = UUID.randomUUID();
+        when(openFga.checkNoCacheResult(
+                staff.subject(), "recused", EthicsAuthorization.CASE_OBJECT, caseId.toString()))
+                .thenReturn(result(false, "no_relation"));
+
+        assertThat(authorization.recuseSelf(staff, caseId)).isTrue();
+        verify(openFga).writeTuple(
+                staff.subject(), "recused", EthicsAuthorization.CASE_OBJECT, caseId.toString());
+
+        reset(openFga);
+        when(openFga.checkNoCacheResult(
+                staff.subject(), "recused", EthicsAuthorization.CASE_OBJECT, caseId.toString()))
+                .thenReturn(result(true, "granted"));
+
+        assertThat(authorization.recuseSelf(staff, caseId)).isFalse();
+        verify(openFga, never()).writeTuple(anyString(), anyString(), anyString(), anyString());
+    }
+
+    /**
+     * The recusal is always the caller's own: {@code recuseSelf} takes no subject, so the tuple it
+     * writes can only ever name the token's own principal. This pins that property against a future
+     * signature change that would let one person recuse another — which would be a way to remove a
+     * colleague from a case they are handling.
+     */
+    @Test
+    void selfRecusalCanOnlyEverNameTheCallersOwnPrincipal() {
+        UUID caseId = UUID.randomUUID();
+        when(openFga.checkNoCacheResult(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(result(false, "no_relation"));
+
+        authorization.recuseSelf(staff, caseId);
+
+        org.mockito.ArgumentCaptor<String> subject = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(openFga).writeTuple(
+                subject.capture(), eq("recused"),
+                eq(EthicsAuthorization.CASE_OBJECT), eq(caseId.toString()));
+        assertThat(subject.getValue()).isEqualTo(staff.subject());
+    }
+
+    /**
+     * An unreadable policy engine must not produce a recusal that was never written. Reporting one
+     * would put a false statement into an append-only ledger — the one place a wrong entry cannot
+     * be taken back.
+     */
+    @Test
+    void selfRecusalRefusesWhenThePolicyEngineDidNotAnswer() {
+        UUID caseId = UUID.randomUUID();
+        when(openFga.checkNoCacheResult(
+                staff.subject(), "recused", EthicsAuthorization.CASE_OBJECT, caseId.toString()))
+                .thenReturn(result(false, "unavailable"));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> authorization.recuseSelf(staff, caseId))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .extracting(e -> ((org.springframework.web.server.ResponseStatusException) e).getStatusCode())
+                .isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
+        verify(openFga, never()).writeTuple(anyString(), anyString(), anyString(), anyString());
+    }
+
     private void grantProduct(String relation) {
         when(openFga.checkNoCacheResult(
                 staff.subject(), relation, EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))

@@ -20,6 +20,15 @@ public class StaffEthicsController {
     @PatchMapping("/{id}") ResponseEntity<CaseSummary> update(@PathVariable UUID id,@RequestHeader("If-Match") String ifMatch,@Valid @RequestBody UpdateCaseRequest body){CaseSummary value=service.updateCase(context.required(),id,ifMatch,body);return ResponseEntity.ok().eTag("\""+value.version()+"\"").body(value);}
     @PostMapping("/{id}/messages") ResponseEntity<MessageResponse> reply(@PathVariable UUID id,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody MessageRequest body){return ResponseEntity.status(HttpStatus.CREATED).body(service.staffReply(context.required(),id,key,body,false));}
     @PostMapping("/{id}/internal-notes") ResponseEntity<MessageResponse> note(@PathVariable UUID id,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody MessageRequest body){return ResponseEntity.status(HttpStatus.CREATED).body(service.staffReply(context.required(),id,key,body,true));}
+    /**
+     * ES-203 — step away from a case. The body is empty on purpose: the actor is the token, so
+     * there is no field through which one person could recuse another.
+     */
+    @PostMapping("/{id}/recusal")
+    ResponseEntity<Void> recuse(@PathVariable UUID id){
+        service.declareRecusal(context.required(),id);
+        return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
+    }
     @GetMapping("/{id}/attachments")
     ResponseEntity<List<StaffEvidenceResponse>> attachments(@PathVariable UUID id){
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
