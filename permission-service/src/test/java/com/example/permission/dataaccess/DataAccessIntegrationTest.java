@@ -5,6 +5,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -97,7 +98,20 @@ class DataAccessIntegrationTest {
 
     @TestConfiguration(proxyBeanMethods = false)
     static class IntegrationFlywayConfig {
-        @Bean(initMethod = "migrate")
+        // Deliberately NOT initMethod = "migrate". Spring Boot makes the
+        // EntityManagerFactory depend on Flyway, so a bean-init migrate() runs BEFORE
+        // Hibernate -- and this persistence unit uses ddl-auto: create-drop, which then
+        // recreates the tables and takes the CHECK constraints and the
+        // scope_validate_before_write trigger with them. flyway_schema_history still
+        // reported every version as applied, so the guards looked present while nothing
+        // enforced them: exactly the 4 failures in #931, and only the guard-dependent
+        // ones. Reversing the order with @DependsOn is impossible (circular).
+        //
+        // Hibernate is the canonical owner of this schema -- no migration anywhere in
+        // the repo CREATEs data_access.* -- so the guards must be layered on after it
+        // has built the tables. migrate() is invoked from @BeforeEach below, once the
+        // context (Hibernate included) is fully initialized.
+        @Bean
         public Flyway reportsDbFlyway(@Qualifier("reportsDbDataSource") DataSource ds) {
             return Flyway.configure()
                     .dataSource(ds)
@@ -105,6 +119,19 @@ class DataAccessIntegrationTest {
                     .baselineOnMigrate(true)
                     .load();
         }
+    }
+
+    @Autowired
+    private Flyway reportsDbFlyway;
+
+    /**
+     * Applies the reports-DB guard migrations after Hibernate has created the schema.
+     * Flyway skips versions already in its history, so repeated calls are cheap; the
+     * schema itself is built once per context by ddl-auto: create-drop.
+     */
+    @BeforeEach
+    void applyReportsDbGuards() {
+        reportsDbFlyway.migrate();
     }
 
     @Autowired
