@@ -87,18 +87,23 @@ class TranscriptAssociationMigrationIntegrationTest {
                             + "AND source_session_id = 'SES-legacy' AND source_chunk_seq = 5",
                     tenant, meeting)).isEqualTo("5:5:5");
 
-            // V6 keys replay by tenant + meeting + source session + window.
+            // V12 keys replay by tenant + meeting + source session + chunk range.
             // Reusing an external recorder/window in another meeting is legal.
             insertWindowSegment(
                     connection, tenant, UUID.randomUUID(), "SES-legacy", 5L, 5L, 5L);
+            // The producer restarts its window counter inside a session (live
+            // evidence 2026-07-26), so a repeated window number carrying new
+            // audio must be accepted — under V6 it was rejected and the window
+            // was lost.
+            insertWindowSegment(
+                    connection, tenant, meeting, "SES-legacy", 5L, 20L, 22L);
+            // The audio itself is the identity: the same chunk range twice is a
+            // genuine replay and stays rejected — even under a different number.
             assertThatThrownBy(() -> insertWindowSegment(
-                    connection, tenant, meeting, "SES-legacy", 5L, 6L, 6L))
+                    connection, tenant, meeting, "SES-legacy", 8L, 20L, 22L))
                     .isInstanceOf(SQLException.class)
                     .satisfies(error -> assertThat(((SQLException) error).getSQLState())
                             .isEqualTo("23505"));
-            // lastChunkSeq is no longer the idempotency key.
-            insertWindowSegment(
-                    connection, tenant, meeting, "SES-legacy", 8L, 5L, 5L);
 
             assertThatThrownBy(() -> insertWindowSegment(
                     connection, tenant, meeting, "SES-invalid-range", 9L, 8L, 7L))
@@ -121,10 +126,15 @@ class TranscriptAssociationMigrationIntegrationTest {
                             + "WHERE table_schema = ? AND table_name = 'transcript_event_outbox' "
                             + "AND column_name = 'payload'",
                     SCHEMA)).isEqualTo("text");
+            // V12 replaced the window-counter index with the chunk-range one.
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM pg_indexes WHERE schemaname = ? "
+                            + "AND indexname = 'ux_transcript_segments_direct_stt_chunk_window'",
+                    SCHEMA)).isEqualTo(1L);
             assertThat(singleLong(connection,
                     "SELECT count(*) FROM pg_indexes WHERE schemaname = ? "
                             + "AND indexname = 'ux_transcript_segments_direct_stt_window'",
-                    SCHEMA)).isEqualTo(1L);
+                    SCHEMA)).isEqualTo(0L);
             assertThat(singleLong(connection,
                     "SELECT count(*) FROM information_schema.tables "
                             + "WHERE table_schema = ? "
