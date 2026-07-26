@@ -30,6 +30,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -77,6 +78,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         EnrollmentTokenHasher.class
 })
 class EndpointDeviceDecommissionedWriteGuardPostgresIntegrationTest {
+
+    @MockitoBean
+    private EndpointEnrollmentService enrollmentService;
 
     @Container
     @SuppressWarnings("resource")
