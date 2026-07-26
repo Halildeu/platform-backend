@@ -76,7 +76,11 @@ ethics:
     token-permissions: ${ETHICS_NOTIFICATION_TOKEN_PERMISSIONS:notify:intents:system}
     recipient-subscriber-id: ${ETHICS_NOTIFICATION_RECIPIENT_SUBSCRIBER_ID:}
     locale: ${ETHICS_NOTIFICATION_LOCALE:tr-TR}
-    channel: ${ETHICS_NOTIFICATION_CHANNEL:inapp}
+    # The orchestrator's channel allow-set spells this `in-app`. `inapp` was
+    # rejected at the submit gate with an opaque 400, so every Faz 35 signal
+    # retried to exhaustion and dead-lettered while both services looked
+    # healthy. One hyphen, the whole delivery path.
+    channel: ${ETHICS_NOTIFICATION_CHANNEL:in-app}
     http-timeout: ${ETHICS_NOTIFICATION_HTTP_TIMEOUT:3s}
   evidence:
     # Fail-closed baseline: public text intake and mailbox remain usable while

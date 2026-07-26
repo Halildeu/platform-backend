@@ -1,5 +1,6 @@
 package com.serban.notify.exception;
 
+import com.serban.notify.api.InternalNotificationIntentController;
 import com.serban.notify.api.NotificationIntentController;
 import java.util.ArrayList;
 import java.util.List;
@@ -21,6 +22,16 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * smoke runs can diagnose payload issues without having to enable
  * {@code server.error.include-message=always} (which exposes Spring's
  * internal exception messages on every other 4xx path too).
+ *
+ * <h4>Why the internal endpoint is included</h4>
+ *
+ * <p>{@code InternalNotificationIntentController} takes the same
+ * {@code @Valid @RequestBody SubmitIntentRequest}, but was left outside this
+ * advice — so a rejected service-to-service intent answered Spring's default
+ * body, carrying no field name at all. Faz 35 delivery failed exactly there:
+ * every signal retried to exhaustion and dead-lettered with nothing but
+ * "BadRequest" recorded, and the failing field could not be identified from
+ * either side. A caller that cannot be told what is wrong cannot fix it.
  *
  * <h4>Scope (narrowed twice, per Codex 019e806a iter-1+iter-2)</h4>
  *
@@ -76,7 +87,10 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * Codex strategic precursor thread: {@code 019e5a75} (BL-010 KC org_id
  * mapper); post-impl review thread: {@code 019e806a}.
  */
-@RestControllerAdvice(assignableTypes = NotificationIntentController.class)
+@RestControllerAdvice(assignableTypes = {
+    NotificationIntentController.class,
+    InternalNotificationIntentController.class
+})
 @Order(Ordered.LOWEST_PRECEDENCE)
 public class MethodArgumentNotValidAdvice {
 
