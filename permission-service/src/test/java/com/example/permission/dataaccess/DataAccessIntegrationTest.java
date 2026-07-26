@@ -5,6 +5,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -12,6 +13,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -97,7 +100,20 @@ class DataAccessIntegrationTest {
 
     @TestConfiguration(proxyBeanMethods = false)
     static class IntegrationFlywayConfig {
-        @Bean(initMethod = "migrate")
+        // Deliberately NOT initMethod = "migrate". Spring Boot makes the
+        // EntityManagerFactory depend on Flyway, so a bean-init migrate() runs BEFORE
+        // Hibernate -- and this persistence unit uses ddl-auto: create-drop, which then
+        // recreates the tables and takes the CHECK constraints and the
+        // scope_validate_before_write trigger with them. flyway_schema_history still
+        // reported every version as applied, so the guards looked present while nothing
+        // enforced them: exactly the 4 failures in #931, and only the guard-dependent
+        // ones. Reversing the order with @DependsOn is impossible (circular).
+        //
+        // Hibernate is the canonical owner of this schema -- no migration anywhere in
+        // the repo CREATEs data_access.* -- so the guards must be layered on after it
+        // has built the tables. migrate() is invoked from @BeforeEach below, once the
+        // context (Hibernate included) is fully initialized.
+        @Bean
         public Flyway reportsDbFlyway(@Qualifier("reportsDbDataSource") DataSource ds) {
             return Flyway.configure()
                     .dataSource(ds)
@@ -105,6 +121,32 @@ class DataAccessIntegrationTest {
                     .baselineOnMigrate(true)
                     .load();
         }
+    }
+
+    /**
+     * The native INSERT below needs a transaction: EntityManager.executeUpdate outside one
+     * throws TransactionRequiredException before the trigger is ever reached, which is what
+     * this test hit (#931). The service path gets its transaction from saveAndFlush; a raw
+     * native write has to supply its own.
+     */
+    private TransactionTemplate reportsDbTx;
+
+    @Autowired
+    void initReportsDbTx(@Qualifier("reportsDbTransactionManager") PlatformTransactionManager tm) {
+        this.reportsDbTx = new TransactionTemplate(tm);
+    }
+
+    @Autowired
+    private Flyway reportsDbFlyway;
+
+    /**
+     * Applies the reports-DB guard migrations after Hibernate has created the schema.
+     * Flyway skips versions already in its history, so repeated calls are cheap; the
+     * schema itself is built once per context by ddl-auto: create-drop.
+     */
+    @BeforeEach
+    void applyReportsDbGuards() {
+        reportsDbFlyway.migrate();
     }
 
     @Autowired
@@ -166,7 +208,7 @@ class DataAccessIntegrationTest {
         // → tenant predicate finds zero rows → P0001 from validate_scope_ref().
         assertThatThrownBy(() -> service.grant(
                         user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"99\"]", null))
-                .isInstanceOf(AccessScopeException.ScopeValidationException.class);
+                .isInstanceOf(AccessScopeException.ScopeReferenceInvalidException.class);
 
         assertThat(outboxRepository.count())
                 .as("V19/V21 trigger fail must roll back both scope INSERT and outbox INSERT")
@@ -350,13 +392,13 @@ class DataAccessIntegrationTest {
         // hasStackTraceContaining walks the full cause chain — accept either
         // the trigger's P0001 rejection (validate_scope_ref / scope_validate_trg)
         // or the CHECK constraint name as the rejection signal.
-        assertThatThrownBy(() -> reportsDbEm.createNativeQuery(
+        assertThatThrownBy(() -> reportsDbTx.execute(st -> reportsDbEm.createNativeQuery(
                 "INSERT INTO data_access.scope " +
                 "  (user_id, org_id, scope_kind, scope_source_schema, scope_source_table, scope_ref) " +
                 "VALUES (?, ?, 'company', 'workcube_mikrolink', 'COMPANY', '[\"1\"]')")
                 .setParameter(1, user)
                 .setParameter(2, ACIK_ORG_ID)
-                .executeUpdate())
+                .executeUpdate()))
                 .as("V25 must reject legacy company/COMPANY pair (trigger-first or CHECK-fallback)")
                 .hasStackTraceContaining("scope_validate_trg");
     }
@@ -376,8 +418,14 @@ class DataAccessIntegrationTest {
         // count(*)=0 → trigger raises P0001.
         assertThatThrownBy(() -> service.grant(
                         user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"99\"]", null))
-                .isInstanceOf(AccessScopeException.ScopeValidationException.class)
-                .hasMessageContaining("lineage guard");
+                .isInstanceOf(AccessScopeException.ScopeReferenceInvalidException.class)
+                // The message must name the rejected value and the tenant anchor it was
+                // checked against -- that diagnostic detail is the point of #2555 Slice B
+                // ("the admin needs to see which field is wrong, not a generic 500").
+                // "lineage guard" was ScopeValidationException's older, coarser wording.
+                .hasMessageContaining("[\"99\"]")
+                .hasMessageContaining("source_table=OUR_COMPANY")
+                .hasMessageContaining("org_id=" + ACIK_ORG_ID);
     }
 
     /**

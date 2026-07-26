@@ -17,7 +17,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import com.example.commonauth.openfga.OpenFgaAuthzService;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -77,6 +79,20 @@ class ImpersonationSessionIntegrationTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
     }
+
+    /**
+     * WebMvcConfig takes OpenFgaAuthzService in its constructor, and this profile
+     * starts no OpenFGA plane, so without a stub the whole ApplicationContext fails
+     * to load and none of the cases below get to assert anything. That is exactly
+     * what happened once the tests started running again (#931): 7 errors, all of
+     * them this one bean.
+     *
+     * A stub rather than a container: this class validates the V19 schema and
+     * impersonation-session persistence, not authorization. Standing up OpenFGA here
+     * would widen the scope and slow the suite without testing anything more.
+     */
+    @MockitoBean
+    private OpenFgaAuthzService authzService;
 
     @Autowired
     private ImpersonationSessionService sessionService;
