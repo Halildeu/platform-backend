@@ -12,6 +12,7 @@ import com.example.transcript.service.SessionErasureFence;
 import com.example.transcript.service.SessionErasureFence.UUIDScope;
 import com.example.transcript.service.SourceWindowRetentionFence;
 import java.time.Clock;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -20,6 +21,8 @@ import org.springframework.transaction.annotation.Transactional;
 /** Canonical, association-locked Direct-STT segment write path. */
 @Service
 public class DirectSttTranscriptIngestionService {
+
+    private static final String SHA256_PREFIX = "sha256:";
 
     private final TranscriptSegmentRepository segments;
     private final TranscriptSessionAssociationRepository associations;
@@ -64,9 +67,12 @@ public class DirectSttTranscriptIngestionService {
             throw new SessionAssociationNotResolvedException();
         }
 
-        TranscriptSegment segment = segments.findDirectSttSourceWindow(
+        // Identity is the audio the window represents, not the producer's window
+        // counter — the counter restarts inside a session (live evidence
+        // 2026-07-26) and made unrelated windows collide.
+        TranscriptSegment segment = segments.findDirectSttSourceChunkWindow(
                         event.tenantId(), event.meetingId(),
-                        event.sourceSessionId(), event.windowSeq())
+                        event.sourceSessionId(), event.firstChunkSeq(), event.lastChunkSeq())
                 .orElse(null);
         if (segment != null) {
             if (!event.meetingId().equals(segment.getMeetingId())
@@ -115,14 +121,38 @@ public class DirectSttTranscriptIngestionService {
         return DirectSttTranscriptResultEvent.SOURCE_SYSTEM.equals(segment.getSourceSystem())
                 && event.tenantId().equals(segment.getTenantId())
                 && event.sourceSessionId().equals(segment.getSourceSessionId())
-                && Objects.equals(segment.getSourceWindowSeq(), event.windowSeq())
+                // sourceWindowSeq is deliberately absent: the producer may label
+                // the same audio with a different counter value after a restart.
+                // That is not a content difference, and treating it as one would
+                // discard the window all over again.
                 && Objects.equals(segment.getSourceFirstChunkSeq(), event.firstChunkSeq())
                 && Objects.equals(segment.getSourceLastChunkSeq(), event.lastChunkSeq())
                 && Objects.equals(segment.getSourceChunkSeq(), event.lastChunkSeq())
                 && Objects.equals(segment.getStartTime(), startSeconds)
                 && Objects.equals(segment.getEndTime(), endSeconds)
                 && Objects.equals(segment.getTextDraft(), event.textDraft())
-                && Objects.equals(segment.getSourceSha256(), event.sha256());
+                && Objects.equals(
+                        normalizeSha256(segment.getSourceSha256()), normalizeSha256(event.sha256()));
+    }
+
+    /**
+     * Digest comparison must not depend on the producer's spelling.
+     *
+     * <p>Stored rows carry both {@code sha256:<hex>} and bare {@code <hex>}
+     * (live evidence 2026-07-26: window 69 prefixed, window 76 bare). Comparing
+     * the raw strings made every re-delivery of a prefixed row look like
+     * different content, so an ordinary retry was classified as a replay
+     * conflict and dropped.
+     */
+    static String normalizeSha256(String digest) {
+        if (digest == null) {
+            return null;
+        }
+        String trimmed = digest.trim();
+        String bare = trimmed.regionMatches(true, 0, SHA256_PREFIX, 0, SHA256_PREFIX.length())
+                ? trimmed.substring(SHA256_PREFIX.length())
+                : trimmed;
+        return bare.toLowerCase(Locale.ROOT);
     }
 
     private double durationSeconds(DirectSttTranscriptResultEvent event) {

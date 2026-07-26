@@ -224,7 +224,7 @@ class TranscriptSegmentPostgresIntegrationTest {
     }
 
     @Test
-    void directSttSourceWindowUniqueIndex_rejectsDuplicateWindowButNotDuplicateLastChunk() {
+    void directSttChunkWindowUniqueIndex_rejectsDuplicateAudioButNotRepeatedWindowNumber() {
         UUID org = UUID.randomUUID();
         UUID meeting = UUID.randomUUID();
         Timestamp now = Timestamp.from(Instant.parse("2026-06-25T10:00:00Z"));
@@ -242,8 +242,9 @@ class TranscriptSegmentPostgresIntegrationTest {
                         + " source_system, source_session_id, source_chunk_seq, source_window_seq, "
                         + " source_first_chunk_seq, source_last_chunk_seq, "
                         + " created_at, updated_at, version) "
+                        // Producer restarted its counter: window 2 again, new audio.
                         + "VALUES (?, ?, ?, ?, 2.0, 3.0, 'next window', 'DRAFT', "
-                        + " 'DIRECT_STT', 'SES-abc', 5, 3, 5, 5, ?, ?, 0)",
+                        + " 'DIRECT_STT', 'SES-abc', 8, 2, 6, 8, ?, ?, 0)",
                 UUID.randomUUID(), org, org, meeting, now, now);
 
         assertThat(jdbc.queryForObject(
@@ -258,12 +259,13 @@ class TranscriptSegmentPostgresIntegrationTest {
                         + " source_system, source_session_id, source_chunk_seq, source_window_seq, "
                         + " source_first_chunk_seq, source_last_chunk_seq, "
                         + " created_at, updated_at, version) "
+                        // Same audio (chunks 3-5) relabelled: a genuine replay.
                         + "VALUES (?, ?, ?, ?, 1.0, 2.0, 'duplicate', 'DRAFT', "
-                        + " 'DIRECT_STT', 'SES-abc', 6, 2, 6, 6, ?, ?, 0)",
+                        + " 'DIRECT_STT', 'SES-abc', 5, 9, 3, 5, ?, ?, 0)",
                 UUID.randomUUID(), org, org, meeting, now, now))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .satisfies(t -> assertThat(rootSqlState(t))
-                        .as("duplicate direct-STT source window must be unique_violation")
+                        .as("duplicate direct-STT audio window must be unique_violation")
                         .isEqualTo("23505"));
     }
 
