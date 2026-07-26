@@ -33,8 +33,18 @@ public class NotificationDeadLetterService {
     private final NotificationOutboxRepository outbox;
     private final Clock clock;
 
-    public NotificationDeadLetterService(
-            NotificationOutboxRepository outbox, Clock clock) {
+    @org.springframework.beans.factory.annotation.Autowired
+    public NotificationDeadLetterService(NotificationOutboxRepository outbox) {
+        this(outbox, Clock.systemUTC());
+    }
+
+    /**
+     * Time is injected only so a test can pin it. Deliberately not a Spring
+     * bean: ethics-service defines no {@link Clock} anywhere, and adding one
+     * for this service alone would make every existing test context fail to
+     * load for a dependency none of them asked for.
+     */
+    NotificationDeadLetterService(NotificationOutboxRepository outbox, Clock clock) {
         this.outbox = outbox;
         this.clock = clock;
     }
