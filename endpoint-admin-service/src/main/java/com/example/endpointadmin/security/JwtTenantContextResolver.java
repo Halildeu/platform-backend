@@ -33,6 +33,16 @@ public class JwtTenantContextResolver implements TenantContextResolver {
             "companyUuid"
     );
     private static final List<String> COMPANY_ID_CLAIMS = List.of("companyId", "company_id");
+    /**
+     * Product-scoped tenant assignment for multi-org platform operators.
+     *
+     * <p>The claim is emitted only for explicitly assigned users by the trusted Keycloak issuer.
+     * Unlike {@code org_id}, it is consumed only by endpoint-admin-service, so granting access to
+     * the shared endpoint-management tenant does not move the user's identity into another company
+     * for ATS, meetings or other products.
+     */
+    private static final List<String> ENDPOINT_ADMIN_TENANT_CLAIMS =
+            List.of("endpoint_admin_tenant_id");
     private static final String COMPANY_TENANT_PREFIX = "company:";
 
     private final UUID localDefaultTenantId;
@@ -142,6 +152,8 @@ public class JwtTenantContextResolver implements TenantContextResolver {
     }
 
     private UUID resolveTenantId(Jwt jwt) {
+        UUID endpointAdminTenant = resolveUuidAliases(
+                jwt, ENDPOINT_ADMIN_TENANT_CLAIMS, true);
         UUID canonicalOrg = resolveUuidAliases(jwt, CANONICAL_ORG_CLAIMS, true);
         boolean canonicalTransition = canonicalOrg != null && !enforceClaimConsistency;
         UUID compatibilityTenant = resolveUuidAliases(jwt, COMPAT_TENANT_CLAIMS, !canonicalTransition);
@@ -150,7 +162,18 @@ public class JwtTenantContextResolver implements TenantContextResolver {
         if (canonicalOrg != null) {
             mergeTenantClaims(canonicalOrg, compatibilityTenant, enforceClaimConsistency);
             mergeTenantClaims(canonicalOrg, companyTenant, enforceClaimConsistency);
+            if (endpointAdminTenant != null) {
+                // This is an intentional product-scoped assignment, not a generic org alias.
+                // Require a canonical org claim first so a legacy tenant-only token cannot use
+                // the endpoint-specific claim as an identity bootstrap.
+                return endpointAdminTenant;
+            }
             return aliasFor(canonicalOrg);
+        }
+        if (endpointAdminTenant != null) {
+            throw new ResponseStatusException(
+                    UNAUTHORIZED,
+                    "Endpoint Admin tenant assignment requires a canonical organization claim.");
         }
         // Deliberately NOT aliased: without a canonical org claim the token has not proven which org
         // it speaks for, and a tenant/company-derived value is exactly the legacy path. Aliasing it

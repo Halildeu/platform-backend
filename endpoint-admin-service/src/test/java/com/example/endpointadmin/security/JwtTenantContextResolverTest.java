@@ -164,6 +164,67 @@ class JwtTenantContextResolverTest {
                 .hasMessageContaining("401 UNAUTHORIZED");
     }
 
+    @Test
+    void endpointAdminTenantAssignmentOverridesOnlyThisProductsTenantContext() {
+        UUID endpointAdminTenant = UUID.fromString(
+                "00000000-0000-0000-0000-000000000001");
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("platform-operator")
+                .claim("org_id", UUID_TENANT.toString())
+                .claim("endpoint_admin_tenant_id", endpointAdminTenant.toString())
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(
+                jwt,
+                List.of(new SimpleGrantedAuthority("SCOPE_endpoint-admin"))));
+
+        AdminTenantContext context =
+                new JwtTenantContextResolver("", true, "", new MockEnvironment())
+                        .resolveRequired();
+
+        assertThat(context.tenantId()).isEqualTo(endpointAdminTenant);
+        assertThat(context.subject()).isEqualTo("platform-operator");
+    }
+
+    @Test
+    void endpointAdminTenantAssignmentRequiresCanonicalOrganizationIdentity() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("platform-operator")
+                .claim("tenantId", "1")
+                .claim("endpoint_admin_tenant_id", UUID_TENANT.toString())
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(
+                jwt,
+                List.of(new SimpleGrantedAuthority("SCOPE_endpoint-admin"))));
+
+        assertThatThrownBy(() ->
+                new JwtTenantContextResolver("", true, "", new MockEnvironment())
+                        .resolveRequired())
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("401 UNAUTHORIZED")
+                .hasMessageContaining("canonical organization");
+    }
+
+    @Test
+    void malformedEndpointAdminTenantAssignmentIsRejectedFailClosed() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("platform-operator")
+                .claim("org_id", UUID_TENANT.toString())
+                .claim("endpoint_admin_tenant_id", "not-a-tenant")
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(
+                jwt,
+                List.of(new SimpleGrantedAuthority("SCOPE_endpoint-admin"))));
+
+        assertThatThrownBy(() ->
+                new JwtTenantContextResolver("", true, "", new MockEnvironment())
+                        .resolveRequired())
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("401 UNAUTHORIZED");
+    }
+
     private static UUID companyTenant(String companyId) {
         return UUID.nameUUIDFromBytes(("company:" + companyId).getBytes(StandardCharsets.UTF_8));
     }
