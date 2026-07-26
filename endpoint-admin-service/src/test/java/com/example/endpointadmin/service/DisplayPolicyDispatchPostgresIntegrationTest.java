@@ -22,6 +22,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -71,6 +72,9 @@ class DisplayPolicyDispatchPostgresIntegrationTest {
 
     private static final String PROPOSER = "alice@example.com";
     private static final String APPROVER = "bob@example.com";
+
+    @MockitoBean
+    private EndpointEnrollmentService enrollmentService;
 
     @Container
     @SuppressWarnings("resource")

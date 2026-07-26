@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
@@ -47,6 +48,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class EndpointAdminCommandServiceTest {
 
     private static final UUID TENANT_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+
+    @MockitoBean
+    private EndpointEnrollmentService enrollmentService;
 
     @Autowired
     private EndpointAdminCommandService commandService;

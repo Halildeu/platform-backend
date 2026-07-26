@@ -28,6 +28,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
@@ -62,6 +63,9 @@ class EndpointAdminCommandDualControlTest {
     private static final UUID TENANT_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final String ISSUER = "issuer@example.com";
     private static final String APPROVER = "approver@example.com";
+
+    @MockitoBean
+    private EndpointEnrollmentService enrollmentService;
 
     @Autowired
     private EndpointAdminCommandService commandService;

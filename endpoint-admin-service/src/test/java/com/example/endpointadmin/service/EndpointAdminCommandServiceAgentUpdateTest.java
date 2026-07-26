@@ -75,6 +75,7 @@ class EndpointAdminCommandServiceAgentUpdateTest {
     @Mock private EndpointHeartbeatRepository heartbeatRepository;
     @Mock private EndpointInstallPreflightService preflightService;
     @Mock private EndpointCommandSecretService commandSecretService;
+    @Mock private EndpointEnrollmentService enrollmentService;
     @Mock private EndpointAuditService auditService;
 
     private EndpointAdminCommandService service;
@@ -91,6 +92,7 @@ class EndpointAdminCommandServiceAgentUpdateTest {
                 heartbeatRepository,
                 preflightService,
                 commandSecretService,
+                enrollmentService,
                 auditService,
                 Clock.fixed(NOW, ZoneOffset.UTC),
                 Duration.ofMinutes(5),

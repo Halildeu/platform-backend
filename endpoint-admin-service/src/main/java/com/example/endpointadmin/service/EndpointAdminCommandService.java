@@ -7,6 +7,7 @@ import com.example.endpointadmin.dto.v1.admin.CreateEndpointCommandRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateInstallRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateLocalPasswordChangeRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateLocalPasswordChangeResponse;
+import com.example.endpointadmin.dto.v1.admin.CreateTpmCertificateRenewalRequest;
 import com.example.endpointadmin.dto.v1.admin.EndpointCommandDto;
 import com.example.endpointadmin.dto.v1.admin.EndpointCommandResultDto;
 import com.example.endpointadmin.dto.v1.admin.InstallPreflightResponse;
@@ -129,6 +130,7 @@ public class EndpointAdminCommandService {
             CommandType.INSTALL_SOFTWARE,
             CommandType.UNINSTALL_SOFTWARE,
             CommandType.UPDATE_AGENT,
+            CommandType.RENEW_TPM_CERTIFICATE,
             CommandType.CHANGE_LOCAL_PASSWORD,
             // #508 — display policy carries a full desired-state snapshot + is
             // always maker-checker; it MUST go through its dedicated dispatch
@@ -143,7 +145,10 @@ public class EndpointAdminCommandService {
             CommandType.COLLECT_BACKUP_DRYRUN);
 
     private static final Duration DEFAULT_LOCAL_PASSWORD_SECRET_TTL = Duration.ofMinutes(15);
+    private static final Duration DEFAULT_TPM_RENEWAL_SECRET_TTL = Duration.ofMinutes(15);
     private static final String LOCAL_PASSWORD_SECRET_REF = "endpoint-command-secret:newPassword";
+    private static final String TPM_ENROLLMENT_TOKEN_SECRET_REF =
+            "endpoint-command-secret:enrollmentToken";
 
     private final EndpointCommandRepository commandRepository;
     private final EndpointCommandResultRepository resultRepository;
@@ -154,6 +159,7 @@ public class EndpointAdminCommandService {
     private final EndpointHeartbeatRepository heartbeatRepository;
     private final EndpointInstallPreflightService preflightService;
     private final EndpointCommandSecretService commandSecretService;
+    private final EndpointEnrollmentService enrollmentService;
     private final EndpointAuditService auditService;
     private final Clock clock;
     private final Duration updateAgentHeartbeatFreshnessTtl;
@@ -184,6 +190,7 @@ public class EndpointAdminCommandService {
                                        EndpointHeartbeatRepository heartbeatRepository,
                                        EndpointInstallPreflightService preflightService,
                                        EndpointCommandSecretService commandSecretService,
+                                       EndpointEnrollmentService enrollmentService,
                                        EndpointAuditService auditService,
                                        Clock clock,
                                        @Value("${endpoint-admin.agent-updates.heartbeat-freshness-ttl:PT5M}")
@@ -201,6 +208,7 @@ public class EndpointAdminCommandService {
         this.heartbeatRepository = heartbeatRepository;
         this.preflightService = preflightService;
         this.commandSecretService = commandSecretService;
+        this.enrollmentService = enrollmentService;
         this.auditService = auditService;
         this.clock = clock;
         this.updateAgentHeartbeatFreshnessTtl = updateAgentHeartbeatFreshnessTtl == null
@@ -513,6 +521,8 @@ public class EndpointAdminCommandService {
                         "POST /api/v1/admin/endpoint-devices/{deviceId}/uninstalls";
                 case UPDATE_AGENT ->
                         "(dedicated signed self-update release surface; not the generic command endpoint)";
+                case RENEW_TPM_CERTIFICATE ->
+                        "POST /api/v1/admin/endpoint-devices/{deviceId}/tpm-renewals";
                 case CHANGE_LOCAL_PASSWORD ->
                         "(dedicated local recovery / secret-delivery surface; not the generic command endpoint)";
                 default -> "(its dedicated REST surface)";
@@ -638,6 +648,106 @@ public class EndpointAdminCommandService {
                 Map.of("status", saved.getStatus().name(),
                         "approvalStatus", saved.getApprovalStatus().name()));
 
+        return toDto(saved);
+    }
+
+    // Faz 22.6 #2913 — browser-managed TPM/client-certificate renewal
+
+    /**
+     * Creates a device-bound TPM renewal command without exposing the raw
+     * enrollment token to the browser or persisting it in command payload.
+     */
+    @Transactional
+    public EndpointCommandDto createTpmCertificateRenewal(
+            AdminTenantContext context,
+            UUID deviceId,
+            CreateTpmCertificateRenewalRequest request) {
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "TPM certificate renewal request is required.");
+        }
+        String reason = trimToNull(request.reason());
+        if (reason == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "A reason is required for TPM certificate renewal.");
+        }
+
+        UUID tenantId = context.tenantId();
+        EndpointDevice device =
+                EndpointDeviceWriteGuard.loadActiveForUpdate(deviceRepository, tenantId, deviceId);
+        Instant now = Instant.now(clock);
+        assertHeartbeatFreshAndCapable(device, now, CommandType.RENEW_TPM_CERTIFICATE);
+
+        String idempotencyKey = resolveTpmRenewalIdempotencyKey(
+                deviceId, request.idempotencyKey());
+        var existing = commandRepository.findByTenantIdAndIdempotencyKey(
+                tenantId, idempotencyKey);
+        if (existing.isPresent()) {
+            validateTpmRenewalReplay(existing.get(), deviceId, reason);
+            return toDto(existing.get());
+        }
+
+        String subject = resolveSubject(context);
+        EndpointEnrollmentService.IssuedEnrollmentToken enrollment =
+                enrollmentService.issueDeviceBoundEnrollment(
+                        context,
+                        device,
+                        "browser-managed TPM certificate renewal",
+                        DEFAULT_TPM_RENEWAL_SECRET_TTL);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reason", reason);
+        payload.put("enrollmentId", enrollment.enrollmentId().toString());
+        payload.put("secretRef", TPM_ENROLLMENT_TOKEN_SECRET_REF);
+        payload.put("secretName", "enrollmentToken");
+        payload.put("secretDelivery", "agent_claim_once");
+        payload.put("expiresAt", enrollment.expiresAt().toString());
+
+        EndpointCommand command = new EndpointCommand();
+        command.setTenantId(tenantId);
+        command.setDevice(device);
+        command.setCommandType(CommandType.RENEW_TPM_CERTIFICATE);
+        command.setIdempotencyKey(idempotencyKey);
+        command.setStatus(CommandStatus.QUEUED);
+        command.setApprovalStatus(ApprovalStatus.NOT_REQUIRED);
+        command.setPayload(payload);
+        command.setPriority(100);
+        command.setAttemptCount(0);
+        command.setMaxAttempts(1);
+        command.setVisibleAfterAt(now);
+        command.setExpiresAt(enrollment.expiresAt());
+        command.setIssuedBySubject(subject);
+        command.setIssuedAt(now);
+
+        EndpointCommand saved = commandRepository.saveAndFlush(command);
+        commandSecretService.createTpmEnrollmentTokenSecret(
+                tenantId,
+                device,
+                saved,
+                enrollment.plainToken(),
+                enrollment.expiresAt(),
+                subject,
+                enrollment.enrollmentId(),
+                reason);
+
+        auditService.record(
+                tenantId,
+                device,
+                saved,
+                "ENDPOINT_TPM_CERTIFICATE_RENEWAL_CREATED",
+                "CREATE_TPM_CERTIFICATE_RENEWAL",
+                subject,
+                idempotencyKey,
+                Map.of(
+                        "commandType", CommandType.RENEW_TPM_CERTIFICATE.name(),
+                        "enrollmentId", enrollment.enrollmentId().toString(),
+                        "secretRef", TPM_ENROLLMENT_TOKEN_SECRET_REF,
+                        "expiresAt", enrollment.expiresAt().toString(),
+                        "reason", reason),
+                null,
+                Map.of(
+                        "status", saved.getStatus().name(),
+                        "approvalStatus", saved.getApprovalStatus().name()));
         return toDto(saved);
     }
 
@@ -1182,6 +1292,11 @@ public class EndpointAdminCommandService {
                 "admin-local-password:" + deviceId + ":", requestedKey, 40);
     }
 
+    private String resolveTpmRenewalIdempotencyKey(UUID deviceId, String requestedKey) {
+        return CommandIdempotencyKeys.build(
+                "admin-renew-tpm:" + deviceId + ":", requestedKey, 64);
+    }
+
     private static UUID parseUuid(Object node) {
         if (node == null) {
             return null;
@@ -1263,6 +1378,20 @@ public class EndpointAdminCommandService {
         }
     }
 
+    private void validateTpmRenewalReplay(EndpointCommand existing,
+                                          UUID deviceId,
+                                          String reason) {
+        Map<String, Object> payload = existing.getPayload() == null
+                ? Map.of()
+                : existing.getPayload();
+        if (!Objects.equals(existing.getDevice().getId(), deviceId)
+                || existing.getCommandType() != CommandType.RENEW_TPM_CERTIFICATE
+                || !Objects.equals(payload.get("reason"), reason)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "TPM renewal idempotency key is already used by another command.");
+        }
+    }
+
     private Map<String, Object> normalizePayload(CreateEndpointCommandRequest request) {
         Map<String, Object> payload = new LinkedHashMap<>();
         if (request.payload() != null) {
@@ -1334,6 +1463,12 @@ public class EndpointAdminCommandService {
 
     private void assertUpdateAgentHeartbeatFreshAndCapable(EndpointDevice device,
                                                            Instant now) {
+        assertHeartbeatFreshAndCapable(device, now, CommandType.UPDATE_AGENT);
+    }
+
+    private void assertHeartbeatFreshAndCapable(EndpointDevice device,
+                                                Instant now,
+                                                CommandType requiredCapability) {
         var latest = heartbeatRepository.findFirstByDevice_IdOrderByReceivedAtDesc(device.getId());
         Instant receivedAt = latest.map(EndpointHeartbeat::getReceivedAt).orElse(null);
         boolean fresh = receivedAt != null
@@ -1347,11 +1482,11 @@ public class EndpointAdminCommandService {
         boolean advertised = latest
                 .map(EndpointHeartbeat::getPayload)
                 .map(payload -> payload.get("capabilities"))
-                .map(node -> containsCapability(node, CommandType.UPDATE_AGENT.name()))
+                .map(node -> containsCapability(node, requiredCapability.name()))
                 .orElse(false);
         if (!advertised) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
-                    "Agent does not advertise the '" + CommandType.UPDATE_AGENT.name()
+                    "Agent does not advertise the '" + requiredCapability.name()
                             + "' capability on the most recent heartbeat. "
                             + "Upgrade/configure the agent and retry.");
         }
