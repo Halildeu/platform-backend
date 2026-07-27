@@ -51,7 +51,8 @@ public final class EthicsDtos {
      * label cannot arrive here and be mistaken for a principal.
      */
     public record AddParticipantRequest(
-            @NotBlank @Size(max=64) @Pattern(regexp="[0-9a-fA-F-]{36}") String subject,
+            @NotBlank @Size(max=128) @Pattern(regexp="v[0-9]+\\.[A-Za-z0-9_-]+") String handle,
             @NotBlank @Size(max=32) String role) {}
-    public record CaseParticipantView(String subject, String role, java.time.Instant addedAt) {}
+    /** ES-203/D — the listing crosses the same boundary the assignment does. */
+    public record CaseParticipantView(String handle, String role, java.time.Instant addedAt) {}
 }

@@ -34,7 +34,11 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /** Proves Flyway and PostgreSQL advisory-lock idempotency on the production database engine. */
-@SpringBootTest
+// ES-203/D: this class does not use the `test` profile, so the participant handle key
+// has to arrive here. The service refuses to start without one by design — a default
+// would mint handles from a constant, which is the same as no scoping at all.
+@SpringBootTest(properties =
+        "ethics.participant-handle-key=test-only-participant-handle-key-0123456789")
 @Testcontainers(disabledWithoutDocker = true)
 class EthicsPostgresIntegrationTest {
     @Container @ServiceConnection

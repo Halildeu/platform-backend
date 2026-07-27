@@ -34,15 +34,36 @@ import org.springframework.test.web.servlet.MockMvc;
 class AssignableStaffTest {
 
     private static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000035");
-    private static final String PATH = "/api/v1/ethics/assignable-staff";
+    private static final String SECRET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdef";
 
     @Autowired MockMvc mvc;
+    @Autowired com.fasterxml.jackson.databind.ObjectMapper mapper;
     @MockitoBean com.example.ethics.security.EthicsAuthorization authorization;
     @MockitoBean com.example.ethics.security.EthicsEntitlementVerifier entitlements;
 
     @BeforeEach
     void entitled() {
         when(entitlements.hasManageEntitlement(anyString())).thenReturn(true);
+    }
+
+    private static String path(String caseId) {
+        return "/api/v1/ethics/cases/" + caseId + "/assignable-staff";
+    }
+
+    /** A real case: `requireCase` reads the database, so a mocked permission is not enough. */
+    private String newCase() throws Exception {
+        String key = "assignable-" + UUID.randomUUID();
+        String body = "{\"mode\":\"ANONYMOUS\",\"category\":\"OTHER\",\"subject\":\"Atanabilir personel\","
+                + "\"description\":\"Sentetik\",\"locale\":\"tr\",\"accessSecret\":\"" + SECRET
+                + "\",\"noticeVersion\":\"tr-test-pilot-v1\"}";
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/v1/public/ethics/reports")
+                        .header("Host", "etik.acik.com").header("Idempotency-Key", key)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated());
+        var list = mvc.perform(get("/api/v1/ethics/cases").with(staff()))
+                .andExpect(status().isOk()).andReturn();
+        return mapper.readTree(list.getResponse().getContentAsString()).get(0).get("id").asText();
     }
 
     private static org.springframework.test.web.servlet.request.RequestPostProcessor staff() {
@@ -53,14 +74,15 @@ class AssignableStaffTest {
     @Test
     @DisplayName("atama yetkisi olan personel listeyi alır")
     void aTriagerGetsTheList() throws Exception {
-        when(authorization.canOnProduct(any(), eq("case_triager"))).thenReturn(true);
-        when(authorization.assignableStaff(ORG)).thenReturn(
+        when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.assignableStaff(any())).thenReturn(
                 new OpenFgaAuthzService.UserListResult(true, List.of("aaa", "bbb"), "ok"));
 
-        mvc.perform(get(PATH).with(staff()))
+        mvc.perform(get(path(newCase())).with(staff()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", org.hamcrest.Matchers.hasSize(2)))
-                .andExpect(jsonPath("$[0]").value("aaa"))
+                .andExpect(jsonPath("$[0]", org.hamcrest.Matchers.startsWith("v1.")))
+                .andExpect(jsonPath("$[0]", org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("aaa"))))
                 .andExpect(header().string("Cache-Control", org.hamcrest.Matchers.containsString("no-store")));
     }
 
@@ -68,11 +90,19 @@ class AssignableStaffTest {
     @Test
     @DisplayName("yalnız görüntüleme yetkisi listeyi açmaz")
     void aViewerIsRefused() throws Exception {
-        when(authorization.canOnProduct(any(), eq("case_triager"))).thenReturn(false);
+        // The case is filed while the caller still has permission; the permission is
+        // withdrawn afterwards, so the refusal under test is the endpoint's and not an
+        // artefact of an empty case list.
+        when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        String caseId = newCase();
+        org.mockito.Mockito.doThrow(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "Case not found."))
+                .when(authorization).require(any(), org.mockito.ArgumentMatchers.anyString(), any());
 
-        mvc.perform(get(PATH).with(staff()))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ASSIGNABLE_STAFF_DENIED"));
+        // `requireCase` answers a denied case with 404 rather than 403: telling the
+        // caller a case exists but is closed to them is itself a disclosure.
+        mvc.perform(get(path(caseId)).with(staff()))
+                .andExpect(status().isNotFound());
     }
 
     /**
@@ -82,11 +112,11 @@ class AssignableStaffTest {
     @Test
     @DisplayName("yetki motoru cevap veremezse boş liste değil 503 döner")
     void anUnreachablePolicyEngineIsNotAnEmptyTeam() throws Exception {
-        when(authorization.canOnProduct(any(), eq("case_triager"))).thenReturn(true);
-        when(authorization.assignableStaff(ORG))
+        when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.assignableStaff(any()))
                 .thenReturn(OpenFgaAuthzService.UserListResult.unavailable("circuit-open"));
 
-        mvc.perform(get(PATH).with(staff()))
+        mvc.perform(get(path(newCase())).with(staff()))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.error.code").value("ASSIGNABLE_STAFF_UNAVAILABLE"));
     }
@@ -95,11 +125,11 @@ class AssignableStaffTest {
     @Test
     @DisplayName("gerçekten boş org 200 ve boş liste döner")
     void agenuinelyEmptyOrgIsAnEmptyList() throws Exception {
-        when(authorization.canOnProduct(any(), eq("case_triager"))).thenReturn(true);
-        when(authorization.assignableStaff(ORG))
+        when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.assignableStaff(any()))
                 .thenReturn(new OpenFgaAuthzService.UserListResult(true, List.of(), "empty"));
 
-        mvc.perform(get(PATH).with(staff()))
+        mvc.perform(get(path(newCase())).with(staff()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", org.hamcrest.Matchers.hasSize(0)));
     }

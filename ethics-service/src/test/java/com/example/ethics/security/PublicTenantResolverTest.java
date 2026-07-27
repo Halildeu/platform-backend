@@ -15,7 +15,7 @@ class PublicTenantResolverTest {
 
     private EthicsProperties props(UUID defaultOrg) {
         return new EthicsProperties(defaultOrg, Duration.ofMinutes(15), 210_000,
-                "ethics-manager", "ethics-manager", true, 30);
+                "ethics-manager", "ethics-manager", true, 30, "test-only-participant-handle-key-0123456789");
     }
 
     private PublicTenantResolver resolver(Map<String, UUID> hosts) {

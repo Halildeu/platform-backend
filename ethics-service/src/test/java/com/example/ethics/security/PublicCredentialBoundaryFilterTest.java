@@ -21,7 +21,7 @@ class PublicCredentialBoundaryFilterTest {
                     "ethics-manager",
                     "ethics-manager",
                     true,
-                    30));
+                    30, "test-only-participant-handle-key-0123456789"));
 
     @Test
     void publicApiRejectsRequestsWithoutIngressTransportProof() throws Exception {

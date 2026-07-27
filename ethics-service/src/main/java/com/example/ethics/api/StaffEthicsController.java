@@ -27,9 +27,20 @@ public class StaffEthicsController {
      * the rest of ES-203 is something to name: a conflict declared about a third party, and the
      * routing exclusion, both need a principal rather than a label.
      */
+    /**
+     * ES-203/D — handles, scoped to this case. The browser never sees a Keycloak
+     * subject: the platform keeps that surface server-to-server, and in a whistleblowing
+     * product a subject that reaches a browser is a correlation key. Scoping to the case
+     * also means two handles for the same colleague on two cases cannot be joined.
+     */
+    @GetMapping("/{id}/assignable-staff")
+    ResponseEntity<List<String>> assignableStaff(@PathVariable UUID id){
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(service.assignableStaff(context.required(),id));
+    }
     @PostMapping("/{id}/participants")
     ResponseEntity<Void> addParticipant(@PathVariable UUID id,@Valid @RequestBody AddParticipantRequest body){
-        service.addParticipant(context.required(),id,body.subject(),body.role());
+        service.addParticipant(context.required(),id,body.handle(),body.role());
         return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
     }
     @GetMapping("/{id}/participants")

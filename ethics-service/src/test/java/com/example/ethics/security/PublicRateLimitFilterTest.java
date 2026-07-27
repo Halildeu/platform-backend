@@ -22,7 +22,8 @@ class PublicRateLimitFilterTest {
                 "ethics-manager",
                 "ethics-manager",
                 true,
-                LIMIT), new ObjectMapper());
+                LIMIT,
+                "test-only-participant-handle-key-0123456789"), new ObjectMapper());
     }
 
     @Test
