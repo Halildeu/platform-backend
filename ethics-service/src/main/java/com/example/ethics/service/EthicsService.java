@@ -156,9 +156,21 @@ public class EthicsService {
         EthicsCase item=requireCase(staff,caseId,"case_viewer"); EthicsReport report=reports.findByCaseId(caseId).orElseThrow();
         List<MessageResponse> all=messages.findAllByCaseIdAndVisibilityInOrderByCreatedAtAsc(caseId,List.of("REPORTER_VISIBLE","INTERNAL"))
                 .stream().map(EthicsService::messageResponse).toList();
-        return new CaseDetail(item.getId(),item.getStatus(),item.getAssignedTo(),item.getVersion(),report.getMode(),report.getCategory(),report.getSubject(),report.getNarrative(),all);
+        return new CaseDetail(item.getId(),item.getStatus(),item.getAssignedTo(),item.getVersion(),report.getMode(),report.getCategory(),report.getSubject(),report.getNarrative(),all,
+                item.getAcknowledgedAt(),item.getOutcome(),item.getClosedAt());
     }
 
+    /**
+     * ES-301A — move a case through the lifecycle, or name who is on it.
+     *
+     * <p>Status used to be a string this method accepted from any of three values with no
+     * rule about which order they could come in: a closed case could be sent back to
+     * {@code NEW}, which discarded the fact that it had ever concluded along with the
+     * finding it concluded on. {@link CaseLifecycle} now owns which moves exist, and
+     * closing carries a finding or does not happen at all — the reason the live cell had
+     * 160 cases and not one conclusion is that closing meant writing a word that recorded
+     * nothing, so nobody did.
+     */
     @Transactional
     public CaseSummary updateCase(StaffContext staff,UUID caseId,String ifMatch,UpdateCaseRequest request) {
         EthicsCase item=cases.findByIdAndOrgId(caseId,staff.orgId()).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."));
@@ -167,28 +179,74 @@ public class EthicsService {
         if(request.status()==null&&request.assignedTo()==null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_UPDATE_EMPTY");
         long expected=parseVersion(ifMatch);
         if(item.getVersion()!=expected) throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED,"CASE_VERSION_MISMATCH");
+        String reopenReason=null;
         if(request.status()!=null&&!request.status().isBlank()) {
-            String status=request.status().toUpperCase(Locale.ROOT);
-            if(!Set.of("NEW","IN_REVIEW","CLOSED").contains(status)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_STATUS_INVALID");
-            item.setStatus(status);
+            String from=item.getStatus();
+            String to=CaseLifecycle.canonicalStatus(request.status());
+            if(to==null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_STATUS_INVALID");
+            if(!CaseLifecycle.isTransitionAllowed(from,to))
+                throw new ResponseStatusException(HttpStatus.CONFLICT,"CASE_TRANSITION_NOT_ALLOWED");
+
+            String outcome=null;
+            if(CaseLifecycle.CLOSED.equals(to)) {
+                if(request.outcome()==null||request.outcome().isBlank())
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_OUTCOME_REQUIRED");
+                outcome=CaseLifecycle.canonicalOutcome(request.outcome());
+                if(outcome==null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_OUTCOME_INVALID");
+            } else if(request.outcome()!=null&&!request.outcome().isBlank()) {
+                // An outcome on a case that is not closing would be a finding nobody
+                // ever stands behind: it would sit on an open case and read as decided.
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_OUTCOME_NOT_APPLICABLE");
+            }
+            if(CaseLifecycle.isReopen(from,to)) {
+                // Reopening discards a recorded conclusion. That needs a stated reason,
+                // because the audit trail is otherwise left showing a finding that
+                // vanished with nothing to explain it.
+                if(request.reason()==null||request.reason().isBlank())
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_REOPEN_REASON_REQUIRED");
+                if(request.reason().length()>500)
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_REOPEN_REASON_TOO_LONG");
+                reopenReason=request.reason();
+            }
+            item.transitionTo(to,outcome,Instant.now());
         }
         if(request.assignedTo()!=null) item.setAssignedTo(request.assignedTo().isBlank()?null:request.assignedTo());
         cases.saveAndFlush(item);
-        audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,"ethics.case.updated",
-                encodeAuditPayload(Map.of(
-                        "status", item.getStatus(),
-                        "assigned", item.getAssignedTo() != null,
-                        "actorHash", secrets.sha256(staff.subject()))),
-                Instant.now()));
+        Map<String,Object> payload=new LinkedHashMap<>(Map.of(
+                "status", item.getStatus(),
+                "assigned", item.getAssignedTo() != null,
+                "actorHash", secrets.sha256(staff.subject())));
+        if(item.getOutcome()!=null) payload.put("outcome", item.getOutcome());
+        if(reopenReason!=null) payload.put("reopenReason", reopenReason);
+        audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,
+                reopenReason!=null?"ethics.case.reopened":"ethics.case.updated",
+                encodeAuditPayload(payload), Instant.now()));
         return summary(item);
     }
 
+    /**
+     * A staff message. When it is the first one the reporter can see, it is also the
+     * acknowledgement EU 2019/1937 art. 9(1)(b) requires within seven days — so the
+     * timestamp is taken here rather than exposed as something an operator can set.
+     * Tying the record to the act means the service cannot report having acknowledged
+     * a report whose reporter was never actually written to. Internal notes do not
+     * count: the reporter never sees them.
+     */
     @Transactional
     public MessageResponse staffReply(StaffContext staff,UUID caseId,String key,MessageRequest request,boolean internal) {
         requireCase(staff,caseId,"case_handler");
-        return createMessage(caseId,"STAFF",internal?"INTERNAL":"REPORTER_VISIBLE",key,request.body(),staff.orgId(),secrets.sha256(staff.subject()),
+        MessageResponse response=createMessage(caseId,"STAFF",internal?"INTERNAL":"REPORTER_VISIBLE",key,request.body(),staff.orgId(),secrets.sha256(staff.subject()),
                 () -> ensureOpen(cases.findByIdAndOrgId(caseId,staff.orgId())
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."))));
+        if(!internal && cases.markAcknowledged(caseId,response.createdAt())==1) {
+            EthicsCase item=cases.findByIdAndOrgId(caseId,staff.orgId()).orElseThrow();
+            audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,"ethics.case.acknowledged",
+                    encodeAuditPayload(Map.of(
+                            "actorHash", secrets.sha256(staff.subject()),
+                            "elapsedDays", java.time.Duration.between(item.getCreatedAt(),response.createdAt()).toDays())),
+                    Instant.now()));
+        }
+        return response;
     }
 
     /**
@@ -314,14 +372,11 @@ public class EthicsService {
         }
     }
     private static ResponseStatusException genericMailboxDeny(){return new ResponseStatusException(HttpStatus.NOT_FOUND,"Mailbox could not be opened.");}
-    private static CaseSummary summary(EthicsCase c){return new CaseSummary(c.getId(),c.getStatus(),c.getAssignedTo(),c.getVersion(),c.getCreatedAt(),c.getUpdatedAt());}
+    private static CaseSummary summary(EthicsCase c){return new CaseSummary(c.getId(),c.getStatus(),c.getAssignedTo(),c.getVersion(),c.getCreatedAt(),c.getUpdatedAt(),
+            c.getAcknowledgedAt(),c.getOutcome(),c.getClosedAt());}
     private static MessageResponse messageResponse(EthicsMessage m){return new MessageResponse(m.getId(),m.getAuthorType(),m.getVisibility(),m.getBody(),m.getCreatedAt());}
-    private static String reporterVisibleStatus(String status){
-        return switch(status){
-            case "NEW", "IN_REVIEW", "CLOSED" -> status;
-            default -> throw new IllegalStateException("Unsupported reporter-visible case status");
-        };
-    }
+    /** @see CaseLifecycle#reporterVisibleStatus — one implementation, so the two cannot drift. */
+    private static String reporterVisibleStatus(String status){ return CaseLifecycle.reporterVisibleStatus(status); }
     private static long parseVersion(String ifMatch){
         try { return Long.parseLong(ifMatch.replace("\"","").trim()); }
         catch (RuntimeException error) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"IF_MATCH_INVALID"); }
