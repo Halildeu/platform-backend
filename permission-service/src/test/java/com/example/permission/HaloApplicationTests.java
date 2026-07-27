@@ -13,7 +13,13 @@ import org.springframework.boot.test.context.SpringBootTest;
  * This test requires Testcontainers PostgreSQL (mvn -P testcontainers test).
  * Disabled in default surefire run — enabled in CI integration profile.
  */
-@Disabled("TB-16: requires Testcontainers PostgreSQL. Run with: mvn -P testcontainers -Dgroups=integration test")
+// #933: this class used to carry
+//   @Disabled("TB-16: requires Testcontainers PostgreSQL. Run with: mvn -P testcontainers ...")
+// That diagnosis was wrong. The context did not fail on the database — it failed on bean
+// wiring: with erp.openfga.enabled=false, OpenFgaAuthzConfig (the whole @Configuration)
+// vanished, so WebMvcConfig could not get OpenFgaAuthzService and the context died. Once
+// the authz-service bean was made unconditional, this test passes on plain H2 with no
+// Testcontainers at all. The @Disabled had been hiding the defect it was named after.
 @Tag("integration")
 @SpringBootTest(
         classes = PermissionServiceApplication.class,
