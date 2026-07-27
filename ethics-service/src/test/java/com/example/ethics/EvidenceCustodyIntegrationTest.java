@@ -74,6 +74,7 @@ class EvidenceCustodyIntegrationTest {
     @Autowired ReporterAccessGrantRepository grants;
     @Autowired EvidenceAttachmentRepository attachments;
     @Autowired EvidenceDerivationRepository derivations;
+    @Autowired com.example.ethics.repository.AuditOutboxRepository auditOutbox;
     @Autowired EvidencePipelineWorker worker;
     @Autowired FakeEvidenceProcessor processor;
     @Autowired InMemoryEvidenceObjectStore objects;
@@ -152,6 +153,26 @@ class EvidenceCustodyIntegrationTest {
                 .andExpect(jsonPath("$[0].quarantineKey").doesNotExist())
                 .andExpect(jsonPath("$[0].sealedKey").doesNotExist())
                 .andExpect(jsonPath("$[0].derivativeKey").doesNotExist());
+
+        // ES-206 — the staff GET above is a read of evidence, and the ledger says so.
+        // Every other custody event describes the artifact's own journey: declared,
+        // integrity-verified, sealed, sanitised. None of them answers the question an
+        // investigation asks — a case is reviewed, someone says they never saw a file.
+        var access = auditOutbox.findAll().stream()
+                .filter(a -> a.getAggregateId().equals(declaration.attachmentId()))
+                .filter(a -> "ethics.evidence.access".equals(a.getEventType()))
+                .toList();
+        assertThat(access).as("turevi okumak kayda gecmeli").hasSize(1);
+        String accessPayload = access.get(0).getPayload();
+        assertThat(accessPayload).contains("\"outcome\":\"GRANTED\"");
+        assertThat(accessPayload).contains("\"artifact\":\"DERIVATIVE\"");
+        // Which bytes were served, not merely that something was: a later
+        // re-sanitisation yields a different digest and the two reads stay apart.
+        assertThat(accessPayload).contains(
+                attachments.findById(declaration.attachmentId()).orElseThrow().getDerivativeSha256());
+        assertThat(accessPayload)
+                .as("personelin ham subject'i deftere yazilmamali")
+                .doesNotContain("staff-evidence");
 
         assertThat(objects.sealed.get(declaration.attachmentId())).isEqualTo(original);
         assertThat(objects.derivative.get(declaration.attachmentId())).isEqualTo(expected);

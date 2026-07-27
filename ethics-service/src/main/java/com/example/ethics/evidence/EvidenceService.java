@@ -27,7 +27,10 @@ import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 @Service
@@ -46,6 +49,8 @@ public class EvidenceService {
     private final TransactionKeyLock locks;
     private final ObjectMapper mapper;
 
+    private final TransactionTemplate denialTransaction;
+
     public EvidenceService(
             EvidenceProperties properties,
             SecretHasher secrets,
@@ -56,7 +61,13 @@ public class EvidenceService {
             EvidenceObjectStore objects,
             EthicsAuthorization authorization,
             TransactionKeyLock locks,
-            ObjectMapper mapper) {
+            ObjectMapper mapper,
+            PlatformTransactionManager transactions) {
+        // Denials are written in their own transaction. The refusal path throws, which
+        // rolls the caller's transaction back and would take the record of the refusal
+        // with it — the audit row would vanish along with the request it was describing.
+        this.denialTransaction = new TransactionTemplate(transactions);
+        this.denialTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.properties = properties;
         this.secrets = secrets;
         this.cases = cases;
@@ -231,20 +242,83 @@ public class EvidenceService {
                 .toList();
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * ES-206 — a staff member reads a piece of evidence, and that reading is recorded.
+     *
+     * <p>The custody ledger already held how evidence <em>arrived</em>: declared, scanned,
+     * sealed, sanitised. It held nothing about who later <em>looked at it</em>. In an
+     * investigation the second question is the one that gets asked — a case is reviewed,
+     * someone claims not to have seen a file, and the ledger has no answer.
+     *
+     * <p>Refusals are recorded as well as successes. Someone repeatedly asking for the
+     * derivative of an attachment that was quarantined as malicious, or reaching for an
+     * attachment on a case they can see but that does not exist, is the pattern worth
+     * having a record of; keeping only the successes would log the ordinary work and drop
+     * the part an investigation would care about.
+     *
+     * <p>The transaction is deliberately no longer {@code readOnly}: this method now
+     * writes. Listing attachments still does not — that is an index view, and logging
+     * every one of them would bury the reads that matter under the ones that do not.
+     * The line is the bytes: reaching the content is what gets a record.
+     */
+    @Transactional
     public EvidenceDownload downloadDerivative(
             StaffContext staff, UUID caseId, UUID attachmentId) {
         requireCase(staff, caseId, "case_viewer");
         EvidenceAttachment attachment = attachments.findByIdAndCaseId(attachmentId, caseId)
-                .orElseThrow(EvidenceService::notFound);
-        if (!"AVAILABLE".equals(attachment.getState())) throw notFound();
+                .orElseGet(() -> {
+                    // The attachment's own org is unavailable here — there is no row to
+                    // read it from — so the caller's org owns the record. It is the right
+                    // one anyway: `requireCase` has already established this staff member
+                    // is acting inside it.
+                    recordAccessDenied(staff, staff.orgId(), attachmentId, "NOT_FOUND", null);
+                    throw notFound();
+                });
+        if (!"AVAILABLE".equals(attachment.getState())) {
+            recordAccessDenied(staff, attachment.getOrgId(), attachmentId,
+                    "STATE_NOT_AVAILABLE", attachment.getState());
+            throw notFound();
+        }
         byte[] body = objects.readDerivative(attachment);
         if (body.length != attachment.getDerivativeSize()
                 || !secrets.sha256(body).equals(attachment.getDerivativeSha256())) {
+            recordAccessDenied(staff, attachment.getOrgId(), attachmentId,
+                    "DERIVATIVE_INTEGRITY_FAILED", attachment.getState());
             throw new ResponseStatusException(
                     HttpStatus.SERVICE_UNAVAILABLE, "EVIDENCE_DERIVATIVE_INTEGRITY_FAILED");
         }
+        appendAudit(attachment.getOrgId(), attachmentId, "ethics.evidence.access", Map.of(
+                "actorHash", secrets.sha256(staff.subject()),
+                "artifact", "DERIVATIVE",
+                "outcome", "GRANTED",
+                // The derivative's own digest, so the ledger says which bytes were served
+                // and not merely that something was. A later re-sanitisation produces a
+                // different digest, and the two reads stay distinguishable.
+                "derivativeSha256", attachment.getDerivativeSha256()));
         return new EvidenceDownload(body, attachment.getDerivativeMediaType());
+    }
+
+    /**
+     * The sealed original is not served by any route, so this exists to say why rather
+     * than to guard a door. {@code evidence_reveal_approved} is declared on both
+     * {@code ethics_product} and {@code ethics_case} in the authorization model and is
+     * consulted by nothing — the break-glass path that would use it is ES-303
+     * (platform-backend#883), with its own approval, time-boxing and re-sealing.
+     *
+     * <p>Until that lands the original is unreachable from the staff API at all, which is
+     * a stronger position than a guarded endpoint: there is no door to force. What ES-206
+     * owes is that the ordinary case roles cannot reach it, and they cannot.
+     */
+    private void recordAccessDenied(
+            StaffContext staff, UUID orgId, UUID attachmentId, String reason, String state) {
+        Map<String, Object> payload = new java.util.LinkedHashMap<>(Map.of(
+                "actorHash", secrets.sha256(staff.subject()),
+                "artifact", "DERIVATIVE",
+                "outcome", "DENIED",
+                "reason", reason));
+        if (state != null) payload.put("state", state);
+        denialTransaction.executeWithoutResult(ignored ->
+                appendAudit(orgId, attachmentId, "ethics.evidence.access_denied", payload));
     }
 
     private UUID caseForSession(String channel, String token) {
