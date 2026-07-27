@@ -263,6 +263,27 @@ public class EthicsService {
     }
 
     /**
+     * ES-203 — the subjects this org may assign to a case.
+     *
+     * <p>Gated on {@code case_triager} rather than {@code case_viewer}: seeing a case is
+     * not a reason to be handed the list of everyone who works ethics here. The caller
+     * who can assign is the caller who needs it.
+     *
+     * <p>An unreachable policy engine produces 503, not an empty list. "Nobody may be
+     * assigned" and "we could not find out" are opposite facts, and a manager shown the
+     * first while the second is true would conclude the team is empty.
+     */
+    @Transactional(readOnly=true)
+    public List<String> assignableStaff(StaffContext staff) {
+        if(!authorization.canOnProduct(staff,"case_triager"))
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,"ASSIGNABLE_STAFF_DENIED");
+        var result=authorization.assignableStaff(staff.orgId());
+        if(!result.available())
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"ASSIGNABLE_STAFF_UNAVAILABLE");
+        return result.subjects();
+    }
+
+    /**
      * ES-203 / B+ slice 1 — record that a named person is on this case.
      *
      * <p>Replaces naming someone by label. {@code ethics_cases.assigned_to} is free text that has

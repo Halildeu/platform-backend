@@ -4,6 +4,9 @@ import dev.openfga.sdk.api.client.OpenFgaClient;
 import dev.openfga.sdk.api.client.model.ClientCheckRequest;
 import dev.openfga.sdk.api.client.model.ClientExpandRequest;
 import dev.openfga.sdk.api.client.model.ClientListObjectsRequest;
+import dev.openfga.sdk.api.client.model.ClientListUsersRequest;
+import dev.openfga.sdk.api.model.FgaObject;
+import dev.openfga.sdk.api.model.UserTypeFilter;
 import dev.openfga.sdk.api.client.model.ClientReadRequest;
 import dev.openfga.sdk.api.client.model.ClientWriteRequest;
 import dev.openfga.sdk.api.configuration.ClientReadOptions;
@@ -706,6 +709,65 @@ public class OpenFgaAuthzService {
      * CNS-20260411-005: Codex MODIFY — reason field mandatory for UI semantics.
      */
     public record CheckResult(boolean allowed, String reason) {}
+
+    /**
+     * Who holds a relation on an object, and whether the question could be asked at all.
+     *
+     * <p>{@link #listObjects} answers an unavailable store with an empty list, which is
+     * the right shape for filtering a view — showing nothing is a safe degradation. It is
+     * the wrong shape here: a caller populating a picker cannot tell "nobody holds this"
+     * from "the store did not answer", and the second must not be presented as the first.
+     */
+    public record UserListResult(boolean available, List<String> subjects, String reason) {
+        public static UserListResult unavailable(String reason) {
+            return new UserListResult(false, List.of(), reason);
+        }
+    }
+
+    /**
+     * The subjects holding {@code relation} on one object — the inverse of
+     * {@link #listObjects}, which asks what one subject can reach.
+     *
+     * <p>There is deliberately no dev fallback. Every other method here answers a
+     * disabled store by allowing, because a check that cannot run should not block local
+     * work. An enumeration has no equivalent: an invented list of subjects is not a
+     * permissive default, it is fiction, and a caller would show it to someone.
+     */
+    public UserListResult listUsers(String relation, String objectType, String objectId) {
+        if (!enabled) {
+            return UserListResult.unavailable("openfga-disabled");
+        }
+        if (!circuitBreaker.allowRequest()) {
+            log.warn("OpenFGA circuit OPEN — cannot enumerate {} on {}:{}",
+                    relation, objectType, objectId);
+            return UserListResult.unavailable("circuit-open");
+        }
+        try {
+            var request = new ClientListUsersRequest()
+                    ._object(new FgaObject().type(objectType).id(objectId))
+                    .relation(relation)
+                    .userFilters(List.of(new UserTypeFilter().type("user")));
+            var users = client.listUsers(request).get().getUsers();
+            if (users == null) {
+                circuitBreaker.recordSuccess();
+                return new UserListResult(true, List.of(), "empty");
+            }
+            List<String> subjects = users.stream()
+                    .map(u -> u.getObject() == null ? null : u.getObject().getId())
+                    .filter(java.util.Objects::nonNull)
+                    .distinct()
+                    .sorted()
+                    .collect(Collectors.toList());
+            circuitBreaker.recordSuccess();
+            log.debug("OpenFGA listUsers: {} on {}:{} → {} subject(s)",
+                    relation, objectType, objectId, subjects.size());
+            return new UserListResult(true, subjects, "ok");
+        } catch (Exception error) {
+            circuitBreaker.recordFailure();
+            log.error("OpenFGA listUsers failed: {} on {}:{}", relation, objectType, objectId, error);
+            return UserListResult.unavailable("error");
+        }
+    }
 
     /**
      * 2026-04-18 OI-03 Bug 2 (Codex 019da431 Option A): object types that
