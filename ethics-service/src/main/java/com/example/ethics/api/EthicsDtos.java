@@ -30,4 +30,13 @@ public final class EthicsDtos {
     public record CaseSummary(UUID id, String status, String assignedTo, long version, Instant createdAt, Instant updatedAt) {}
     public record CaseDetail(UUID id, String status, String assignedTo, long version, String mode, String category, String subject, String description, List<MessageResponse> messages) {}
     public record UpdateCaseRequest(@Size(max=40) String status, @Size(max=200) String assignedTo) {}
+    /**
+     * ES-203 / B+ slice 1. The subject is a Keycloak subject UUID — the same identity the policy
+     * engine uses. The pattern refuses anything that is not one, so a display name or a free-text
+     * label cannot arrive here and be mistaken for a principal.
+     */
+    public record AddParticipantRequest(
+            @NotBlank @Size(max=64) @Pattern(regexp="[0-9a-fA-F-]{36}") String subject,
+            @NotBlank @Size(max=32) String role) {}
+    public record CaseParticipantView(String subject, String role, java.time.Instant addedAt) {}
 }

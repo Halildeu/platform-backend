@@ -21,6 +21,23 @@ public class StaffEthicsController {
     @PostMapping("/{id}/messages") ResponseEntity<MessageResponse> reply(@PathVariable UUID id,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody MessageRequest body){return ResponseEntity.status(HttpStatus.CREATED).body(service.staffReply(context.required(),id,key,body,false));}
     @PostMapping("/{id}/internal-notes") ResponseEntity<MessageResponse> note(@PathVariable UUID id,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody MessageRequest body){return ResponseEntity.status(HttpStatus.CREATED).body(service.staffReply(context.required(),id,key,body,true));}
     /**
+     * ES-203 / B+ slice 1 — put a named person on this case, or read who is on it.
+     *
+     * <p>A participant grants nothing; access still comes from product membership. What it gives
+     * the rest of ES-203 is something to name: a conflict declared about a third party, and the
+     * routing exclusion, both need a principal rather than a label.
+     */
+    @PostMapping("/{id}/participants")
+    ResponseEntity<Void> addParticipant(@PathVariable UUID id,@Valid @RequestBody AddParticipantRequest body){
+        service.addParticipant(context.required(),id,body.subject(),body.role());
+        return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
+    }
+    @GetMapping("/{id}/participants")
+    ResponseEntity<List<CaseParticipantView>> participants(@PathVariable UUID id){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.listParticipants(context.required(),id));
+    }
+    /**
      * ES-203 — step away from a case. The body is empty on purpose: the actor is the token, so
      * there is no field through which one person could recuse another.
      */
