@@ -1,0 +1,373 @@
+{
+  "contractVersion": 1,
+  "key": "fin-proje-muhasebe-gercekleseni",
+  "version": "1.1",
+  "title": "Proje Muhasebe Gerçekleşeni ve Kaynak Belge Detayı",
+  "description": "Proje bazlı muhasebe gerçekleşeni; her satır için fiş, kaynak belge, varsa sipariş veya virman bağlantısı ve eşleşme durumu",
+  "category": "Finans",
+  "source": "ACCOUNT_CARD_ROWS",
+  "sourceSchema": "workcube_mikrolink_2026_1",
+  "schemaMode": "yearly",
+  "yearColumn": "ACTION_DATE",
+  "tenantBoundary": {
+    "mode": "schema",
+    "scopeType": "tenant",
+    "schemaResolver": "yearlyPartitionRotation",
+    "schemaPattern": "workcube_mikrolink_{year}_{tenantId}",
+    "reason": "Company boundary is encoded in the yearly schema; project boundary is enforced independently by PROJECT rowFilter"
+  },
+  "sourceQuery": "SELECT AP.ACCOUNT_CODE, AP.ACCOUNT_NAME, ACR.CARD_ROW_ID, ACR.CARD_ID, CASE WHEN ACR.BA = 1 THEN N'Borç' WHEN ACR.BA = 0 THEN N'Alacak' ELSE N'Bilinmiyor' END AS BA, CASE WHEN ACR.BA = 1 THEN ABS(ACR.AMOUNT) WHEN ACR.BA = 0 THEN -ABS(ACR.AMOUNT) ELSE ACR.AMOUNT END AS AMOUNT, ACR.AMOUNT_CURRENCY, ACR.DETAIL AS ROW_DETAIL, ACR.ACC_PROJECT_ID, CONVERT(NVARCHAR(30), ACR.ACC_PROJECT_ID) AS PROJECT_FILTER_KEY, AC.ACTION_DATE, AC.ACTION_ID AS SOURCE_ID, AC.ACTION_ROW_ID AS SOURCE_ROW_ID, AC.ACTION_TYPE, AC.ACTION_TABLE AS SOURCE_TABLE, AC.CARD_DETAIL, AC.PAPER_NO AS ACCOUNTING_DOCUMENT_NO, AC.BILL_NO, AC.IS_CANCEL, ISNULL(SPC.PROCESS_CAT, N'Diğer') AS PROCESS_CAT_NAME, ISNULL(NULLIF(LTRIM(RTRIM(P.PROJECT_HEAD)), N''), N'Belirtilmemiş') AS PROJECT_NAME, C.FULLNAME AS COMPANY_NAME, ISNULL(NULLIF(LTRIM(RTRIM(DT.DOCUMENT_TYPE_NAME)), N''), N'Belirtilmemiş') AS DOCUMENT_TYPE_NAME, CASE WHEN INV.INVOICE_ID IS NOT NULL AND AC.ACTION_TYPE = 56 THEN N'Alış Faturası' WHEN INV.INVOICE_ID IS NOT NULL AND AC.ACTION_TYPE = 57 THEN N'Alış İade Faturası' WHEN INV.INVOICE_ID IS NOT NULL AND AC.ACTION_TYPE = 59 THEN N'Satış Faturası' WHEN INV.INVOICE_ID IS NOT NULL THEN N'Fatura' WHEN EXP.EXPENSE_ID IS NOT NULL THEN N'Masraf Fişi' WHEN BA.ACTION_ID IS NOT NULL AND BA.GENEL_VIRMAN_ID IS NOT NULL THEN N'Genel Virman' WHEN BA.ACTION_ID IS NOT NULL AND AC.ACTION_TYPE = 23 THEN N'Banka Virmanı' WHEN BA.ACTION_ID IS NOT NULL AND AC.ACTION_TYPE = 24 THEN N'Gelen Havale' WHEN BA.ACTION_ID IS NOT NULL AND AC.ACTION_TYPE = 25 THEN N'Giden Havale' WHEN BA.ACTION_ID IS NOT NULL THEN N'Banka Hareketi' WHEN CA.ACTION_ID IS NOT NULL THEN N'Cari Dekont' WHEN AC.ACTION_TYPE = 113 THEN N'Stok Fişi' WHEN AC.ACTION_TYPE = 13 THEN N'Muhasebe Fişi' WHEN NULLIF(LTRIM(RTRIM(AC.ACTION_TABLE)), N'') IS NOT NULL THEN AC.ACTION_TABLE WHEN AC.ACTION_TYPE IS NOT NULL THEN N'İşlem Tipi ' + CAST(AC.ACTION_TYPE AS NVARCHAR(20)) ELSE N'Kaynak Belirlenemedi' END AS SOURCE_TYPE, CASE WHEN AC.ACTION_ID IS NULL OR AC.ACTION_ID = 0 THEN N'KAYNAK YOK' WHEN INV.INVOICE_ID IS NOT NULL OR EXP.EXPENSE_ID IS NOT NULL OR BA.ACTION_ID IS NOT NULL OR CA.ACTION_ID IS NOT NULL THEN N'KAYNAK EŞLEŞTİ' WHEN AC.ACTION_TYPE IN (56, 57, 58, 59, 120, 23, 24, 25, 41, 121, 250) THEN N'KAYNAK EŞLEŞMEDİ' ELSE N'KAYNAK REFERANSI VAR' END AS SOURCE_MATCH_STATUS, CASE WHEN AC.ACTION_ID IS NULL OR AC.ACTION_ID = 0 THEN N'Muhasebe satırı → fiş → kaynak yok' WHEN INV.INVOICE_ID IS NOT NULL AND AC.ACTION_TYPE = 56 AND INV.ORDER_ID IS NOT NULL THEN N'Muhasebe satırı → fiş → alış faturası → satınalma siparişi' WHEN INV.INVOICE_ID IS NOT NULL AND INV.ORDER_ID IS NOT NULL THEN N'Muhasebe satırı → fiş → fatura → sipariş' WHEN INV.INVOICE_ID IS NOT NULL THEN N'Muhasebe satırı → fiş → fatura' WHEN EXP.EXPENSE_ID IS NOT NULL THEN N'Muhasebe satırı → fiş → masraf belgesi' WHEN BA.ACTION_ID IS NOT NULL AND BA.GENEL_VIRMAN_ID IS NOT NULL THEN N'Muhasebe satırı → fiş → banka hareketi → genel virman' WHEN BA.ACTION_ID IS NOT NULL AND BA.BANK_ORDER_ID IS NOT NULL THEN N'Muhasebe satırı → fiş → banka hareketi → banka talimatı' WHEN BA.ACTION_ID IS NOT NULL THEN N'Muhasebe satırı → fiş → banka hareketi' WHEN CA.ACTION_ID IS NOT NULL AND CA.INVOICE_ID IS NOT NULL THEN N'Muhasebe satırı → fiş → cari hareket → fatura' WHEN CA.ACTION_ID IS NOT NULL THEN N'Muhasebe satırı → fiş → cari hareket' ELSE N'Muhasebe satırı → fiş → kaynak referansı' END AS SOURCE_CHAIN, COALESCE(NULLIF(INV.INVOICE_NUMBER, N''), NULLIF(EXP.PAPER_NO, N''), NULLIF(BA.PAPER_NO, N''), NULLIF(CA.PAPER_NO, N''), NULLIF(AC.PAPER_NO, N'')) AS SOURCE_DOCUMENT_NO, COALESCE(NULLIF(INV.SERIAL_NUMBER, N''), NULLIF(INV.SERIAL_NO, N''), NULLIF(EXP.SERIAL_NUMBER, N''), NULLIF(EXP.SERIAL_NO, N'')) AS SOURCE_SERIAL_NO, COALESCE(NULLIF(INV.NOTE, N''), NULLIF(EXP.DETAIL, N''), NULLIF(BA.ACTION_DETAIL, N''), NULLIF(CA.ACTION_DETAIL, N''), NULLIF(AC.CARD_DETAIL, N'')) AS SOURCE_DETAIL, COALESCE(INV.NETTOTAL, EXP.TOTAL_AMOUNT_KDVLI, BA.ACTION_VALUE, CA.ACTION_VALUE) AS SOURCE_TOTAL, INV.ORDER_ID AS UPSTREAM_ORDER_ID, INV.OFFER_ID AS UPSTREAM_OFFER_ID, INV.CONTRACT_ID AS UPSTREAM_CONTRACT_ID, INV.PROGRESS_ID AS UPSTREAM_PROGRESS_ID, BA.BANK_ORDER_ID AS UPSTREAM_BANK_ORDER_ID, BA.GENEL_VIRMAN_ID AS UPSTREAM_TRANSFER_ID, COALESCE(BA.RELATED_ACTION_ID, CA.RELATION_ACTION_ID) AS RELATED_ACTION_ID, IR.INVOICE_ROW_ID, IR.NAME_PRODUCT AS SOURCE_LINE_PRODUCT, IR.DESCRIPTION AS SOURCE_LINE_DETAIL, IR.NETTOTAL AS SOURCE_LINE_NET_AMOUNT FROM [{schema}].[ACCOUNT_CARD_ROWS] ACR WITH (NOLOCK) OUTER APPLY (SELECT TOP (1) AP1.ACCOUNT_CODE, AP1.ACCOUNT_NAME FROM [{schema}].[ACCOUNT_PLAN] AP1 WITH (NOLOCK) WHERE AP1.ACCOUNT_CODE = ACR.ACCOUNT_ID AND AP1.SUB_ACCOUNT = 0 ORDER BY AP1.ACCOUNT_ID) AP LEFT JOIN [{schema}].[ACCOUNT_CARD] AC WITH (NOLOCK) ON AC.CARD_ID = ACR.CARD_ID LEFT JOIN {tenantSetupProcessCatRelation} ON SPC.PROCESS_CAT_ID = AC.CARD_CAT_ID LEFT JOIN [workcube_mikrolink].[PRO_PROJECTS] P WITH (NOLOCK) ON P.PROJECT_ID = ACR.ACC_PROJECT_ID LEFT JOIN [workcube_mikrolink].[COMPANY] C WITH (NOLOCK) ON C.COMPANY_ID = AC.ACC_COMPANY_ID LEFT JOIN [workcube_mikrolink].[SETUP_DOCUMENT_TYPE] DT WITH (NOLOCK) ON DT.DOCUMENT_TYPE_ID = AC.CARD_DOCUMENT_TYPE LEFT JOIN [{schema}].[INVOICE] INV WITH (NOLOCK) ON INV.INVOICE_ID = AC.ACTION_ID AND AC.ACTION_TYPE IN (56, 57, 58, 59) LEFT JOIN [{schema}].[INVOICE_ROW] IR WITH (NOLOCK) ON IR.INVOICE_ROW_ID = AC.ACTION_ROW_ID AND IR.INVOICE_ID = INV.INVOICE_ID OUTER APPLY (SELECT TOP (1) EXP1.EXPENSE_ID, EXP1.PAPER_NO, EXP1.SERIAL_NUMBER, EXP1.SERIAL_NO, EXP1.DETAIL, EXP1.TOTAL_AMOUNT_KDVLI FROM [{schema}].[EXPENSE_ITEM_PLANS] EXP1 WITH (NOLOCK) WHERE EXP1.EXPENSE_ID = AC.ACTION_ID AND AC.ACTION_TYPE = 120 ORDER BY EXP1.EXPENSE_DATE DESC, EXP1.EXPENSE_ID) EXP LEFT JOIN [{schema}].[BANK_ACTIONS] BA WITH (NOLOCK) ON BA.ACTION_ID = AC.ACTION_ID AND AC.ACTION_TYPE IN (23, 24, 25, 121, 250) LEFT JOIN [{schema}].[CARI_ACTIONS] CA WITH (NOLOCK) ON CA.ACTION_ID = AC.ACTION_ID AND AC.ACTION_TYPE = 41",
+  "columns": [
+    {
+      "field": "ACCOUNT_CODE",
+      "headerName": "Hesap Kodu",
+      "type": "bold-text",
+      "width": 150,
+      "sensitive": false,
+      "groupable": true
+    },
+    {
+      "field": "ACCOUNT_NAME",
+      "headerName": "Hesap Adı",
+      "type": "text",
+      "width": 250,
+      "sensitive": false,
+      "groupable": true
+    },
+    {
+      "field": "AMOUNT",
+      "headerName": "Gerçekleşen (TL)",
+      "type": "currency",
+      "currencyCode": "TRY",
+      "decimals": 2,
+      "width": 160,
+      "sensitive": false,
+      "aggregatable": true,
+      "defaultAggFunc": "sum"
+    },
+    {
+      "field": "ACTION_DATE",
+      "headerName": "İşlem Tarihi",
+      "type": "date",
+      "format": "short",
+      "width": 120,
+      "sensitive": false
+    },
+    {
+      "field": "SOURCE_TYPE",
+      "headerName": "Kaynak Türü",
+      "type": "badge",
+      "width": 170,
+      "sensitive": false,
+      "groupable": true
+    },
+    {
+      "field": "SOURCE_MATCH_STATUS",
+      "headerName": "Kaynak Durumu",
+      "type": "text",
+      "width": 170,
+      "sensitive": false,
+      "groupable": true
+    },
+    {
+      "field": "SOURCE_CHAIN",
+      "headerName": "Belge Zinciri",
+      "type": "text",
+      "width": 360,
+      "sensitive": false
+    },
+    {
+      "field": "SOURCE_DOCUMENT_NO",
+      "headerName": "Kaynak Belge No",
+      "type": "bold-text",
+      "width": 170,
+      "sensitive": false
+    },
+    {
+      "field": "SOURCE_SERIAL_NO",
+      "headerName": "Kaynak Seri No",
+      "type": "text",
+      "width": 140,
+      "sensitive": false
+    },
+    {
+      "field": "SOURCE_DETAIL",
+      "headerName": "Kaynak Açıklama",
+      "type": "text",
+      "width": 320,
+      "sensitive": false
+    },
+    {
+      "field": "SOURCE_TOTAL",
+      "headerName": "Kaynak Belge Toplamı",
+      "type": "currency",
+      "currencyCode": "TRY",
+      "decimals": 2,
+      "width": 180,
+      "sensitive": false
+    },
+    {
+      "field": "SOURCE_LINE_PRODUCT",
+      "headerName": "Kaynak Satır / Ürün",
+      "type": "text",
+      "width": 240,
+      "sensitive": false
+    },
+    {
+      "field": "SOURCE_LINE_DETAIL",
+      "headerName": "Kaynak Satır Açıklama",
+      "type": "text",
+      "width": 260,
+      "sensitive": false
+    },
+    {
+      "field": "SOURCE_LINE_NET_AMOUNT",
+      "headerName": "Kaynak Satır Net",
+      "type": "currency",
+      "currencyCode": "TRY",
+      "decimals": 2,
+      "width": 150,
+      "sensitive": false
+    },
+    {
+      "field": "BA",
+      "headerName": "Borç/Alacak",
+      "type": "badge",
+      "width": 120,
+      "sensitive": false,
+      "groupable": true,
+      "pivotable": true,
+      "pivotValues": [
+        {
+          "value": "Borç",
+          "label": "Borç"
+        },
+        {
+          "value": "Alacak",
+          "label": "Alacak"
+        }
+      ]
+    },
+    {
+      "field": "AMOUNT_CURRENCY",
+      "headerName": "Para Birimi",
+      "type": "text",
+      "width": 100,
+      "sensitive": false,
+      "groupable": true
+    },
+    {
+      "field": "PROJECT_NAME",
+      "headerName": "Proje",
+      "type": "bold-text",
+      "width": 260,
+      "sensitive": false,
+      "groupable": true
+    },
+    {
+      "field": "COMPANY_NAME",
+      "headerName": "Cari",
+      "type": "text",
+      "width": 230,
+      "sensitive": false,
+      "groupable": true
+    },
+    {
+      "field": "PROCESS_CAT_NAME",
+      "headerName": "İşlem Kategorisi",
+      "type": "text",
+      "width": 170,
+      "sensitive": false,
+      "groupable": true
+    },
+    {
+      "field": "DOCUMENT_TYPE_NAME",
+      "headerName": "Belge Tipi",
+      "type": "text",
+      "width": 150,
+      "sensitive": false,
+      "groupable": true
+    },
+    {
+      "field": "CARD_DETAIL",
+      "headerName": "Fiş Açıklaması",
+      "type": "text",
+      "width": 300,
+      "sensitive": false
+    },
+    {
+      "field": "ROW_DETAIL",
+      "headerName": "Muhasebe Satır Açıklaması",
+      "type": "text",
+      "width": 300,
+      "sensitive": false
+    },
+    {
+      "field": "ACCOUNTING_DOCUMENT_NO",
+      "headerName": "Muhasebe Belge No",
+      "type": "text",
+      "width": 170,
+      "sensitive": false
+    },
+    {
+      "field": "UPSTREAM_ORDER_ID",
+      "headerName": "Sipariş ID",
+      "type": "number",
+      "width": 110,
+      "sensitive": false
+    },
+    {
+      "field": "UPSTREAM_OFFER_ID",
+      "headerName": "Teklif ID",
+      "type": "number",
+      "width": 100,
+      "sensitive": false
+    },
+    {
+      "field": "UPSTREAM_CONTRACT_ID",
+      "headerName": "Sözleşme ID",
+      "type": "number",
+      "width": 120,
+      "sensitive": false
+    },
+    {
+      "field": "UPSTREAM_PROGRESS_ID",
+      "headerName": "Hakediş ID",
+      "type": "number",
+      "width": 110,
+      "sensitive": false
+    },
+    {
+      "field": "UPSTREAM_BANK_ORDER_ID",
+      "headerName": "Banka Talimat ID",
+      "type": "number",
+      "width": 140,
+      "sensitive": false
+    },
+    {
+      "field": "UPSTREAM_TRANSFER_ID",
+      "headerName": "Virman ID",
+      "type": "number",
+      "width": 100,
+      "sensitive": false
+    },
+    {
+      "field": "RELATED_ACTION_ID",
+      "headerName": "İlişkili Hareket ID",
+      "type": "number",
+      "width": 150,
+      "sensitive": false
+    },
+    {
+      "field": "SOURCE_TABLE",
+      "headerName": "Kaynak Tablo",
+      "type": "text",
+      "width": 170,
+      "sensitive": false,
+      "groupable": true
+    },
+    {
+      "field": "SOURCE_ID",
+      "headerName": "Kaynak Kayıt ID",
+      "type": "number",
+      "width": 130,
+      "sensitive": false
+    },
+    {
+      "field": "SOURCE_ROW_ID",
+      "headerName": "Kaynak Satır ID",
+      "type": "number",
+      "width": 130,
+      "sensitive": false
+    },
+    {
+      "field": "INVOICE_ROW_ID",
+      "headerName": "Fatura Satır ID",
+      "type": "number",
+      "width": 130,
+      "sensitive": false
+    },
+    {
+      "field": "CARD_ID",
+      "headerName": "Muhasebe Fiş ID",
+      "type": "number",
+      "width": 130,
+      "sensitive": false
+    },
+    {
+      "field": "CARD_ROW_ID",
+      "headerName": "Muhasebe Satır ID",
+      "type": "number",
+      "width": 140,
+      "sensitive": false
+    },
+    {
+      "field": "ACTION_TYPE",
+      "headerName": "İşlem Tip Kodu",
+      "type": "number",
+      "width": 120,
+      "sensitive": false
+    },
+    {
+      "field": "PROJECT_FILTER_KEY",
+      "headerName": "Proje ID",
+      "type": "text",
+      "width": 100,
+      "sensitive": false
+    },
+    {
+      "field": "ACC_PROJECT_ID",
+      "headerName": "Yetki Proje ID",
+      "type": "number",
+      "width": 120,
+      "sensitive": false
+    },
+    {
+      "field": "IS_CANCEL",
+      "headerName": "İptal",
+      "type": "boolean",
+      "width": 80,
+      "sensitive": false
+    }
+  ],
+  "filterDefinitions": [
+    {
+      "key": "company",
+      "kind": "company-picker",
+      "i18nLabelKey": "reports.hrCompensation.filters.company"
+    },
+    {
+      "key": "projectId",
+      "targetField": "PROJECT_FILTER_KEY",
+      "advancedFilterTarget": "PROJECT_FILTER_KEY",
+      "kind": "enum-select",
+      "operator": "equals",
+      "urlParam": "projectId",
+      "i18nLabelKey": "reports.budgetActual.filters.project",
+      "optionsSource": {
+        "type": "endpoint",
+        "endpoint": "/v1/reports/project-options"
+      }
+    },
+    {
+      "key": "dateRange",
+      "targetField": "ACTION_DATE",
+      "advancedFilterTarget": "ACTION_DATE",
+      "kind": "date-range",
+      "operator": "between",
+      "urlParam": "date",
+      "i18nLabelKey": "reports.budgetActual.filters.dateRange"
+    }
+  ],
+  "defaultSort": "ACTION_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "ACC_PROJECT_ID",
+      "scopeType": "PROJECT"
+    },
+    "reportGroup": "FINANCE_REPORTS"
+  }
+}
