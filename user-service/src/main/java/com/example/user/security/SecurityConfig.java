@@ -62,6 +62,12 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                    // Faz 35 ES-203/C: the display-name resolver accepts its own narrow
+                    // permission so its dedicated caller never holds users:internal —
+                    // which can read credential material via /internal/by-email.
+                    // Broad still implies narrow; the reverse would be an escalation.
+                    .requestMatchers("/api/users/internal/display-names")
+                            .hasAnyAuthority("PERM_users:display-names:read", "PERM_users:internal")
                     .anyRequest().hasAuthority("PERM_users:internal"))
             .addFilterBefore(serviceTokenFilter, BearerTokenAuthenticationFilter.class);
         return http.build();

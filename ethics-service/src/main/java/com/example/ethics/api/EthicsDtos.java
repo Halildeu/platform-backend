@@ -53,6 +53,23 @@ public final class EthicsDtos {
     public record AddParticipantRequest(
             @NotBlank @Size(max=128) @Pattern(regexp="v[0-9]+\\.[A-Za-z0-9_-]+") String handle,
             @NotBlank @Size(max=32) String role) {}
-    /** ES-203/D — the listing crosses the same boundary the assignment does. */
-    public record CaseParticipantView(String handle, String role, java.time.Instant addedAt) {}
+    /**
+     * ES-203/D — the listing crosses the same boundary the assignment does.
+     *
+     * <p>ES-203/C adds {@code displayName}: a pass-through from the user
+     * directory, resolved at read time and stored nowhere in this service. It
+     * is {@code null} when the directory cannot answer — this is a display
+     * surface, and a missing name degrades the view without blocking it.
+     */
+    public record CaseParticipantView(String handle, String displayName, String role,
+                                      java.time.Instant addedAt) {}
+    /**
+     * ES-203/C — one selectable person in the assignment picker.
+     *
+     * <p>The handle is what the client sends back; the name is what the human
+     * reads. Names are not unique, which is why both travel together: the UI
+     * must disambiguate duplicates (it shows a handle-derived discriminator)
+     * rather than letting two "Ayşe Yılmaz" rows collapse into one choice.
+     */
+    public record AssignableStaffEntry(String handle, String displayName) {}
 }

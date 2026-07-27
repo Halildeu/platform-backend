@@ -9,6 +9,8 @@ import org.springframework.stereotype.Repository;
 
 import com.example.user.model.User;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 
 @Repository
@@ -43,6 +45,17 @@ public interface UserRepository extends JpaRepository<User, Long>, JpaSpecificat
      * @return Optional<User> if a row with that subject exists
      */
     Optional<User> findByKcSubject(String kcSubject);
+
+    /**
+     * Faz 35 ES-203/C — batch display-name resolution for the ethics picker.
+     *
+     * <p>Soft-deleted rows are excluded on purpose: an erased person's name
+     * must not resurface through a directory lookup, and a caller receives
+     * the same silence for "deleted" as for "never existed" — the endpoint
+     * must not become an existence oracle for erased identities.
+     */
+    @Query("select u from User u where u.kcSubject in :subjects and u.deletedAt is null")
+    List<User> findActiveByKcSubjectIn(@Param("subjects") Collection<String> subjects);
 
     /**
      * Find a user by case-insensitive email match.

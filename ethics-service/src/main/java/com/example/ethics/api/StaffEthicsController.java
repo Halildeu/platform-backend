@@ -34,7 +34,7 @@ public class StaffEthicsController {
      * also means two handles for the same colleague on two cases cannot be joined.
      */
     @GetMapping("/{id}/assignable-staff")
-    ResponseEntity<List<String>> assignableStaff(@PathVariable UUID id){
+    ResponseEntity<List<AssignableStaffEntry>> assignableStaff(@PathVariable UUID id){
         return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
                 .body(service.assignableStaff(context.required(),id));
     }
