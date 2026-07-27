@@ -35,6 +35,7 @@ on:
           - transcript-service
           - audit-event-consumer-service
           - ethics-service
+          - budget-service
 
 permissions:
   id-token: write
@@ -72,6 +73,7 @@ jobs:
           - transcript-service
           - audit-event-consumer-service
           - ethics-service
+          - budget-service
 
     steps:
       - name: Checkout

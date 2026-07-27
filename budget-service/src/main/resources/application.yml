@@ -1,0 +1,46 @@
+spring:
+  application:
+    name: budget-service
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${BUDGET_DB_URL:jdbc:postgresql://localhost:5432/budget}
+    username: ${BUDGET_DB_USERNAME:budget}
+    password: ${BUDGET_DB_PASSWORD:}
+    hikari:
+      # SET search_path accepts a not-yet-created schema, so Flyway can create
+      # it on first boot and every pooled runtime connection still resolves
+      # the same non-public schema afterwards.
+      connection-init-sql: SET search_path TO ${BUDGET_DB_SCHEMA:budget_service}, public
+  flyway:
+    enabled: true
+    default-schema: ${BUDGET_DB_SCHEMA:budget_service}
+    schemas: ${BUDGET_DB_SCHEMA:budget_service}
+    table: budget_flyway_history
+    locations: classpath:db/migration,classpath:db/vendor/{vendor}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${SECURITY_JWT_ISSUER:http://localhost:8081/realms/serban}
+          jwk-set-uri: ${SECURITY_JWT_JWK_SET_URI:http://localhost:8081/realms/serban/protocol/openid-connect/certs}
+
+server:
+  port: ${SERVER_PORT:8101}
+
+budget:
+  jwt-audience: ${BUDGET_JWT_AUDIENCE:budget-service}
+  rls-session-enabled: ${BUDGET_RLS_SESSION_ENABLED:true}
+  database-role-guard-enabled: ${BUDGET_DATABASE_ROLE_GUARD_ENABLED:true}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
+logging:
+  level:
+    org.springframework.security: INFO
+    org.springframework.jdbc: INFO
