@@ -40,10 +40,15 @@ class AssignableStaffTest {
     @Autowired com.fasterxml.jackson.databind.ObjectMapper mapper;
     @MockitoBean com.example.ethics.security.EthicsAuthorization authorization;
     @MockitoBean com.example.ethics.security.EthicsEntitlementVerifier entitlements;
+    @MockitoBean com.example.ethics.directory.UserDirectoryClient directory;
 
     @BeforeEach
     void entitled() {
         when(entitlements.hasManageEntitlement(anyString())).thenReturn(true);
+        // ES-203/C default: the directory answers, and knows both synthetic subjects.
+        // Individual tests override this to exercise the failure paths.
+        when(directory.resolve(any())).thenReturn(new com.example.ethics.directory.UserDirectoryClient.Resolution(
+                true, java.util.Map.of("aaa", "Ayşe Yılmaz", "bbb", "Barış Uzun")));
     }
 
     private static String path(String caseId) {
@@ -72,7 +77,7 @@ class AssignableStaffTest {
     }
 
     @Test
-    @DisplayName("atama yetkisi olan personel listeyi alır")
+    @DisplayName("atama yetkisi olan personel handle + görünen ad alır — subject asla")
     void aTriagerGetsTheList() throws Exception {
         when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
         when(authorization.assignableStaff(any())).thenReturn(
@@ -81,9 +86,53 @@ class AssignableStaffTest {
         mvc.perform(get(path(newCase())).with(staff()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", org.hamcrest.Matchers.hasSize(2)))
-                .andExpect(jsonPath("$[0]", org.hamcrest.Matchers.startsWith("v1.")))
-                .andExpect(jsonPath("$[0]", org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("aaa"))))
+                // Sorted by display name, so the human-readable order is deterministic.
+                .andExpect(jsonPath("$[0].displayName").value("Ayşe Yılmaz"))
+                .andExpect(jsonPath("$[1].displayName").value("Barış Uzun"))
+                .andExpect(jsonPath("$[0].handle", org.hamcrest.Matchers.startsWith("v1.")))
+                .andExpect(jsonPath("$[0].handle", org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("aaa"))))
+                .andExpect(jsonPath("$[0].subject").doesNotExist())
                 .andExpect(header().string("Cache-Control", org.hamcrest.Matchers.containsString("no-store")));
+    }
+
+    /**
+     * ES-203/C — this endpoint is where a person gets chosen, so an unreachable name
+     * directory fails closed: a manager picking between unnamed rows is exactly the
+     * wrong-person assignment ES-203 exists to prevent. Distinct code from the policy
+     * engine's 503 so an operator knows which dependency to fix.
+     */
+    @Test
+    @DisplayName("ad dizini cevap veremezse adsız liste değil 503 döner")
+    void anUnreachableDirectoryIsNotANamelessList() throws Exception {
+        when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.assignableStaff(any())).thenReturn(
+                new OpenFgaAuthzService.UserListResult(true, List.of("aaa", "bbb"), "ok"));
+        when(directory.resolve(any())).thenReturn(
+                com.example.ethics.directory.UserDirectoryClient.Resolution.unavailable());
+
+        mvc.perform(get(path(newCase())).with(staff()))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error.code").value("STAFF_DIRECTORY_UNAVAILABLE"));
+    }
+
+    /**
+     * A subject the directory answered for but does not know — deleted from the
+     * platform while its OpenFGA tuple lingers — must not appear as a selectable
+     * ghost. "Assignable" means present in BOTH stores.
+     */
+    @Test
+    @DisplayName("dizinin tanımadığı kişi seçilebilir hayalet olarak listelenmez")
+    void aSubjectUnknownToTheDirectoryIsExcluded() throws Exception {
+        when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.assignableStaff(any())).thenReturn(
+                new OpenFgaAuthzService.UserListResult(true, List.of("aaa", "ghost"), "ok"));
+        when(directory.resolve(any())).thenReturn(new com.example.ethics.directory.UserDirectoryClient.Resolution(
+                true, java.util.Map.of("aaa", "Ayşe Yılmaz")));
+
+        mvc.perform(get(path(newCase())).with(staff()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", org.hamcrest.Matchers.hasSize(1)))
+                .andExpect(jsonPath("$[0].displayName").value("Ayşe Yılmaz"));
     }
 
     /** Seeing a case is not a reason to be handed everyone who works ethics here. */
@@ -119,6 +168,40 @@ class AssignableStaffTest {
         mvc.perform(get(path(newCase())).with(staff()))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.error.code").value("ASSIGNABLE_STAFF_UNAVAILABLE"));
+    }
+
+    /**
+     * ES-203/C — the participants view is a display surface, so it degrades where the
+     * picker fails closed: an unreachable name directory must not make the people on a
+     * case unknowable. The participant is added while the directory works; the listing
+     * afterwards answers 200 with a null name, not 503 and not an empty list.
+     */
+    @Test
+    @DisplayName("katılımcı listesi dizin arızasında 503 değil null adla döner")
+    void theParticipantsViewDegradesInsteadOfFailing() throws Exception {
+        when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.assignableStaff(any())).thenReturn(
+                new OpenFgaAuthzService.UserListResult(true, List.of("aaa"), "ok"));
+        when(authorization.isProductMember(org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        String caseId = newCase();
+
+        String handle = mapper.readTree(mvc.perform(get(path(caseId)).with(staff()))
+                        .andExpect(status().isOk()).andReturn().getResponse().getContentAsString())
+                .get(0).get("handle").asText();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/v1/ethics/cases/" + caseId + "/participants").with(staff())
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"handle\":\"" + handle + "\",\"role\":\"handler\"}"))
+                .andExpect(status().isNoContent());
+
+        when(directory.resolve(any())).thenReturn(
+                com.example.ethics.directory.UserDirectoryClient.Resolution.unavailable());
+        mvc.perform(get("/api/v1/ethics/cases/" + caseId + "/participants").with(staff()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", org.hamcrest.Matchers.hasSize(1)))
+                .andExpect(jsonPath("$[0].handle").value(handle))
+                .andExpect(jsonPath("$[0].displayName").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$[0].role").value("handler"));
     }
 
     /** An org that genuinely has nobody is a 200 with an empty list — and only that. */

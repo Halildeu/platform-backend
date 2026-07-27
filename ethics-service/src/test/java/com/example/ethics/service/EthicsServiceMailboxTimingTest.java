@@ -42,6 +42,7 @@ class EthicsServiceMailboxTimingTest {
     @Mock TransactionKeyLock transactionLocks;
     @Mock NotificationOutboxPublisher notifications;
     @Mock com.example.ethics.repository.CaseParticipantRepository participants;
+    @Mock com.example.ethics.directory.UserDirectoryClient directory;
     EthicsService service;
 
     @BeforeEach
@@ -59,7 +60,8 @@ class EthicsServiceMailboxTimingTest {
                         props, new com.example.ethics.config.PublicTenantProperties(java.util.Map.of())),
                 notifications,
                 participants,
-                new com.example.ethics.security.ParticipantHandles(props));
+                new com.example.ethics.security.ParticipantHandles(props),
+                directory);
     }
 
     @Test

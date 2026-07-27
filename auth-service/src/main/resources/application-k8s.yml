@@ -137,14 +137,25 @@ security:
       ethics-service:
         # Dedicated least-privilege identity for Faz 35 notification intents.
         # Blank keeps provider delivery disabled until Vault/ESO provisions it.
+        #
+        # ES-203/C widens this same identity to the user directory — but only
+        # to users:display-names:read. Deliberately NOT users:internal: that
+        # permission can read credential material via /internal/by-email, and
+        # a leaked ethics credential must be able to resolve a name and
+        # nothing else. The per-audience map makes the pairing explicit so
+        # neither permission can be minted against the other audience.
         secret: ${SERVICE_CLIENT_ETHICS_SERVICE_SECRET:}
         allowed-audiences:
           - notification-orchestrator
+          - user-service
         allowed-permissions:
           - notify:intents:system
+          - users:display-names:read
         allowed-permissions-by-audience:
           notification-orchestrator:
             - notify:intents:system
+          user-service:
+            - users:display-names:read
         require-explicit-permissions: true
       meeting-ai:
         # ESO-synced from Vault; blank keeps the client disabled until provisioned.
@@ -185,7 +196,7 @@ security:
     # defaults so the user-service admin-email mint works even before the gitops
     # env override; gitops sets the canonical list explicitly.
     allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service,user-service,notification-orchestrator,meeting-service,transcript-service}
-    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write,users:internal,notify:intents:system,meeting:analysis-result:write,meeting:session:resolve,transcript:canonical:read,transcript:analysis-job-capability:issue,transcript:session:erase}
+    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write,users:internal,users:display-names:read,notify:intents:system,meeting:analysis-result:write,meeting:session:resolve,transcript:canonical:read,transcript:analysis-job-capability:issue,transcript:session:erase}
     rate-limit-per-minute: ${SECURITY_SERVICE_MINT_RATE_LIMIT:120}
     failed-auth-rate-limit-per-minute: ${SECURITY_SERVICE_MINT_FAILED_AUTH_RATE_LIMIT:30}
   admin-fallback:

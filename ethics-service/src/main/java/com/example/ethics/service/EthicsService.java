@@ -2,6 +2,7 @@ package com.example.ethics.service;
 
 import com.example.ethics.api.EthicsDtos.*;
 import com.example.ethics.config.EthicsProperties;
+import com.example.ethics.directory.UserDirectoryClient;
 import com.example.ethics.model.*;
 import com.example.ethics.notification.NotificationOutboxPublisher;
 import com.example.ethics.repository.*;
@@ -40,6 +41,7 @@ public class EthicsService {
     private final String dummyMailboxHash;
 
     private final ParticipantHandles handles;
+    private final UserDirectoryClient directory;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
             EthicsReportRepository reports, ReporterAccessGrantRepository grants, EthicsMessageRepository messages,
@@ -49,8 +51,10 @@ public class EthicsService {
             PublicTenantResolver tenantResolver,
             NotificationOutboxPublisher notifications,
             CaseParticipantRepository participants,
-            ParticipantHandles handles) {
+            ParticipantHandles handles,
+            UserDirectoryClient directory) {
         this.handles=handles;
+        this.directory=directory;
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
         this.messages=messages;this.sessions=sessions;this.audit=audit;this.idempotency=idempotency;
         this.authorization=authorization;
@@ -279,17 +283,36 @@ public class EthicsService {
      * first while the second is true would conclude the team is empty.
      */
     @Transactional(readOnly=true)
-    public List<String> assignableStaff(StaffContext staff,UUID caseId) {
+    public List<AssignableStaffEntry> assignableStaff(StaffContext staff,UUID caseId) {
         requireCase(staff,caseId,"case_triager");
         var result=authorization.assignableStaff(staff.orgId());
         if(!result.available())
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"ASSIGNABLE_STAFF_UNAVAILABLE");
+        // ES-203/C — this is a decision surface, so the directory is fail-closed: a manager
+        // choosing between unnamed rows is exactly the wrong-person assignment ES-203 exists
+        // to prevent. The two 503 codes stay distinct so an operator can tell which
+        // dependency failed without either error naming a person.
+        var names=directory.resolve(result.subjects());
+        if(!names.available())
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"STAFF_DIRECTORY_UNAVAILABLE");
         // Handles, not subjects. The browser never learns who these people are in any
         // sense that survives this case: the same colleague on another case has an
         // unrelated handle, so two of them cannot be joined into "the same person".
+        // The display name is the one deliberate exception — an authorized triager reads
+        // it live; what stays free of correlation keys is everything durable (log, audit,
+        // export, backup), none of which this response touches.
+        //
+        // A subject the directory answered for but does not know (deleted or never
+        // provisioned) is excluded rather than shown nameless: "assignable" means present
+        // in BOTH the policy engine and the directory. A stale OpenFGA tuple for a
+        // deleted person must not reappear here as a selectable ghost.
         return result.subjects().stream()
-                .map(subject->handles.mint(staff.orgId(),caseId,subject))
-                .sorted()
+                .filter(subject->names.names().containsKey(subject))
+                .map(subject->new AssignableStaffEntry(
+                        handles.mint(staff.orgId(),caseId,subject),
+                        names.names().get(subject)))
+                .sorted(Comparator.comparing(AssignableStaffEntry::displayName,String.CASE_INSENSITIVE_ORDER)
+                        .thenComparing(AssignableStaffEntry::handle))
                 .toList();
     }
 
@@ -351,13 +374,23 @@ public class EthicsService {
                 now));
     }
 
-    /** Who is on this case. Subjects are returned as-is; the caller already passes the case gate. */
+    /**
+     * Who is on this case. The caller already passes the case gate.
+     *
+     * <p>ES-203/C — this is a display surface, so the directory degrades instead of
+     * failing closed: an unreachable name service must not make the participants of a
+     * case unknowable. A {@code null} display name renders as "unresolved", which is
+     * honest; an empty list would claim nobody is on the case, which is not.
+     */
     @Transactional(readOnly=true)
     public List<CaseParticipantView> listParticipants(StaffContext staff,UUID caseId) {
         requireCase(staff,caseId,"case_viewer");
-        return participants.findAllByCaseIdOrderByCreatedAtAsc(caseId).stream()
+        var rows=participants.findAllByCaseIdOrderByCreatedAtAsc(caseId);
+        var names=directory.resolve(rows.stream().map(CaseParticipant::getKcSubject).distinct().toList());
+        return rows.stream()
                 .map(p -> new CaseParticipantView(
                         handles.mint(staff.orgId(),caseId,p.getKcSubject()),
+                        names.names().get(p.getKcSubject()),
                         p.getRole(),p.getCreatedAt())).toList();
     }
 

@@ -698,6 +698,19 @@ public class UserService implements UserDetailsService { // UserDetailsService a
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + id));
     }
 
+    /**
+     * Faz 35 ES-203/C — subject → display name, active rows only.
+     *
+     * <p>Nothing on this path is logged: the subjects belong to an ethics
+     * workflow whose whole design keeps identities out of durable records,
+     * and a debug line here would undo that from the outside.
+     */
+    public java.util.Map<String, String> resolveDisplayNames(java.util.Collection<String> subjects) {
+        return userRepository.findActiveByKcSubjectIn(subjects).stream()
+                .filter(user -> user.getKcSubject() != null && user.getName() != null)
+                .collect(java.util.stream.Collectors.toMap(User::getKcSubject, User::getName, (a, b) -> a));
+    }
+
     public String updateActivation(Long userId, boolean active, Long performedBy) {
         // Active-only: a soft-deleted user cannot be (de)activated (404).
         User user = userRepository.findActiveById(userId)

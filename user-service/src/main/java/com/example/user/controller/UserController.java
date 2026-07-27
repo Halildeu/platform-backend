@@ -83,13 +83,24 @@ public class UserController {
     }
 
     private void requireServiceAuthority(String authority) {
+        requireAnyServiceAuthority(authority);
+    }
+
+    /**
+     * Faz 35 ES-203/C — some internal endpoints accept more than one service
+     * authority: the narrow purpose-bound permission its dedicated caller
+     * holds, plus the broad {@code PERM_users:internal} that already implies
+     * it. Broad-implies-narrow is not an escalation; the reverse would be.
+     */
+    private void requireAnyServiceAuthority(String... authorities) {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (!(authentication instanceof ServiceAuthenticationToken serviceAuth)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Service token gerekli");
         }
+        List<String> accepted = List.of(authorities);
         boolean hasAuthority = serviceAuth.getAuthorities().stream()
                 .map(GrantedAuthority::getAuthority)
-                .anyMatch(authority::equals);
+                .anyMatch(accepted::contains);
         if (!hasAuthority) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Yetersiz servis yetkisi");
         }
@@ -186,6 +197,30 @@ public class UserController {
                         )
                 ))
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Faz 35 ES-203/C — batch display-name resolution for the ethics picker.
+     *
+     * <p>POST rather than GET so subjects never enter a URL, an access log or
+     * a proxy log. One entry per requested subject, order preserved;
+     * {@code displayName} is {@code null} for unknown and soft-deleted alike,
+     * so the endpoint is not an existence oracle for erased identities.
+     * Accepts the narrow {@code users:display-names:read} permission (all its
+     * dedicated caller holds) or the broad {@code users:internal}.
+     *
+     * <p>Nothing here is logged, and the response carries no field beyond
+     * subject + name — see {@link com.example.user.dto.DisplayNameEntry}.
+     */
+    @PostMapping("/internal/display-names")
+    public ResponseEntity<List<com.example.user.dto.DisplayNameEntry>> resolveDisplayNamesInternal(
+            @Valid @RequestBody com.example.user.dto.DisplayNameLookupRequest request) {
+        requireAnyServiceAuthority("PERM_users:display-names:read", "PERM_users:internal");
+        Map<String, String> resolved = userService.resolveDisplayNames(request.subjects());
+        List<com.example.user.dto.DisplayNameEntry> body = request.subjects().stream()
+                .map(subject -> new com.example.user.dto.DisplayNameEntry(subject, resolved.get(subject)))
+                .collect(Collectors.toList());
+        return ResponseEntity.ok(body);
     }
 
     @PostMapping("/internal/{userId}/activate")

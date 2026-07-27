@@ -86,6 +86,20 @@ ethics:
     # healthy. One hyphen, the whole delivery path.
     channel: ${ETHICS_NOTIFICATION_CHANNEL:in-app}
     http-timeout: ${ETHICS_NOTIFICATION_HTTP_TIMEOUT:3s}
+  user-directory:
+    # ES-203/C — display-name pass-through. Same service identity as the
+    # notification path (one credential in Vault, no rotation drift); the
+    # audience and permission are narrower on purpose: this token can resolve
+    # a name and nothing else. Blank secret = directory unavailable, and each
+    # consumer takes its declared failure path (picker 503, participants null).
+    base-url: ${ETHICS_USER_DIRECTORY_URL:http://user-service:8089}
+    token-url: ${ETHICS_USER_DIRECTORY_TOKEN_URL:${ETHICS_NOTIFICATION_TOKEN_URL:http://auth-service:8088/oauth2/token}}
+    client-id: ${ETHICS_USER_DIRECTORY_CLIENT_ID:${ETHICS_NOTIFICATION_CLIENT_ID:ethics-service}}
+    client-secret: ${ETHICS_USER_DIRECTORY_CLIENT_SECRET:${ETHICS_NOTIFICATION_CLIENT_SECRET:}}
+    token-audience: ${ETHICS_USER_DIRECTORY_TOKEN_AUDIENCE:user-service}
+    token-permission: ${ETHICS_USER_DIRECTORY_TOKEN_PERMISSION:users:display-names:read}
+    http-timeout: ${ETHICS_USER_DIRECTORY_HTTP_TIMEOUT:3s}
+    batch-limit: ${ETHICS_USER_DIRECTORY_BATCH_LIMIT:200}
   evidence:
     # Fail-closed baseline: public text intake and mailbox remain usable while
     # attachment declarations stay unavailable until the isolated TEST
