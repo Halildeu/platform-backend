@@ -50,11 +50,13 @@ class ReportContractGateTest {
         // (fifth remote-http, paged-events-total — same Codex
         // "aggregation gerekli" warning kabul; option (a) filter-only;
         // gerçek digest mart layer post-D2.5 sprint).
+        // Budget actuals source trace: bumped 37 → 38 for
+        // fin-proje-muhasebe-gercekleseni.
         ContractReport report = ReportContractGate.create().gate();
 
         assertThat(report.reportCount())
-                .as("All 37 migrated reports plus exceptions.json (excluded) discovered by sweep")
-                .isEqualTo(37);
+                .as("All 38 migrated reports plus exceptions.json (excluded) discovered by sweep")
+                .isEqualTo(38);
 
         // Codex iter-4 §1d-AGREE: gate must produce zero unsuppressed FAILs.
         // Codex 019e3f5c: all governance debt is rule-closed (RC-001 carve-out
