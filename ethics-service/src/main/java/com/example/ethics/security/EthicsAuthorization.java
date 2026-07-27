@@ -64,13 +64,17 @@ public class EthicsAuthorization {
      * handling, which is exactly the capability an interested party would want. Keeping the actor
      * implicit makes that unrepresentable rather than merely forbidden.
      *
-     * @return true when this call created the relation, false when it was already present
+     * <p>Callers reach this only after {@code require(.., "case_viewer", ..)} passed, which already
+     * fails when the relation is present — so "already recused" is a concurrent-write race, not a
+     * repeat declaration. The check is kept for that race and the call is a no-op when it fires; it
+     * is not a second outcome the caller should report differently, and treating it as one produced
+     * an audit event no request could ever reach.
      */
-    public boolean recuseSelf(StaffContext staff, UUID caseId) {
+    public void recuseSelf(StaffContext staff, UUID caseId) {
         OpenFgaAuthzService.CheckResult existing =
                 openFga.checkNoCacheResult(staff.subject(), "recused", CASE_OBJECT, caseId.toString());
         if (existing.allowed()) {
-            return false;
+            return;
         }
         if (!isHealthyAbsence(existing)) {
             // The policy engine did not answer "no such relation" — it did not answer at all.
@@ -79,6 +83,5 @@ public class EthicsAuthorization {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Case not found.");
         }
         openFga.writeTuple(staff.subject(), "recused", CASE_OBJECT, caseId.toString());
-        return true;
     }
 }

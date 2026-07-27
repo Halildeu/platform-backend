@@ -89,18 +89,21 @@ class EthicsAuthorizationTest {
     }
 
     /**
-     * ES-203. A recusal is written once and reported as created; a repeat reports "already there"
-     * without writing again. The caller distinguishes the two so the ledger can record a repeat
-     * attempt as its own event rather than losing it.
+     * ES-203. The relation is written once; a second call is a no-op rather than a second write.
+     *
+     * <p>Reaching this twice means two requests raced, not that anyone declared twice — the caller
+     * only gets here after {@code require(.., "case_viewer", ..)} passed, and that fails once the
+     * relation exists. Measured on the running cell: first POST 204, second POST 404, one ledger
+     * entry.
      */
     @Test
-    void selfRecusalIsWrittenOnceAndThenReportedAsAlreadyPresent() {
+    void selfRecusalWritesTheRelationOnceAndIsANoOpOnARace() {
         UUID caseId = UUID.randomUUID();
         when(openFga.checkNoCacheResult(
                 staff.subject(), "recused", EthicsAuthorization.CASE_OBJECT, caseId.toString()))
                 .thenReturn(result(false, "no_relation"));
 
-        assertThat(authorization.recuseSelf(staff, caseId)).isTrue();
+        authorization.recuseSelf(staff, caseId);
         verify(openFga).writeTuple(
                 staff.subject(), "recused", EthicsAuthorization.CASE_OBJECT, caseId.toString());
 
@@ -109,7 +112,7 @@ class EthicsAuthorizationTest {
                 staff.subject(), "recused", EthicsAuthorization.CASE_OBJECT, caseId.toString()))
                 .thenReturn(result(true, "granted"));
 
-        assertThat(authorization.recuseSelf(staff, caseId)).isFalse();
+        authorization.recuseSelf(staff, caseId);
         verify(openFga, never()).writeTuple(anyString(), anyString(), anyString(), anyString());
     }
 
