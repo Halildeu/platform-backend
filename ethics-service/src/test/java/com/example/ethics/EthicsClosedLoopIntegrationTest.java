@@ -129,9 +129,15 @@ class EthicsClosedLoopIntegrationTest {
         String reporterMessageId=mapper.readTree(reporterReplyResult.getResponse().getContentAsString()).get("id").asText();
 
         var staff=jwt().jwt(j->j.subject("staff-1").claim("org_id",ORG.toString())).authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage"));
+        // ES-301A: closing without a finding is refused. This used to succeed, which is
+        // why the live cell reached 160 cases with not one conclusion worth reading.
         mvc.perform(patch("/api/v1/ethics/cases/{id}",caseId).with(staff).header("If-Match","\"0\"")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CLOSED\"}"))
-                .andExpect(status().isOk());
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("CASE_OUTCOME_REQUIRED"));
+        mvc.perform(patch("/api/v1/ethics/cases/{id}",caseId).with(staff).header("If-Match","\"0\"")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CLOSED\",\"outcome\":\"UNSUBSTANTIATED\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.outcome").value("UNSUBSTANTIATED"))
+                .andExpect(jsonPath("$.closedAt").isNotEmpty());
         mvc.perform(get("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CLOSED"))

@@ -27,9 +27,18 @@ public final class EthicsDtos {
     public record MessageRequest(@NotBlank @Size(max=16000) String body) {}
     public record MessageResponse(UUID id, String authorType, String visibility, String body, Instant createdAt) {}
     public record MailboxViewResponse(String status, List<MessageResponse> messages) {}
-    public record CaseSummary(UUID id, String status, String assignedTo, long version, Instant createdAt, Instant updatedAt) {}
-    public record CaseDetail(UUID id, String status, String assignedTo, long version, String mode, String category, String subject, String description, List<MessageResponse> messages) {}
-    public record UpdateCaseRequest(@Size(max=40) String status, @Size(max=200) String assignedTo) {}
+    public record CaseSummary(UUID id, String status, String assignedTo, long version, Instant createdAt, Instant updatedAt,
+                              Instant acknowledgedAt, String outcome, Instant closedAt) {}
+    public record CaseDetail(UUID id, String status, String assignedTo, long version, String mode, String category, String subject, String description, List<MessageResponse> messages,
+                             Instant acknowledgedAt, String outcome, Instant closedAt) {}
+    /**
+     * ES-301A. {@code outcome} is required when closing and refused otherwise; {@code reason}
+     * is required only when reopening a closed case. Neither is a free-form annotation —
+     * both exist because a conclusion with no finding, or a reopening with no stated cause,
+     * leaves a record that cannot be read back years later.
+     */
+    public record UpdateCaseRequest(@Size(max=40) String status, @Size(max=200) String assignedTo,
+                                    @Size(max=40) String outcome, @Size(max=500) String reason) {}
     /**
      * ES-203 / B+ slice 1. The subject is a Keycloak subject UUID — the same identity the policy
      * engine uses. The pattern refuses anything that is not one, so a display name or a free-text
