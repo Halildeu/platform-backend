@@ -65,6 +65,12 @@ spring:
             - Path=/schemas/**
           filters:
             - StripPrefix=1
+        # Budget planning is an isolated write domain. The path is passed
+        # verbatim; report-service and Workcube remain read-only.
+        - id: budget-service
+          uri: ${BUDGET_SERVICE_URL:http://budget-service:8101}
+          predicates:
+            - Path=/api/v1/budgets/**
         # Faz 23.6 hardening (2026-05-08): notification-orchestrator
         # `/api/v1/notify/**` requests were 404'ing at the gateway
         # because no route matched the prefix. Browser console showed

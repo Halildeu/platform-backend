@@ -27,6 +27,7 @@
         <module>endpoint-admin-service</module>
         <module>meeting-service</module>
         <module>report-service</module>
+        <module>budget-service</module>
         <module>notification-orchestrator</module>
         <module>audio-gateway-service</module>
         <module>transcript-service</module>
