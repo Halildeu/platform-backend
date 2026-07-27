@@ -27,9 +27,23 @@ public final class EthicsDtos {
     public record MessageRequest(@NotBlank @Size(max=16000) String body) {}
     public record MessageResponse(UUID id, String authorType, String visibility, String body, Instant createdAt) {}
     public record MailboxViewResponse(String status, List<MessageResponse> messages) {}
-    public record CaseSummary(UUID id, String status, String assignedTo, long version, Instant createdAt, Instant updatedAt,
+    /**
+     * ES-203 slice 2 — {@code assignedTo} is gone; what remains is
+     * {@code legacyAssignmentLabel}.
+     *
+     * <p>The rename is the point. The old field was free text that had held
+     * {@code team:ethics-test} (a team, not a person) and {@code jbjb} (junk a
+     * human typed and the system accepted). Nothing derives authority from it
+     * and nothing ever did, but a field called "assignedTo" reads like an
+     * answer to "who is on this case" — and a reader who believes that answer
+     * is reading a label instead of the participant list.
+     *
+     * <p>It is {@code null} whenever the case has participants: once there is
+     * a real answer, the legacy label must not sit next to it as a rival one.
+     */
+    public record CaseSummary(UUID id, String status, String legacyAssignmentLabel, long version, Instant createdAt, Instant updatedAt,
                               Instant acknowledgedAt, String outcome, Instant closedAt) {}
-    public record CaseDetail(UUID id, String status, String assignedTo, long version, String mode, String category, String subject, String description, List<MessageResponse> messages,
+    public record CaseDetail(UUID id, String status, String legacyAssignmentLabel, long version, String mode, String category, String subject, String description, List<MessageResponse> messages,
                              Instant acknowledgedAt, String outcome, Instant closedAt) {}
     /**
      * ES-301A / ES-301B. {@code outcome} is required when closing and refused otherwise;
@@ -42,7 +56,18 @@ public final class EthicsDtos {
      * {@code outcome}: the internal finding is a workflow value, and what a person outside
      * the organisation should be told about their report is a judgement someone has to make.
      */
-    public record UpdateCaseRequest(@Size(max=40) String status, @Size(max=200) String assignedTo,
+    /**
+     * ES-203 slice 2 — {@code assignedTo} is still declared, only so it can be refused.
+     *
+     * <p>Dropping the field would have been quieter and worse: Spring's default mapper
+     * ignores unknown properties, so an old client sending {@code assignedTo} would get
+     * 200 and believe it had assigned someone, while nothing changed. A caller that is
+     * wrong must be told, not humoured. The field is therefore kept, accepted only as
+     * absent, and any value — including a blank one — is refused with a code that names
+     * the replacement.
+     */
+    public record UpdateCaseRequest(@Size(max=40) String status,
+                                    @Size(max=200) String assignedTo,
                                     @Size(max=40) String outcome, @Size(max=500) String reason,
                                     @Size(max=16000) String closingMessage) {}
     /**
