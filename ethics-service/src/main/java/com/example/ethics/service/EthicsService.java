@@ -180,6 +180,7 @@ public class EthicsService {
         long expected=parseVersion(ifMatch);
         if(item.getVersion()!=expected) throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED,"CASE_VERSION_MISMATCH");
         String reopenReason=null;
+        String closingMessage=null;
         if(request.status()!=null&&!request.status().isBlank()) {
             String from=item.getStatus();
             String to=CaseLifecycle.canonicalStatus(request.status());
@@ -193,10 +194,20 @@ public class EthicsService {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_OUTCOME_REQUIRED");
                 outcome=CaseLifecycle.canonicalOutcome(request.outcome());
                 if(outcome==null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_OUTCOME_INVALID");
-            } else if(request.outcome()!=null&&!request.outcome().isBlank()) {
-                // An outcome on a case that is not closing would be a finding nobody
-                // ever stands behind: it would sit on an open case and read as decided.
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_OUTCOME_NOT_APPLICABLE");
+                // ES-301B — art. 9(1)(f) asks for feedback to the reporting person, not a
+                // finding filed internally. Recording the outcome and telling the reporter are
+                // one act here for the same reason acknowledgement is: kept apart, the service
+                // could report having concluded a case whose reporter was told nothing.
+                if(request.closingMessage()==null||request.closingMessage().isBlank())
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_CLOSING_MESSAGE_REQUIRED");
+                closingMessage=request.closingMessage();
+            } else {
+                if(request.closingMessage()!=null&&!request.closingMessage().isBlank())
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_CLOSING_MESSAGE_NOT_APPLICABLE");
+                if(request.outcome()!=null&&!request.outcome().isBlank())
+                    // An outcome on a case that is not closing would be a finding nobody ever
+                    // stands behind: it would sit on an open case and read as decided.
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_OUTCOME_NOT_APPLICABLE");
             }
             if(CaseLifecycle.isReopen(from,to)) {
                 // Reopening discards a recorded conclusion. That needs a stated reason,
@@ -212,6 +223,17 @@ public class EthicsService {
         }
         if(request.assignedTo()!=null) item.setAssignedTo(request.assignedTo().isBlank()?null:request.assignedTo());
         cases.saveAndFlush(item);
+        if(closingMessage!=null) {
+            // After the case is saved, not before: writing the message stamps the
+            // acknowledgement, and that statement clears the persistence context — which
+            // would detach `item` mid-transition. Ordering inside the transaction is free;
+            // both land together or neither does.
+            //
+            // The idempotency key comes from the version the caller already had to present,
+            // so a retried close cannot leave the reporter reading the same message twice.
+            createMessage(caseId,"STAFF","REPORTER_VISIBLE","closure-"+expected,
+                    closingMessage,staff.orgId(),secrets.sha256(staff.subject()),()->{});
+        }
         Map<String,Object> payload=new LinkedHashMap<>(Map.of(
                 "status", item.getStatus(),
                 "assigned", item.getAssignedTo() != null,
@@ -235,18 +257,9 @@ public class EthicsService {
     @Transactional
     public MessageResponse staffReply(StaffContext staff,UUID caseId,String key,MessageRequest request,boolean internal) {
         requireCase(staff,caseId,"case_handler");
-        MessageResponse response=createMessage(caseId,"STAFF",internal?"INTERNAL":"REPORTER_VISIBLE",key,request.body(),staff.orgId(),secrets.sha256(staff.subject()),
+        return createMessage(caseId,"STAFF",internal?"INTERNAL":"REPORTER_VISIBLE",key,request.body(),staff.orgId(),secrets.sha256(staff.subject()),
                 () -> ensureOpen(cases.findByIdAndOrgId(caseId,staff.orgId())
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."))));
-        if(!internal && cases.markAcknowledged(caseId,response.createdAt())==1) {
-            EthicsCase item=cases.findByIdAndOrgId(caseId,staff.orgId()).orElseThrow();
-            audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,"ethics.case.acknowledged",
-                    encodeAuditPayload(Map.of(
-                            "actorHash", secrets.sha256(staff.subject()),
-                            "elapsedDays", java.time.Duration.between(item.getCreatedAt(),response.createdAt()).toDays())),
-                    Instant.now()));
-        }
-        return response;
     }
 
     /**
@@ -333,6 +346,13 @@ public class EthicsService {
                 Instant.now()));
     }
 
+    /**
+     * The one place a case message is written — and therefore the one place the art. 9(1)(b)
+     * acknowledgement can be stamped without a future caller being able to forget it. It used
+     * to be stamped by {@code staffReply}, which was correct until closing the case also began
+     * writing to the reporter: a case closed straight out of {@code NEW} would have told its
+     * reporter something while the record still said nobody had been in touch.
+     */
     private MessageResponse createMessage(UUID caseId,String author,String visibility,String key,String body,UUID orgId,String actorHash,Runnable beforeCreate){
         if(key==null||key.isBlank()||key.length()>200) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Idempotency-Key is required.");
         transactionLocks.lock("message\n"+caseId+"\n"+author+"\n"+key);
@@ -347,6 +367,16 @@ public class EthicsService {
                 Instant.now()));
         if ("REPORTER".equals(author)) {
             notifications.enqueue(orgId, NotificationOutboxPublisher.REPORTER_MESSAGE, Instant.now());
+        } else if ("REPORTER_VISIBLE".equals(visibility)
+                && cases.markAcknowledged(caseId, message.getCreatedAt()) == 1) {
+            // The row count decides: only the write that actually stamped records the event,
+            // so a second reply cannot claim to have acknowledged an already-acknowledged case.
+            EthicsCase item = cases.findById(caseId).orElseThrow();
+            audit.save(new AuditOutbox(UUID.randomUUID(), orgId, caseId, "ethics.case.acknowledged",
+                    encodeAuditPayload(Map.of(
+                            "actorHash", actorHash,
+                            "elapsedDays", java.time.Duration.between(item.getCreatedAt(), message.getCreatedAt()).toDays())),
+                    Instant.now()));
         }
         return messageResponse(message);
     }

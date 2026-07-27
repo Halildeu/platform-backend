@@ -135,13 +135,16 @@ class EthicsClosedLoopIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CLOSED\"}"))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("CASE_OUTCOME_REQUIRED"));
         mvc.perform(patch("/api/v1/ethics/cases/{id}",caseId).with(staff).header("If-Match","\"0\"")
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CLOSED\",\"outcome\":\"UNSUBSTANTIATED\"}"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CLOSED\",\"outcome\":\"UNSUBSTANTIATED\",\"closingMessage\":\"Inceleme sonuclandi.\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.outcome").value("UNSUBSTANTIATED"))
                 .andExpect(jsonPath("$.closedAt").isNotEmpty());
+        // Three now, not two: ES-301B makes the conclusion itself a message the reporter reads,
+        // so "the case is closed" and "here is what came of it" arrive together.
         mvc.perform(get("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CLOSED"))
-                .andExpect(jsonPath("$.messages",hasSize(2)))
+                .andExpect(jsonPath("$.messages",hasSize(3)))
+                .andExpect(jsonPath("$.messages[2].body").value("Inceleme sonuclandi."))
                 .andExpect(jsonPath("$.caseId").doesNotExist())
                 .andExpect(jsonPath("$.assignedTo").doesNotExist());
         mvc.perform(post("/api/v1/ethics/cases/{id}/messages",caseId).with(staff)

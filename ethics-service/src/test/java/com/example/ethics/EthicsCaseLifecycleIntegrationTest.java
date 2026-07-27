@@ -81,7 +81,7 @@ class EthicsCaseLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.status").value("ASSESSING"));
         patchCase(id, 1, "{\"status\":\"INVESTIGATING\"}").andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("INVESTIGATING"));
-        patchCase(id, 2, "{\"status\":\"CLOSED\",\"outcome\":\"SUBSTANTIATED\"}").andExpect(status().isOk())
+        patchCase(id, 2, "{\"status\":\"CLOSED\",\"outcome\":\"SUBSTANTIATED\",\"closingMessage\":\"Inceleme tamamlandi.\"}").andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CLOSED"))
                 .andExpect(jsonPath("$.outcome").value("SUBSTANTIATED"))
                 .andExpect(jsonPath("$.closedAt").isNotEmpty());
@@ -95,7 +95,7 @@ class EthicsCaseLifecycleIntegrationTest {
     @DisplayName("kapalı dava NEW'e döndürülemez")
     void closedCaseCannotBeSentBackToNew() throws Exception {
         String id = newCase("lifecycle-reopen-new");
-        patchCase(id, 0, "{\"status\":\"CLOSED\",\"outcome\":\"OUT_OF_SCOPE\"}").andExpect(status().isOk());
+        patchCase(id, 0, "{\"status\":\"CLOSED\",\"outcome\":\"OUT_OF_SCOPE\",\"closingMessage\":\"Bildirim kapsam disinda.\"}").andExpect(status().isOk());
         patchCase(id, 1, "{\"status\":\"NEW\"}")
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("CASE_TRANSITION_NOT_ALLOWED"));
@@ -114,7 +114,7 @@ class EthicsCaseLifecycleIntegrationTest {
     @DisplayName("yeniden açma gerekçe ister ve sonucu temizler")
     void reopenRequiresAReasonAndClearsTheFinding() throws Exception {
         String id = newCase("lifecycle-reopen");
-        patchCase(id, 0, "{\"status\":\"CLOSED\",\"outcome\":\"UNSUBSTANTIATED\"}").andExpect(status().isOk());
+        patchCase(id, 0, "{\"status\":\"CLOSED\",\"outcome\":\"UNSUBSTANTIATED\",\"closingMessage\":\"Iddia dogrulanamadi.\"}").andExpect(status().isOk());
 
         patchCase(id, 1, "{\"status\":\"ASSESSING\"}")
                 .andExpect(status().isBadRequest())
@@ -127,6 +127,64 @@ class EthicsCaseLifecycleIntegrationTest {
                 .andExpect(jsonPath("$.closedAt").doesNotExist());
 
         assertThat(auditEventTypes(id)).contains("ethics.case.reopened");
+    }
+
+    // ---------- the conclusion has to reach the reporter (ES-301B) ----------
+
+    /**
+     * A finding filed internally is not feedback. Art. 9(1)(f) asks the organisation to tell
+     * the reporting person what came of their report, so closing writes to them or does not
+     * happen — the same shape as acknowledgement, and for the same reason.
+     */
+    @Test
+    @DisplayName("kapanış mesajsız reddedilir")
+    void closingWithoutTellingTheReporterIsRefused() throws Exception {
+        String id = newCase("lifecycle-no-closing-message");
+        patchCase(id, 0, "{\"status\":\"CLOSED\",\"outcome\":\"UNSUBSTANTIATED\"}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("CASE_CLOSING_MESSAGE_REQUIRED"));
+        assertThat(cases.findById(UUID.fromString(id)).orElseThrow().getStatus()).isEqualTo("NEW");
+    }
+
+    @Test
+    @DisplayName("kapanış mesajı ihbarcının posta kutusuna düşer")
+    void theClosingMessageReachesTheReporter() throws Exception {
+        String id = newCase("lifecycle-closing-message");
+        patchCase(id, 0, "{\"status\":\"CLOSED\",\"outcome\":\"OUT_OF_SCOPE\","
+                        + "\"closingMessage\":\"Bildiriminiz etik hattin kapsami disinda kaldi.\"}")
+                .andExpect(status().isOk());
+
+        MvcResult detail = mvc.perform(get("/api/v1/ethics/cases/{id}", id).with(staff()))
+                .andExpect(status().isOk()).andReturn();
+        var messages = mapper.readTree(detail.getResponse().getContentAsString()).get("messages");
+        assertThat(messages).hasSize(1);
+        assertThat(messages.get(0).get("visibility").asText())
+                .as("kapanis mesaji ic not degil, ihbarcinin gordugu bir mesaj olmali")
+                .isEqualTo("REPORTER_VISIBLE");
+        assertThat(messages.get(0).get("body").asText())
+                .isEqualTo("Bildiriminiz etik hattin kapsami disinda kaldi.");
+    }
+
+    /** Closing straight out of NEW still contacts the reporter, so it is the acknowledgement too. */
+    @Test
+    @DisplayName("doğrudan kapanan dava da teyit almış sayılır")
+    void closingImmediatelyAlsoAcknowledges() throws Exception {
+        String id = newCase("lifecycle-close-acks");
+        assertThat(cases.findById(UUID.fromString(id)).orElseThrow().getAcknowledgedAt()).isNull();
+        patchCase(id, 0, "{\"status\":\"CLOSED\",\"outcome\":\"WITHDRAWN\","
+                        + "\"closingMessage\":\"Bildiriminizi geri cektiginizi kaydettik.\"}")
+                .andExpect(status().isOk());
+        assertThat(cases.findById(UUID.fromString(id)).orElseThrow().getAcknowledgedAt()).isNotNull();
+        assertThat(auditEventTypes(id)).contains("ethics.case.acknowledged");
+    }
+
+    @Test
+    @DisplayName("açık davaya kapanış mesajı iliştirilemez")
+    void aClosingMessageOnAnOpenCaseIsRefused() throws Exception {
+        String id = newCase("lifecycle-early-closing-message");
+        patchCase(id, 0, "{\"status\":\"ASSESSING\",\"closingMessage\":\"Erken kapanis metni\"}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("CASE_CLOSING_MESSAGE_NOT_APPLICABLE"));
     }
 
     // ---------- conclusion ----------
