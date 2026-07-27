@@ -36,13 +36,19 @@ UPDATE ethics_cases SET acknowledged_at = (
       AND m.author_type = 'STAFF'
       AND m.visibility = 'REPORTER_VISIBLE');
 
--- `IN_REVIEW` becomes `ASSESSING`, not `INVESTIGATING`. Every one of these 29
--- cases has a staff reply, but a reply can as easily be a clarifying question
--- as a step into investigation. `ASSESSING` is the weaker claim and the only
--- one the evidence supports; staff can move a case forward themselves.
+-- The old constraint comes off before the backfill, not after. It admits only
+-- NEW/IN_REVIEW/CLOSED, so while it stands the UPDATE below cannot write the very value
+-- it exists to write. On an empty database the UPDATE matches nothing and the ordering
+-- never matters — which is why this passed every test and was refused by the live cell
+-- on its first contact with 29 real `IN_REVIEW` rows.
+ALTER TABLE ethics_cases DROP CONSTRAINT ck_ethics_case_status;
+
+-- `IN_REVIEW` becomes `ASSESSING`, not `INVESTIGATING`. Every one of these cases has a
+-- staff reply, but a reply can as easily be a clarifying question as a step into
+-- investigation. `ASSESSING` is the weaker claim and the only one the evidence supports;
+-- staff can move a case forward themselves.
 UPDATE ethics_cases SET status = 'ASSESSING' WHERE status = 'IN_REVIEW';
 
-ALTER TABLE ethics_cases DROP CONSTRAINT ck_ethics_case_status;
 ALTER TABLE ethics_cases ADD CONSTRAINT ck_ethics_case_status
     CHECK (status IN ('NEW','ASSESSING','INVESTIGATING','CLOSED'));
 
