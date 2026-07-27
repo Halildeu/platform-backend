@@ -5,6 +5,7 @@ import com.example.ethics.config.EthicsProperties;
 import com.example.ethics.model.*;
 import com.example.ethics.notification.NotificationOutboxPublisher;
 import com.example.ethics.repository.*;
+import com.example.ethics.model.CaseParticipant;
 import com.example.ethics.security.StaffContext;
 import com.example.ethics.security.EthicsAuthorization;
 import com.example.ethics.security.PublicTenantResolver;
@@ -34,6 +35,7 @@ public class EthicsService {
     private final ObjectMapper auditMapper;
     private final PublicTenantResolver tenantResolver;
     private final NotificationOutboxPublisher notifications;
+    private final CaseParticipantRepository participants;
     private final String dummyMailboxHash;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
@@ -42,7 +44,8 @@ public class EthicsService {
             EthicsAuthorization authorization, TransactionKeyLock transactionLocks,
             PublicIntakeSanitizer publicIntakeSanitizer, ObjectMapper auditMapper,
             PublicTenantResolver tenantResolver,
-            NotificationOutboxPublisher notifications) {
+            NotificationOutboxPublisher notifications,
+            CaseParticipantRepository participants) {
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
         this.messages=messages;this.sessions=sessions;this.audit=audit;this.idempotency=idempotency;
         this.authorization=authorization;
@@ -51,6 +54,7 @@ public class EthicsService {
         this.auditMapper=auditMapper;
         this.tenantResolver=tenantResolver;
         this.notifications=notifications;
+        this.participants=participants;
         // Missing receipts, wrong channels and locked grants must spend the
         // same PBKDF work as a wrong secret. This process-local value is never
         // persisted or exposed and exists solely to close the timing oracle.
@@ -185,6 +189,61 @@ public class EthicsService {
         return createMessage(caseId,"STAFF",internal?"INTERNAL":"REPORTER_VISIBLE",key,request.body(),staff.orgId(),secrets.sha256(staff.subject()),
                 () -> ensureOpen(cases.findByIdAndOrgId(caseId,staff.orgId())
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."))));
+    }
+
+    /**
+     * ES-203 / B+ slice 1 — record that a named person is on this case.
+     *
+     * <p>Replaces naming someone by label. {@code ethics_cases.assigned_to} is free text that has
+     * held values like {@code jbjb}; nothing about it can be handed to an authorization check,
+     * which is why third-party conflict, pre-disclosure routing and reveal-approver exclusion all
+     * had nothing to name. The subject here is the same Keycloak subject the policy engine uses.
+     *
+     * <p><b>A participant row grants nothing.</b> Access still comes from product membership minus
+     * {@code conflicted}/{@code recused} — exactly as before. Assignment and authorization stay
+     * separate facts, which is also why no OpenFGA tuple is written: with nothing to keep in sync
+     * across two stores, there is no window in which one says yes and the other no. The plan this
+     * slice came from assumed a dual write and therefore an outbox; measuring what a participant
+     * actually needs to do removed the requirement rather than solving it.
+     *
+     * <p>Three things are verified server-side before the row exists:
+     * <ul>
+     *   <li>the caller may assign on this case ({@code case_triager});</li>
+     *   <li>the target is a member of <em>this</em> org's product — a subject from another tenant
+     *       is refused, so assignment cannot be used to reach across orgs;</li>
+     *   <li>the role is one the authorization model defines.</li>
+     * </ul>
+     */
+    @Transactional
+    public void addParticipant(StaffContext staff,UUID caseId,String targetSubject,String role) {
+        requireCase(staff,caseId,"case_triager");
+        if(targetSubject==null||targetSubject.isBlank()||targetSubject.length()>64)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"PARTICIPANT_SUBJECT_INVALID");
+        if(!CaseParticipant.ALLOWED_ROLES.contains(role))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"PARTICIPANT_ROLE_INVALID");
+        // The target must already belong to this org's product. Without this an
+        // assignment could name any subject at all, including one from another
+        // tenant, and the row would then be used by routing as if it were real.
+        if(!authorization.isProductMember(targetSubject,staff.orgId()))
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,"PARTICIPANT_NOT_IN_ORG");
+        if(participants.findByCaseIdAndKcSubjectAndRole(caseId,targetSubject,role).isPresent()) return;
+        Instant now=Instant.now();
+        participants.save(new CaseParticipant(UUID.randomUUID(),caseId,staff.orgId(),targetSubject,role,now,
+                secrets.sha256(staff.subject())));
+        audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,"ethics.case.participant.added",
+                encodeAuditPayload(Map.of(
+                        "actorHash", secrets.sha256(staff.subject()),
+                        "targetHash", secrets.sha256(targetSubject),
+                        "role", role)),
+                now));
+    }
+
+    /** Who is on this case. Subjects are returned as-is; the caller already passes the case gate. */
+    @Transactional(readOnly=true)
+    public List<CaseParticipantView> listParticipants(StaffContext staff,UUID caseId) {
+        requireCase(staff,caseId,"case_viewer");
+        return participants.findAllByCaseIdOrderByCreatedAtAsc(caseId).stream()
+                .map(p -> new CaseParticipantView(p.getKcSubject(),p.getRole(),p.getCreatedAt())).toList();
     }
 
     /**

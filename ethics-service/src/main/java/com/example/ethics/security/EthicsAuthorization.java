@@ -57,6 +57,28 @@ public class EthicsAuthorization {
     }
 
     /**
+     * Is this subject a member of that org's product? (ES-203, B+ slice 1.)
+     *
+     * <p>Asked about <em>someone else</em>, so it must not fall back to allow. An unreadable policy
+     * engine answers "not a member": refusing a legitimate assignment is recoverable, while
+     * recording a participant who was never verified puts an unchecked name into the data that
+     * routing and conflict decisions read.
+     *
+     * <p>Deliberately checks {@code case_viewer} rather than a raw role — that derived relation is
+     * already "may see this org's cases minus content_denied", which is exactly the bar for being
+     * assignable. A {@code technical_admin} is therefore not assignable, which is the intent.
+     */
+    public boolean isProductMember(String subject, UUID orgId) {
+        if (!properties.isEnabled() || subject == null || orgId == null) return false;
+        try {
+            return openFga.checkNoCacheResult(subject, "case_viewer", PRODUCT_OBJECT, orgId.toString())
+                    .allowed();
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
+    }
+
+    /**
      * Records that the acting staff member has stepped away from a case (ES-203).
      *
      * <p>The subject is always the caller's own token — there is no parameter for <em>who</em>. A

@@ -41,6 +41,7 @@ class EthicsServiceMailboxTimingTest {
     @Mock EthicsAuthorization authorization;
     @Mock TransactionKeyLock transactionLocks;
     @Mock NotificationOutboxPublisher notifications;
+    @Mock com.example.ethics.repository.CaseParticipantRepository participants;
     EthicsService service;
 
     @BeforeEach
@@ -55,7 +56,8 @@ class EthicsServiceMailboxTimingTest {
                 authorization, transactionLocks, new PublicIntakeSanitizer(), new ObjectMapper(),
                 new com.example.ethics.security.PublicTenantResolver(
                         props, new com.example.ethics.config.PublicTenantProperties(java.util.Map.of())),
-                notifications);
+                notifications,
+                participants);
     }
 
     @Test
