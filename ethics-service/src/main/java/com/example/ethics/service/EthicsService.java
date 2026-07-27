@@ -8,6 +8,7 @@ import com.example.ethics.repository.*;
 import com.example.ethics.model.CaseParticipant;
 import com.example.ethics.security.StaffContext;
 import com.example.ethics.security.EthicsAuthorization;
+import com.example.ethics.security.ParticipantHandles;
 import com.example.ethics.security.PublicTenantResolver;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,6 +39,8 @@ public class EthicsService {
     private final CaseParticipantRepository participants;
     private final String dummyMailboxHash;
 
+    private final ParticipantHandles handles;
+
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
             EthicsReportRepository reports, ReporterAccessGrantRepository grants, EthicsMessageRepository messages,
             MailboxSessionRepository sessions, AuditOutboxRepository audit, IntakeIdempotencyRepository idempotency,
@@ -45,7 +48,9 @@ public class EthicsService {
             PublicIntakeSanitizer publicIntakeSanitizer, ObjectMapper auditMapper,
             PublicTenantResolver tenantResolver,
             NotificationOutboxPublisher notifications,
-            CaseParticipantRepository participants) {
+            CaseParticipantRepository participants,
+            ParticipantHandles handles) {
+        this.handles=handles;
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
         this.messages=messages;this.sessions=sessions;this.audit=audit;this.idempotency=idempotency;
         this.authorization=authorization;
@@ -274,13 +279,18 @@ public class EthicsService {
      * first while the second is true would conclude the team is empty.
      */
     @Transactional(readOnly=true)
-    public List<String> assignableStaff(StaffContext staff) {
-        if(!authorization.canOnProduct(staff,"case_triager"))
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,"ASSIGNABLE_STAFF_DENIED");
+    public List<String> assignableStaff(StaffContext staff,UUID caseId) {
+        requireCase(staff,caseId,"case_triager");
         var result=authorization.assignableStaff(staff.orgId());
         if(!result.available())
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"ASSIGNABLE_STAFF_UNAVAILABLE");
-        return result.subjects();
+        // Handles, not subjects. The browser never learns who these people are in any
+        // sense that survives this case: the same colleague on another case has an
+        // unrelated handle, so two of them cannot be joined into "the same person".
+        return result.subjects().stream()
+                .map(subject->handles.mint(staff.orgId(),caseId,subject))
+                .sorted()
+                .toList();
     }
 
     /**
@@ -307,15 +317,26 @@ public class EthicsService {
      * </ul>
      */
     @Transactional
-    public void addParticipant(StaffContext staff,UUID caseId,String targetSubject,String role) {
+    public void addParticipant(StaffContext staff,UUID caseId,String handle,String role) {
         requireCase(staff,caseId,"case_triager");
-        if(targetSubject==null||targetSubject.isBlank()||targetSubject.length()>64)
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"PARTICIPANT_SUBJECT_INVALID");
+        if(handle==null||handle.isBlank()||handle.length()>128)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"PARTICIPANT_HANDLE_INVALID");
         if(!CaseParticipant.ALLOWED_ROLES.contains(role))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"PARTICIPANT_ROLE_INVALID");
-        // The target must already belong to this org's product. Without this an
-        // assignment could name any subject at all, including one from another
-        // tenant, and the row would then be used by routing as if it were real.
+        // Resolution is a search, not a lookup: the handle is one-way and there is no
+        // reverse table to consult. Recomputing it for each member the case could
+        // legitimately be assigned to costs one HMAC apiece and leaves nothing behind
+        // that a backup or a curious operator could read.
+        var members=authorization.assignableStaff(staff.orgId());
+        if(!members.available())
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"ASSIGNABLE_STAFF_UNAVAILABLE");
+        String targetSubject=members.subjects().stream()
+                .filter(subject->handles.matches(handle,staff.orgId(),caseId,subject))
+                .findFirst()
+                .orElseThrow(ParticipantHandles::unknown);
+        // Membership is re-established here rather than trusted from the enumeration:
+        // the list was read a moment ago, and an assignment must rest on what is true
+        // now. It also keeps the guarantee if the list is ever cached.
         if(!authorization.isProductMember(targetSubject,staff.orgId()))
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,"PARTICIPANT_NOT_IN_ORG");
         if(participants.findByCaseIdAndKcSubjectAndRole(caseId,targetSubject,role).isPresent()) return;
@@ -335,7 +356,9 @@ public class EthicsService {
     public List<CaseParticipantView> listParticipants(StaffContext staff,UUID caseId) {
         requireCase(staff,caseId,"case_viewer");
         return participants.findAllByCaseIdOrderByCreatedAtAsc(caseId).stream()
-                .map(p -> new CaseParticipantView(p.getKcSubject(),p.getRole(),p.getCreatedAt())).toList();
+                .map(p -> new CaseParticipantView(
+                        handles.mint(staff.orgId(),caseId,p.getKcSubject()),
+                        p.getRole(),p.getCreatedAt())).toList();
     }
 
     /**

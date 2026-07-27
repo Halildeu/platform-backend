@@ -37,6 +37,10 @@ server:
 
 ethics:
   public-org-id: ${ETHICS_PUBLIC_ORG_ID:00000000-0000-0000-0000-000000000035}
+  # ES-203/D — keys the participant handle the browser receives. No default: a service
+  # that booted without it would mint handles from a constant, which is the same as no
+  # scoping at all. ParticipantHandles refuses to construct, so it fails at start.
+  participant-handle-key: ${ETHICS_PARTICIPANT_HANDLE_KEY:}
   mailbox-session-ttl: ${ETHICS_MAILBOX_SESSION_TTL:15m}
   secret-iterations: ${ETHICS_SECRET_ITERATIONS:210000}
   staff-audience: ${ETHICS_STAFF_AUDIENCE:ethics-manager}

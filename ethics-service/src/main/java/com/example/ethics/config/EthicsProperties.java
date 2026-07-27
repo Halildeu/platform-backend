@@ -12,7 +12,8 @@ public record EthicsProperties(
         String staffAudience,
         String staffRole,
         Boolean secureTransportRequired,
-        Integer rateLimitPerMinute) {
+        Integer rateLimitPerMinute,
+        String participantHandleKey) {
     public EthicsProperties {
         if (publicOrgId == null) throw new IllegalArgumentException("ethics.public-org-id is required");
         if (mailboxSessionTtl == null) mailboxSessionTtl = Duration.ofMinutes(15);
@@ -21,5 +22,7 @@ public record EthicsProperties(
         if (staffRole == null || staffRole.isBlank()) throw new IllegalArgumentException("ethics.staff-role is required");
         if (secureTransportRequired == null) secureTransportRequired = true;
         if (rateLimitPerMinute == null || rateLimitPerMinute < 0) rateLimitPerMinute = 30;
+        // Validated in ParticipantHandles so the failure names the key that is
+        // missing rather than surfacing as a generic binding error.
     }
 }
