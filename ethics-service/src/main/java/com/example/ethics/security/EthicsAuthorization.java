@@ -68,6 +68,44 @@ public class EthicsAuthorization {
      * already "may see this org's cases minus content_denied", which is exactly the bar for being
      * assignable. A {@code technical_admin} is therefore not assignable, which is the intent.
      */
+    /**
+     * A permission that belongs to the product rather than to one case.
+     *
+     * <p>{@link #can} requires a case id and denies without one, correctly: every question
+     * it answers is about a particular report. "May this person assign staff at all" is not
+     * such a question, and squeezing it through a case would make the answer depend on a
+     * case the caller has not named.
+     */
+    public boolean canOnProduct(StaffContext staff, String relation) {
+        if (!properties.isEnabled() || staff == null || staff.orgId() == null) return false;
+        try {
+            return openFga.checkNoCacheResult(
+                    staff.subject(), relation, PRODUCT_OBJECT, staff.orgId().toString()).allowed();
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
+    }
+
+    /**
+     * ES-203 / ES-206 — who in this org may be put on a case.
+     *
+     * <p>Answers from the product, not from any case: the question is "who works ethics
+     * here", and a case-scoped list would say which staff are already attached to which
+     * report. In a whistleblowing system that is correlation data, and an endpoint that
+     * hands it out has no business existing to fill a dropdown.
+     *
+     * <p>An unreachable policy engine is reported as unavailable rather than as an empty
+     * list. The two are opposite facts — "nobody may be assigned" and "we could not find
+     * out" — and a caller that cannot tell them apart will show the first while the
+     * second is true.
+     */
+    public OpenFgaAuthzService.UserListResult assignableStaff(UUID orgId) {
+        if (!properties.isEnabled() || orgId == null) {
+            return OpenFgaAuthzService.UserListResult.unavailable("authz-disabled");
+        }
+        return openFga.listUsers("case_viewer", PRODUCT_OBJECT, orgId.toString());
+    }
+
     public boolean isProductMember(String subject, UUID orgId) {
         if (!properties.isEnabled() || subject == null || orgId == null) return false;
         try {
