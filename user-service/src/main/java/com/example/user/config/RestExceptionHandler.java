@@ -20,6 +20,8 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.http.HttpStatusCode;
+import com.example.commonauth.AuthorizationContextCache;
 
 @RestControllerAdvice
 public class RestExceptionHandler {
@@ -143,5 +145,36 @@ public class RestExceptionHandler {
                 "Beklenmeyen bir hata oluştu",
                 MDC.get("traceId"));
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+    }
+
+    /**
+     * The authorization revision could not be established, so {@code AuthorizationContextCache}
+     * refused to reuse a cached grant. That refusal is correct and must stay — an unknown revision
+     * is never read as "unchanged", which is how a revoked grant used to survive its whole TTL.
+     *
+     * <p>What was wrong is that it had no mapping at all, so it reached the client as an opaque
+     * <b>500</b>. Measured on the live cell 2026-07-27: an operator whose session token was
+     * rejected saw "could not retrieve user data, check your connection" on {@code /admin/users},
+     * read it as lost authorization, and never refreshed — while their roles were intact and a
+     * fresh token worked. A recoverable state was presented as a dead end.
+     *
+     * <p>The cause carries the distinction, set where it is actually known: a rejected caller
+     * credential arrives as a {@code ResponseStatusException(401)} and is relayed as <b>401</b>, the
+     * one status a browser can act on; anything else stays <b>503</b>.
+     */
+    @ExceptionHandler(AuthorizationContextCache.RevisionUnavailableException.class)
+    public ResponseEntity<ApiErrorResponse> handleRevisionUnavailable(
+            AuthorizationContextCache.RevisionUnavailableException ex) {
+        HttpStatusCode status = HttpStatus.SERVICE_UNAVAILABLE;
+        String errorCode = "ERR_AUTHZ_REVISION_UNAVAILABLE";
+        if (ex.getCause() instanceof ResponseStatusException cause) {
+            status = cause.getStatusCode();
+            if (cause.getReason() != null) {
+                errorCode = cause.getReason();
+            }
+        }
+        log.warn("Authorization revision unavailable -> {} ({}): {}", status, errorCode, ex.getMessage());
+        return ResponseEntity.status(status)
+                .body(ApiErrorResponse.of(errorCode, ex.getMessage(), MDC.get("traceId")));
     }
 }
