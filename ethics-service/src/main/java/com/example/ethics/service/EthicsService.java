@@ -194,9 +194,12 @@ public class EthicsService {
      * the case gets the same 404 as for any other case. Declaring a conflict must not become a way
      * to learn that a case exists. The narrative is never loaded on this path.
      *
-     * <p>A repeat call is not silently absorbed — it writes its own ledger entry. A second
-     * declaration is a real event, and an append-only record that quietly drops repeats cannot
-     * answer "how many times was this attempted".
+     * <p><b>A second declaration cannot happen through this endpoint.</b> The first one removes the
+     * case from this staff member's view, so {@code requireCase} answers 404 on the next attempt —
+     * measured on the running cell: first POST 204, second POST 404, one ledger entry. An earlier
+     * revision emitted a separate {@code recusal.repeated} event for that case; it was unreachable
+     * code describing a state the guard above already prevents, so it is gone rather than kept as a
+     * branch nobody can enter.
      *
      * <p>There is deliberately no counterpart that lifts a recusal. Reversal is an authorized action
      * belonging to someone else; a party that could grant it to itself would make the whole
@@ -205,9 +208,8 @@ public class EthicsService {
     @Transactional
     public void declareRecusal(StaffContext staff,UUID caseId) {
         requireCase(staff,caseId,"case_viewer");
-        boolean created=authorization.recuseSelf(staff,caseId);
-        audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,
-                created?"ethics.case.recusal.declared":"ethics.case.recusal.repeated",
+        authorization.recuseSelf(staff,caseId);
+        audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,"ethics.case.recusal.declared",
                 encodeAuditPayload(Map.of(
                         "actorHash", secrets.sha256(staff.subject()),
                         "selfDeclared", true)),
