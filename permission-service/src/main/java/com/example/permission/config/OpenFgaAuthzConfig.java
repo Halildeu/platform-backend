@@ -1,35 +1,32 @@
 package com.example.permission.config;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
-import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.ObjectProvider;
-import com.example.commonauth.openfga.OpenFgaConfig;
 import com.example.commonauth.openfga.OpenFgaProperties;
 import com.example.commonauth.scope.AuthzVersionProvider;
 import com.example.commonauth.scope.OpenFgaScopeReader;
 import com.example.commonauth.scope.ScopeContextCache;
 import com.example.permission.service.AuthzVersionService;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+/**
+ * OpenFGA beans that are only meaningful when enforcement is ON.
+ *
+ * <p>#933: {@code openFgaProperties} and {@code openFgaAuthzService} moved OUT of this class
+ * into the unconditional {@link OpenFgaAuthzBaseConfig}, because {@link WebMvcConfig} hard-
+ * requires the authz service and this class disappears when the flag is off — which crashed
+ * the context in permission-service's own default configuration
+ * ({@code application.properties} defaults {@code erp.openfga.enabled} to {@code false}).
+ *
+ * <p>The beans below stay conditional on purpose: {@code authzVersionProvider} needs
+ * {@code AuthzVersionService}, which carries the same {@code @ConditionalOnProperty}, so
+ * making this class unconditional would only move the crash one bean over.
+ */
 @Configuration
 @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "erp.openfga.enabled", havingValue = "true", matchIfMissing = false)
 public class OpenFgaAuthzConfig {
-
-    @Bean
-    @ConfigurationProperties(prefix = "erp.openfga")
-    public OpenFgaProperties openFgaProperties() {
-        return new OpenFgaProperties();
-    }
-
-    @Bean
-    public OpenFgaAuthzService openFgaAuthzService(OpenFgaProperties props,
-                                                        ObjectProvider<MeterRegistry> meterRegistryProvider) {
-        // B3/B4 (Rev 19): MeterRegistry optional — null safe when actuator absent (test context)
-        return OpenFgaConfig.createAuthzService(props, meterRegistryProvider.getIfAvailable());
-    }
 
     @Bean
     public ScopeContextCache scopeContextCache(

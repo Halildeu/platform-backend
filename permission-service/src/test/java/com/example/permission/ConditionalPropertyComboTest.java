@@ -1,5 +1,6 @@
 package com.example.permission;
 
+import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.permission.event.RoleChangeEventHandler;
 import com.example.permission.service.TupleSyncService;
 import com.example.permission.service.AuthzVersionService;
@@ -10,7 +11,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 
-import org.junit.jupiter.api.Disabled;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -68,7 +68,6 @@ class ConditionalPropertyComboTest {
     }
 
     @Nested
-    @Disabled("TB-16: H2 context load fails — needs Testcontainers PostgreSQL")
     @DisplayName("OpenFGA DISABLED — app starts without Zanzibar beans")
     @SpringBootTest(
             classes = PermissionServiceApplication.class,
@@ -97,10 +96,22 @@ class ConditionalPropertyComboTest {
 
         @Test
         void roleChangeEventHandler_stillExists() {
-            // Handler is a @Component — always loaded. It just won't receive events
-            // because no service publishes RoleChangeEvent when OpenFGA is OFF.
+            // #933: this used to claim "@Component — always loaded", which was FALSE. The
+            // handler's constructor hard-required the @ConditionalOnProperty TupleSyncService,
+            // so with the flag off the bean could not be created and the context died. The
+            // dependency is @Nullable now, so the handler really is always present — and the
+            // sync is skipped with a WARN instead of the context failing.
             assertTrue(ctx.getBeanNamesForType(RoleChangeEventHandler.class).length > 0,
-                    "RoleChangeEventHandler is @Component — always present");
+                    "RoleChangeEventHandler must load even with erp.openfga.enabled=false");
+        }
+
+        @Test
+        void openFgaAuthzService_existsButReportsDisabled() {
+            // #933: the bean must EXIST (WebMvcConfig hard-requires it) and report disabled.
+            // "does the bean exist" is no longer the switch; isEnabled() is.
+            OpenFgaAuthzService svc = ctx.getBean(OpenFgaAuthzService.class);
+            assertFalse(svc.isEnabled(),
+                    "with erp.openfga.enabled=false the service must report disabled");
         }
     }
 }
