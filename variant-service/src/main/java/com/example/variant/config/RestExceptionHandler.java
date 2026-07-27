@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import com.example.commonauth.AuthorizationContextCache;
 
 @RestControllerAdvice
 public class RestExceptionHandler {
@@ -76,5 +77,22 @@ public class RestExceptionHandler {
         }
         return body;
     }
-}
 
+    /**
+     * The authorization revision could not be established, so {@code AuthorizationContextCache}
+     * refused to reuse a cached grant. That refusal is correct and stays: an unknown revision is
+     * never read as "unchanged", which is how a revoked grant used to survive its whole TTL.
+     *
+     * <p>It simply had no mapping, so it reached the client as an opaque <b>500</b>. It is answered
+     * <b>503</b> here — the same classification iter-42 established above, and for the same reason:
+     * a dependency failure must render as a transient error, never as a session expiry that the
+     * frontend's shared-http listener would escalate into a global logout.
+     */
+    @ExceptionHandler(AuthorizationContextCache.RevisionUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleRevisionUnavailable(
+            AuthorizationContextCache.RevisionUnavailableException ex) {
+        log.warn("Authorization revision unavailable: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(buildBody("ERR_AUTHZ_REVISION_UNAVAILABLE", ex.getMessage()));
+    }
+}
