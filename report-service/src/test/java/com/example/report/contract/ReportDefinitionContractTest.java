@@ -79,8 +79,8 @@ class ReportDefinitionContractTest {
     }
 
     @Test
-    @DisplayName("Aggregate: 37 reports discovered (drift guard) — PR-D2.5 weekly-audit-digest added")
-    void aggregate_thirtyTwoReportsDiscovered() {
+    @DisplayName("Aggregate: 38 reports discovered (drift guard) — project actuals added")
+    void aggregate_reportsDiscovered() {
         // PR-D2.1d (ADR-0015, Codex 019e83bd iter-2 PARTIAL absorb):
         // bumped 32 → 33 for users-overview (first LIVE remote-http report,
         // execution.kind=remote-http, service=user-service, path=/api/v1/users).
@@ -100,7 +100,9 @@ class ReportDefinitionContractTest {
         // digest-context columns ordered by Zaman/Seviye/Servis/Eylem;
         // Codex aggregation warning kabul second time — option (a) filter-only
         // path; gerçek aggregation mart layer post-D2.5 sprint).
-        assertThat(CACHED.reportCount()).isEqualTo(37);
+        // Project budget product: 37 → 38 for the PROJECT-scoped,
+        // signed accounting-actual report.
+        assertThat(CACHED.reportCount()).isEqualTo(38);
     }
 
     @Test
@@ -135,7 +137,7 @@ class ReportDefinitionContractTest {
     }
 
     @Test
-    @DisplayName("ReportRegistry: 37 reports loadable + exceptions.json excluded")
+    @DisplayName("ReportRegistry: 38 reports loadable + exceptions.json excluded")
     void reportRegistry_loadableAcceptanceTest() {
         // Codex iter-3 §1c absorb (carry-forward to 1e): runtime registry must
         // load all known keys; exceptions.json is excluded as a non-report
@@ -151,8 +153,8 @@ class ReportDefinitionContractTest {
         registry.loadDefinitions();
 
         assertThat(registry.getAll())
-                .as("Runtime registry must load 37 reports")
-                .hasSize(37);
+                .as("Runtime registry must load 38 reports")
+                .hasSize(38);
         assertThat(registry.get("hr-personel-listesi")).isPresent();
         assertThat(registry.get("fin-fatura-satirlari")).isPresent();
         assertThat(registry.get("users-overview")).isPresent();  // PR-D2.1d
@@ -160,6 +162,7 @@ class ReportDefinitionContractTest {
         assertThat(registry.get("audit-report")).isPresent();    // PR-D2.3
         assertThat(registry.get("monthly-login")).isPresent();   // PR-D2.4
         assertThat(registry.get("weekly-audit-digest")).isPresent();  // PR-D2.5
+        assertThat(registry.get("fin-proje-muhasebe-gercekleseni")).isPresent();
         assertThat(registry.get("exceptions")).isEmpty();  // excluded
     }
 
@@ -333,6 +336,53 @@ class ReportDefinitionContractTest {
                 .contains("CASE WHEN ACR.BA = 1 THEN ABS(ACR.OTHER_AMOUNT) "
                         + "WHEN ACR.BA = 0 THEN -ABS(ACR.OTHER_AMOUNT) "
                         + "ELSE ACR.OTHER_AMOUNT END AS OTHER_AMOUNT");
+    }
+
+    @Test
+    @DisplayName("project actuals: scope, signed amount and source-document lineage are pinned")
+    void projectActuals_enforcesProjectScopeAndSignedAmount() {
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        ReportRegistry registry = new ReportRegistry(mapper, "classpath*:reports/");
+        registry.loadDefinitions();
+
+        ReportDefinition def = registry.get("fin-proje-muhasebe-gercekleseni").orElseThrow();
+
+        assertThat(def.schemaMode()).isEqualTo("yearly");
+        assertThat(def.yearColumn()).isEqualTo("ACTION_DATE");
+        assertThat(def.access().rowFilter().scopeType()).isEqualTo("PROJECT");
+        assertThat(def.access().rowFilter().column()).isEqualTo("ACC_PROJECT_ID");
+        assertThat(def.filterDefinitions()).hasSize(3);
+        assertThat(def.filterDefinitions().stream().map(filter -> filter.key()).toList())
+                .containsExactly("company", "projectId", "dateRange");
+        assertThat(def.columns().stream().map(ColumnDefinition::field).toList())
+                .contains(
+                        "SOURCE_TYPE",
+                        "SOURCE_MATCH_STATUS",
+                        "SOURCE_CHAIN",
+                        "SOURCE_DOCUMENT_NO",
+                        "SOURCE_TABLE",
+                        "SOURCE_ID",
+                        "SOURCE_ROW_ID",
+                        "UPSTREAM_ORDER_ID",
+                        "UPSTREAM_TRANSFER_ID");
+        assertThat(def.sourceQuery())
+                .contains("ACR.ACC_PROJECT_ID")
+                .contains("CASE WHEN ACR.BA = 1 THEN ABS(ACR.AMOUNT) "
+                        + "WHEN ACR.BA = 0 THEN -ABS(ACR.AMOUNT) "
+                        + "ELSE ACR.AMOUNT END AS AMOUNT")
+                .contains("AC.ACTION_TABLE AS SOURCE_TABLE")
+                .contains("INV.ORDER_ID AS UPSTREAM_ORDER_ID")
+                .contains("BA.GENEL_VIRMAN_ID AS UPSTREAM_TRANSFER_ID")
+                .contains("LEFT JOIN [{schema}].[INVOICE]")
+                .contains("OUTER APPLY (SELECT TOP (1)")
+                .contains("[{schema}].[ACCOUNT_PLAN]")
+                .contains("[{schema}].[EXPENSE_ITEM_PLANS]")
+                .contains("LEFT JOIN [{schema}].[BANK_ACTIONS]")
+                .contains("LEFT JOIN [{schema}].[CARI_ACTIONS]")
+                .doesNotContain("LEFT JOIN [{schema}].[ACCOUNT_PLAN]")
+                .doesNotContain("LEFT JOIN [{schema}].[EXPENSE_ITEM_PLANS]")
+                .contains("N'KAYNAK EŞLEŞMEDİ'")
+                .contains("N'Muhasebe satırı → fiş → alış faturası → satınalma siparişi'");
     }
 
     @Test
@@ -583,7 +633,7 @@ class ReportDefinitionContractTest {
     }
 
     static Stream<String> knownReportKeys() {
-        // Drift guard: exact 37-key list matches registry inventory at
+        // Drift guard: exact 38-key list matches registry inventory at
         // commit-time. New report → add here; missing report → fail.
         // PR-D2.1d: added "users-overview" (first remote-http report).
         // PR-D2.2: added "access-report" (second remote-http report).
@@ -601,6 +651,7 @@ class ReportDefinitionContractTest {
                 "fin-fatura-satirlari", "fin-faturalar", "fin-gerceklesen-maliyet",
                 "fin-kasa-hareketleri", "fin-kaynak-eslesme", "fin-masraf-detay",
                 "fin-muhasebe-detay", "fin-muhasebe-fisleri", "fin-nakit-akis-ozet",
+                "fin-proje-muhasebe-gercekleseni",
                 "fin-stok-fis-detay", "fin-tutar-mutabakat",
                 "hr-bordro-detay", "hr-compensation-detay", "hr-demografik-yapi",
                 "hr-egitim-katilim", "hr-giris-cikis", "hr-izin-raporu",

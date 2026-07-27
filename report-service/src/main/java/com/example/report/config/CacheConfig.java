@@ -33,6 +33,8 @@ public class CacheConfig {
                 // Workcube CompanyPicker dropdown — global per-cluster catalog,
                 // 5dk TTL (Codex 019dfb15 iter-2 absorb #1).
                 buildCache("companyOptions", Duration.ofMinutes(5), 1),
+                // Project picker — one read-only catalog per OUR_COMPANY.
+                buildCache("projectOptions", Duration.ofMinutes(5), 100),
                 // Phase 2 Program 8a: SchemaTruthService Tier 1 cache (Plan v2.1 §3.8 default).
                 // Keyed by schemaName; 5-min TTL matches Plan §3.8 prescription.
                 buildCache("schemaTruthSnapshot", Duration.ofMinutes(5), 100),
