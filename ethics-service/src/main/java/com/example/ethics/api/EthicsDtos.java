@@ -32,13 +32,19 @@ public final class EthicsDtos {
     public record CaseDetail(UUID id, String status, String assignedTo, long version, String mode, String category, String subject, String description, List<MessageResponse> messages,
                              Instant acknowledgedAt, String outcome, Instant closedAt) {}
     /**
-     * ES-301A. {@code outcome} is required when closing and refused otherwise; {@code reason}
-     * is required only when reopening a closed case. Neither is a free-form annotation —
-     * both exist because a conclusion with no finding, or a reopening with no stated cause,
-     * leaves a record that cannot be read back years later.
+     * ES-301A / ES-301B. {@code outcome} is required when closing and refused otherwise;
+     * {@code reason} is required only when reopening a closed case. Neither is a free-form
+     * annotation — a conclusion with no finding, or a reopening with no stated cause, leaves
+     * a record that cannot be read back years later.
+     *
+     * <p>{@code closingMessage} is what the reporter is actually told, and closing does not
+     * happen without it. It is staff-authored prose rather than a rendering of
+     * {@code outcome}: the internal finding is a workflow value, and what a person outside
+     * the organisation should be told about their report is a judgement someone has to make.
      */
     public record UpdateCaseRequest(@Size(max=40) String status, @Size(max=200) String assignedTo,
-                                    @Size(max=40) String outcome, @Size(max=500) String reason) {}
+                                    @Size(max=40) String outcome, @Size(max=500) String reason,
+                                    @Size(max=16000) String closingMessage) {}
     /**
      * ES-203 / B+ slice 1. The subject is a Keycloak subject UUID — the same identity the policy
      * engine uses. The pattern refuses anything that is not one, so a display name or a free-text
