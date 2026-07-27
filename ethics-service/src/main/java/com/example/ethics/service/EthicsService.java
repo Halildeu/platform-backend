@@ -157,7 +157,7 @@ public class EthicsService {
     public List<CaseSummary> listCases(StaffContext staff) {
         return cases.findAllByOrgIdOrderByUpdatedAtDesc(staff.orgId()).stream()
                 .filter(item -> authorization.can(staff,"case_viewer",item.getId()))
-                .map(EthicsService::summary).toList();
+                .map(this::summary).toList();
     }
 
     @Transactional(readOnly=true)
@@ -165,7 +165,8 @@ public class EthicsService {
         EthicsCase item=requireCase(staff,caseId,"case_viewer"); EthicsReport report=reports.findByCaseId(caseId).orElseThrow();
         List<MessageResponse> all=messages.findAllByCaseIdAndVisibilityInOrderByCreatedAtAsc(caseId,List.of("REPORTER_VISIBLE","INTERNAL"))
                 .stream().map(EthicsService::messageResponse).toList();
-        return new CaseDetail(item.getId(),item.getStatus(),item.getAssignedTo(),item.getVersion(),report.getMode(),report.getCategory(),report.getSubject(),report.getNarrative(),all,
+        boolean named=!participants.findAllByCaseIdOrderByCreatedAtAsc(caseId).isEmpty();
+        return new CaseDetail(item.getId(),item.getStatus(),named?null:item.getAssignedTo(),item.getVersion(),report.getMode(),report.getCategory(),report.getSubject(),report.getNarrative(),all,
                 item.getAcknowledgedAt(),item.getOutcome(),item.getClosedAt());
     }
 
@@ -184,8 +185,13 @@ public class EthicsService {
     public CaseSummary updateCase(StaffContext staff,UUID caseId,String ifMatch,UpdateCaseRequest request) {
         EthicsCase item=cases.findByIdAndOrgId(caseId,staff.orgId()).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."));
         if(request.status()!=null) authorization.require(staff,"case_handler",caseId);
-        if(request.assignedTo()!=null) authorization.require(staff,"case_triager",caseId);
-        if(request.status()==null&&request.assignedTo()==null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_UPDATE_EMPTY");
+        // ES-203 slice 2 — naming someone goes through POST /participants, which takes a
+        // case-scoped handle the authorization plane can check. This path refuses the old
+        // free-text knob outright: silently ignoring it would let a caller believe it had
+        // assigned somebody while the case stayed unowned.
+        if(request.assignedTo()!=null)
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_ASSIGNED_TO_RETIRED");
+        if(request.status()==null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_UPDATE_EMPTY");
         long expected=parseVersion(ifMatch);
         if(item.getVersion()!=expected) throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED,"CASE_VERSION_MISMATCH");
         String reopenReason=null;
@@ -230,7 +236,6 @@ public class EthicsService {
             }
             item.transitionTo(to,outcome,Instant.now());
         }
-        if(request.assignedTo()!=null) item.setAssignedTo(request.assignedTo().isBlank()?null:request.assignedTo());
         cases.saveAndFlush(item);
         if(closingMessage!=null) {
             // After the case is saved, not before: writing the message stamps the
@@ -245,7 +250,10 @@ public class EthicsService {
         }
         Map<String,Object> payload=new LinkedHashMap<>(Map.of(
                 "status", item.getStatus(),
-                "assigned", item.getAssignedTo() != null,
+                // Was `assigned` = "the legacy label is non-empty", which recorded whether
+                // someone had typed a word. What an auditor needs is whether a principal is
+                // on the case, and that lives in the participant table.
+                "participantCount", participants.findAllByCaseIdOrderByCreatedAtAsc(caseId).size(),
                 "actorHash", secrets.sha256(staff.subject())));
         if(item.getOutcome()!=null) payload.put("outcome", item.getOutcome());
         if(reopenReason!=null) payload.put("reopenReason", reopenReason);
@@ -479,7 +487,18 @@ public class EthicsService {
         }
     }
     private static ResponseStatusException genericMailboxDeny(){return new ResponseStatusException(HttpStatus.NOT_FOUND,"Mailbox could not be opened.");}
-    private static CaseSummary summary(EthicsCase c){return new CaseSummary(c.getId(),c.getStatus(),c.getAssignedTo(),c.getVersion(),c.getCreatedAt(),c.getUpdatedAt(),
+    /**
+     * ES-203 slice 2 — the legacy label is suppressed once the case has a real answer.
+     *
+     * <p>Live values were {@code team:ethics-test} (26 cases) and {@code jbjb} (1). Neither
+     * names a person, and nothing maps them to one: guessing which colleague a human meant
+     * would make a visibility decision out of a guess, which in a whistleblowing system is
+     * the failure the whole design exists to prevent. So the label is preserved, shown only
+     * while there is nothing better, and never turned into a principal.
+     */
+    private CaseSummary summary(EthicsCase c){
+        boolean named=!participants.findAllByCaseIdOrderByCreatedAtAsc(c.getId()).isEmpty();
+        return new CaseSummary(c.getId(),c.getStatus(),named?null:c.getAssignedTo(),c.getVersion(),c.getCreatedAt(),c.getUpdatedAt(),
             c.getAcknowledgedAt(),c.getOutcome(),c.getClosedAt());}
     private static MessageResponse messageResponse(EthicsMessage m){return new MessageResponse(m.getId(),m.getAuthorType(),m.getVisibility(),m.getBody(),m.getCreatedAt());}
     /** @see CaseLifecycle#reporterVisibleStatus — one implementation, so the two cannot drift. */
