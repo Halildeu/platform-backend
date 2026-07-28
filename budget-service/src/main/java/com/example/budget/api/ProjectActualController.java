@@ -48,6 +48,19 @@ public class ProjectActualController {
         return service.createBinding(actors.resolve(authentication, companyId), request);
     }
 
+    @GetMapping("/bindings")
+    @PreAuthorize("hasAuthority('SCOPE_budget:read')")
+    ProjectBindingView findBinding(
+            @RequestHeader("X-Company-Id") long companyId,
+            @RequestParam(defaultValue = "WORKCUBE") String sourceSystem,
+            @RequestParam long externalProjectId,
+            Authentication authentication) {
+        return service.findBinding(
+                actors.resolve(authentication, companyId),
+                sourceSystem,
+                externalProjectId);
+    }
+
     @PutMapping("/cost-rules")
     @PreAuthorize("hasAuthority('SCOPE_budget:approve')")
     CostRuleSetView replaceCostRules(

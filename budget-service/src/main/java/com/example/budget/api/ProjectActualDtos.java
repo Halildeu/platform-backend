@@ -98,6 +98,7 @@ public final class ProjectActualDtos {
             BigDecimal excludedAmount,
             BigDecimal requiresReviewAmount,
             long rowCount,
+            long snapshotRowCount,
             long requiresReviewCount,
             String reconciliationStatus,
             BigDecimal reconciliationDifference,

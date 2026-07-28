@@ -140,6 +140,8 @@ class ProjectActualServicePostgresIntegrationTest {
         assertThat(firstSummary.classifiedCost()).isEqualByComparingTo("900.00");
         assertThat(firstSummary.excludedAmount()).isEqualByComparingTo("1500.00");
         assertThat(firstSummary.requiresReviewAmount()).isEqualByComparingTo("50.00");
+        assertThat(firstSummary.rowCount()).isEqualTo(5);
+        assertThat(firstSummary.snapshotRowCount()).isEqualTo(5);
         assertThat(firstSummary.requiresReviewCount()).isEqualTo(1);
         assertThat(firstSummary.reconciliationStatus()).isEqualTo("MATCHED");
 
@@ -211,6 +213,8 @@ class ProjectActualServicePostgresIntegrationTest {
         assertThat(cancelledSummary.classifiedCost()).isEqualByComparingTo("-100.00");
         assertThat(cancelledSummary.excludedAmount()).isEqualByComparingTo("500.00");
         assertThat(cancelledSummary.requiresReviewAmount()).isEqualByComparingTo("50.00");
+        assertThat(cancelledSummary.rowCount()).isEqualTo(3);
+        assertThat(cancelledSummary.snapshotRowCount()).isEqualTo(5);
 
         assertThatThrownBy(() -> jdbc.update(
                 "UPDATE actual_snapshot_versions SET normalized_amount=0"))
@@ -231,6 +235,41 @@ class ProjectActualServicePostgresIntegrationTest {
                         "44200"))))
                 .hasMessageContaining("outside the authoritative scope");
         assertThat(count("budget_project_bindings", actor.tenantId())).isZero();
+    }
+
+    @Test
+    void readOnlyActorCanFindExistingBindingWithoutCreatingAnotherOne() {
+        BudgetActor writer = new BudgetActor(
+                "tenant-binding-read", 35L, "cost-controller", Set.of(44200L), false);
+        ProjectBindingView created = inTransaction(() -> service.createBinding(
+                writer,
+                new CreateProjectBindingRequest(
+                        "workcube:35:44200",
+                        "WORKCUBE",
+                        35L,
+                        44200L,
+                        "IDC1")));
+
+        BudgetActor reader = new BudgetActor(
+                "tenant-binding-read", 35L, "budget-reader", Set.of(44200L), false);
+        ProjectBindingView found = inTransaction(() ->
+                service.findBinding(reader, "workcube", 44200L));
+
+        assertThat(found.id()).isEqualTo(created.id());
+        assertThat(found.platformProjectRef()).isEqualTo("workcube:35:44200");
+        assertThat(count("budget_project_bindings", reader.tenantId())).isEqualTo(1);
+
+        assertThatThrownBy(() -> inTransaction(() ->
+                service.findBinding(
+                        new BudgetActor(
+                                "tenant-binding-read",
+                                35L,
+                                "wrong-project-reader",
+                                Set.of(99L),
+                                false),
+                        "WORKCUBE",
+                        44200L)))
+                .hasMessageContaining("outside the authoritative scope");
     }
 
     @Test

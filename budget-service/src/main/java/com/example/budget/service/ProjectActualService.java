@@ -103,6 +103,36 @@ public class ProjectActualService {
         return requireBinding(actor, id).view();
     }
 
+    @Transactional(readOnly = true)
+    public ProjectBindingView findBinding(
+            BudgetActor actor,
+            String requestedSourceSystem,
+            long externalProjectId) {
+        tenantScope.apply(actor.tenantId());
+        requireProjectAccess(actor, externalProjectId);
+        String sourceSystem = requestedSourceSystem == null
+                ? ""
+                : requestedSourceSystem.trim().toUpperCase(java.util.Locale.ROOT);
+        if (externalProjectId < 1 || !sourceSystem.matches("[A-Z0-9_-]{2,60}")) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "Source system and external project are invalid");
+        }
+        List<ProjectBindingView> bindings = jdbc.query("""
+                SELECT id, company_id, platform_project_ref, source_system,
+                       external_company_no, external_project_id, external_project_code, verified_at
+                  FROM budget_project_bindings
+                 WHERE tenant_id=? AND company_id=? AND source_system=?
+                   AND external_company_no=? AND external_project_id=?
+                """, (rs, rowNum) -> bindingView(rs),
+                actor.tenantId(), actor.companyId(), sourceSystem,
+                actor.companyId(), externalProjectId);
+        if (bindings.isEmpty()) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "Project actuals binding was not found");
+        }
+        return bindings.getFirst();
+    }
+
     @Transactional
     public CostRuleSetView replaceAndActivateRules(
             BudgetActor actor,
@@ -442,6 +472,7 @@ public class ProjectActualService {
                     WHERE is_cancelled=FALSE AND cost_treatment='REQUIRES_REVIEW'),0)
                     AS requires_review_amount,
                   COUNT(*) FILTER (WHERE is_cancelled=FALSE) AS row_count,
+                  COUNT(*) AS snapshot_row_count,
                   COUNT(*) FILTER (
                     WHERE is_cancelled=FALSE AND cost_treatment='REQUIRES_REVIEW')
                     AS requires_review_count,
@@ -456,6 +487,7 @@ public class ProjectActualService {
                         rs.getBigDecimal("excluded_amount"),
                         rs.getBigDecimal("requires_review_amount"),
                         rs.getLong("row_count"),
+                        rs.getLong("snapshot_row_count"),
                         rs.getLong("requires_review_count"),
                         rs.getInt("currency_count") > 1 ? "MIXED" : rs.getString("currency")),
                 actor.tenantId(), actor.companyId(), binding.id(),
@@ -470,6 +502,7 @@ public class ProjectActualService {
                 amounts == null ? BigDecimal.ZERO : amounts.excludedAmount(),
                 amounts == null ? BigDecimal.ZERO : amounts.requiresReviewAmount(),
                 amounts == null ? 0 : amounts.rowCount(),
+                amounts == null ? 0 : amounts.snapshotRowCount(),
                 amounts == null ? 0 : amounts.requiresReviewCount(),
                 latest == null ? "NOT_RECONCILED_FOR_WINDOW" : latest.status(),
                 latest == null ? null : latest.difference(),
@@ -1035,6 +1068,7 @@ public class ProjectActualService {
             BigDecimal excludedAmount,
             BigDecimal requiresReviewAmount,
             long rowCount,
+            long snapshotRowCount,
             long requiresReviewCount,
             String currency) {
     }
