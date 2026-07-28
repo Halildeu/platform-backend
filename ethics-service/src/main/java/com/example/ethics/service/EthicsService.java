@@ -138,7 +138,8 @@ public class EthicsService {
         EthicsCase item=cases.findById(caseId).orElseThrow(EthicsService::genericMailboxDeny);
         List<MessageResponse> visible=messages.findAllByCaseIdAndVisibilityInOrderByCreatedAtAsc(caseId,List.of("REPORTER_VISIBLE"))
                 .stream().map(EthicsService::messageResponse).toList();
-        return new MailboxViewResponse(reporterVisibleStatus(item.getStatus()),visible);
+        return new MailboxViewResponse(reporterVisibleStatus(item.getStatus()),visible,
+                item.getCreatedAt(),item.getAcknowledgedAt());
     }
 
     @Transactional
