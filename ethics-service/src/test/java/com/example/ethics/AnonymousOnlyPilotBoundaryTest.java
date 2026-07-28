@@ -56,6 +56,8 @@ class AnonymousOnlyPilotBoundaryTest {
     @BeforeEach
     void allow() {
         when(authorization.can(any(), anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
         when(entitlements.hasManageEntitlement(anyString())).thenReturn(true);
     }
 

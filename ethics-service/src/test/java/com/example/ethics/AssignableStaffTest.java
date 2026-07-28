@@ -80,6 +80,8 @@ class AssignableStaffTest {
     @DisplayName("atama yetkisi olan personel handle + görünen ad alır — subject asla")
     void aTriagerGetsTheList() throws Exception {
         when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), org.mockito.ArgumentMatchers.anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
         when(authorization.assignableStaff(any())).thenReturn(
                 new OpenFgaAuthzService.UserListResult(true, List.of("aaa", "bbb"), "ok"));
 
@@ -105,6 +107,8 @@ class AssignableStaffTest {
     @DisplayName("ad dizini cevap veremezse adsız liste değil 503 döner")
     void anUnreachableDirectoryIsNotANamelessList() throws Exception {
         when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), org.mockito.ArgumentMatchers.anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
         when(authorization.assignableStaff(any())).thenReturn(
                 new OpenFgaAuthzService.UserListResult(true, List.of("aaa", "bbb"), "ok"));
         when(directory.resolve(any())).thenReturn(
@@ -124,6 +128,8 @@ class AssignableStaffTest {
     @DisplayName("dizinin tanımadığı kişi seçilebilir hayalet olarak listelenmez")
     void aSubjectUnknownToTheDirectoryIsExcluded() throws Exception {
         when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), org.mockito.ArgumentMatchers.anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
         when(authorization.assignableStaff(any())).thenReturn(
                 new OpenFgaAuthzService.UserListResult(true, List.of("aaa", "ghost"), "ok"));
         when(directory.resolve(any())).thenReturn(new com.example.ethics.directory.UserDirectoryClient.Resolution(
@@ -143,6 +149,8 @@ class AssignableStaffTest {
         // withdrawn afterwards, so the refusal under test is the endpoint's and not an
         // artefact of an empty case list.
         when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), org.mockito.ArgumentMatchers.anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
         String caseId = newCase();
         org.mockito.Mockito.doThrow(new org.springframework.web.server.ResponseStatusException(
                         org.springframework.http.HttpStatus.NOT_FOUND, "Case not found."))
@@ -162,6 +170,8 @@ class AssignableStaffTest {
     @DisplayName("yetki motoru cevap veremezse boş liste değil 503 döner")
     void anUnreachablePolicyEngineIsNotAnEmptyTeam() throws Exception {
         when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), org.mockito.ArgumentMatchers.anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
         when(authorization.assignableStaff(any()))
                 .thenReturn(OpenFgaAuthzService.UserListResult.unavailable("circuit-open"));
 
@@ -180,6 +190,8 @@ class AssignableStaffTest {
     @DisplayName("katılımcı listesi dizin arızasında 503 değil null adla döner")
     void theParticipantsViewDegradesInsteadOfFailing() throws Exception {
         when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), org.mockito.ArgumentMatchers.anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
         when(authorization.assignableStaff(any())).thenReturn(
                 new OpenFgaAuthzService.UserListResult(true, List.of("aaa"), "ok"));
         when(authorization.isProductMember(org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
@@ -209,6 +221,8 @@ class AssignableStaffTest {
     @DisplayName("gerçekten boş org 200 ve boş liste döner")
     void agenuinelyEmptyOrgIsAnEmptyList() throws Exception {
         when(authorization.can(any(), org.mockito.ArgumentMatchers.anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), org.mockito.ArgumentMatchers.anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
         when(authorization.assignableStaff(any()))
                 .thenReturn(new OpenFgaAuthzService.UserListResult(true, List.of(), "empty"));
 

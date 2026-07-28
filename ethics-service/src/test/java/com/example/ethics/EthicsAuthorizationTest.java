@@ -156,6 +156,89 @@ class EthicsAuthorizationTest {
         verify(openFga, never()).writeTuple(anyString(), anyString(), anyString(), anyString());
     }
 
+    // ---- gateFor: the list-wide form of the same decision -------------------------------
+    //
+    // Resolving a whole list in three calls is only worth having if it denies exactly what
+    // the per-case form denied. The direction that can quietly go wrong is the negative
+    // relation: an unreadable "who is recused" list looks identical to "nobody is recused",
+    // and reading it the second way hands over the cases recusal exists to withhold.
+
+    @Test
+    void gateDeniesEveryCaseWhenTheProductRelationIsAbsent() {
+        when(openFga.checkNoCacheResult(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(result(false, "no_relation"));
+
+        var gate = authorization.gateFor(staff, "case_viewer");
+
+        assertThat(gate.allows(UUID.randomUUID())).isFalse();
+        // Membership already failed; the blocked lists are not worth asking for.
+        verify(openFga, never()).listObjectsResult(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void gateDeniesEveryCaseWhenTheConflictListCannotBeRead() {
+        grantProduct("case_viewer");
+        when(openFga.listObjectsResult(staff.subject(), "conflicted", EthicsAuthorization.CASE_OBJECT))
+                .thenReturn(OpenFgaAuthzService.ObjectListResult.unavailable("circuit_open"));
+        // The recusal read must succeed, or an unstubbed null would deny by accident and this
+        // test would pass against a gate that ignores availability entirely.
+        when(openFga.listObjectsResult(staff.subject(), "recused", EthicsAuthorization.CASE_OBJECT))
+                .thenReturn(objects());
+
+        assertThat(authorization.gateFor(staff, "case_viewer").allows(UUID.randomUUID())).isFalse();
+    }
+
+    @Test
+    void gateDeniesEveryCaseWhenTheRecusalListCannotBeRead() {
+        grantProduct("case_viewer");
+        when(openFga.listObjectsResult(staff.subject(), "conflicted", EthicsAuthorization.CASE_OBJECT))
+                .thenReturn(objects());
+        when(openFga.listObjectsResult(staff.subject(), "recused", EthicsAuthorization.CASE_OBJECT))
+                .thenReturn(OpenFgaAuthzService.ObjectListResult.unavailable("transport"));
+
+        assertThat(authorization.gateFor(staff, "case_viewer").allows(UUID.randomUUID())).isFalse();
+    }
+
+    @Test
+    void gateWithholdsConflictedAndRecusedCasesAndAllowsTheRest() {
+        UUID conflicted = UUID.randomUUID();
+        UUID recused = UUID.randomUUID();
+        UUID ordinary = UUID.randomUUID();
+        grantProduct("case_viewer");
+        when(openFga.listObjectsResult(staff.subject(), "conflicted", EthicsAuthorization.CASE_OBJECT))
+                .thenReturn(objects(conflicted.toString()));
+        when(openFga.listObjectsResult(staff.subject(), "recused", EthicsAuthorization.CASE_OBJECT))
+                .thenReturn(objects(recused.toString()));
+
+        var gate = authorization.gateFor(staff, "case_viewer");
+
+        assertThat(gate.allows(conflicted)).isFalse();
+        assertThat(gate.allows(recused)).isFalse();
+        assertThat(gate.allows(ordinary)).isTrue();
+        assertThat(gate.allows(null)).isFalse();
+    }
+
+    @Test
+    void gateCostsTheSameWhateverTheCaseloadIs() {
+        grantProduct("case_viewer");
+        when(openFga.listObjectsResult(anyString(), anyString(), anyString())).thenReturn(objects());
+
+        var gate = authorization.gateFor(staff, "case_viewer");
+        for (int i = 0; i < 500; i++) {
+            gate.allows(UUID.randomUUID());
+        }
+
+        // The reason this method exists: the per-case form asked three times per row, so a
+        // list of 138 made 414 round trips to answer 6 KB. Deciding 500 cases must still
+        // cost one membership check and two list reads, or the fix has been undone.
+        verify(openFga, times(1)).checkNoCacheResult(anyString(), anyString(), anyString(), anyString());
+        verify(openFga, times(2)).listObjectsResult(anyString(), anyString(), anyString());
+    }
+
+    private static OpenFgaAuthzService.ObjectListResult objects(String... ids) {
+        return new OpenFgaAuthzService.ObjectListResult(true, java.util.List.of(ids), "ok");
+    }
+
     private void grantProduct(String relation) {
         when(openFga.checkNoCacheResult(
                 staff.subject(), relation, EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))

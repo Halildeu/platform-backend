@@ -20,6 +20,51 @@ public class EthicsAuthorization {
         this.properties = properties;
     }
 
+    /**
+     * The same decision as {@link #can}, resolved once for a whole list.
+     *
+     * <p>{@code can} asks the policy engine three questions per case: product membership,
+     * then the two negative case relations. Product membership does not vary between the
+     * cases of one request, so a list of 138 asked it 138 times and made 414 round trips
+     * to answer 6 KB — the cost grew with the caseload, not with the answer. This asks
+     * three questions for the whole list.
+     *
+     * <p>The economy must not become a hole. A negative relation read as an empty list is
+     * the dangerous direction: "nobody is recused" is what an outage looks like, and it
+     * grants exactly the cases recusal exists to withhold. So the blocked sets are read
+     * through {@link OpenFgaAuthzService#listObjectsResult}, and if either read could not
+     * be made the gate denies every case rather than guessing that nothing was blocked.
+     */
+    public CaseGate gateFor(StaffContext staff, String relation) {
+        if (!properties.isEnabled()) return CaseGate.DENY_ALL;
+        try {
+            if (!canOnProduct(staff, relation)) return CaseGate.DENY_ALL;
+            var conflicted = openFga.listObjectsResult(staff.subject(), "conflicted", CASE_OBJECT);
+            if (!conflicted.available()) return CaseGate.DENY_ALL;
+            var recused = openFga.listObjectsResult(staff.subject(), "recused", CASE_OBJECT);
+            if (!recused.available()) return CaseGate.DENY_ALL;
+            var blocked = new java.util.HashSet<String>(conflicted.objectIds());
+            blocked.addAll(recused.objectIds());
+            return new CaseGate(true, java.util.Set.copyOf(blocked));
+        } catch (RuntimeException unavailable) {
+            return CaseGate.DENY_ALL;
+        }
+    }
+
+    /**
+     * Which cases of an already tenant-scoped list this staff member may see.
+     *
+     * @param productMember whether the product relation held at all; false denies everything
+     * @param blockedCaseIds cases withheld by conflict or recusal
+     */
+    public record CaseGate(boolean productMember, java.util.Set<String> blockedCaseIds) {
+        static final CaseGate DENY_ALL = new CaseGate(false, java.util.Set.of());
+
+        public boolean allows(UUID caseId) {
+            return productMember && caseId != null && !blockedCaseIds.contains(caseId.toString());
+        }
+    }
+
     public boolean can(StaffContext staff, String relation, UUID caseId) {
         if (!properties.isEnabled() || caseId == null) return false;
         try {
