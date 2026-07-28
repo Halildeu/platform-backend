@@ -37,7 +37,11 @@ public record LiveTranscriptEvent(
          * {@code sourceEventIds} audit trail is written in. {@code null} when unknown.
          * Without it a viewer receives the trail but has nothing to match it against.
          */
-        @JsonProperty("event_id") String eventId,
+        // camelCase on purpose: the snake_case fields below are passed through
+        // from the live-stt engine's own payload, while everything the gateway
+        // adds (status, assemblyReason, sourceEventIds) is camelCase — and the
+        // polling DTO already calls this same id eventId. One concept, one name.
+        String eventId,
         String text,
         String language,
         @JsonProperty("language_probability") Double languageProbability,
