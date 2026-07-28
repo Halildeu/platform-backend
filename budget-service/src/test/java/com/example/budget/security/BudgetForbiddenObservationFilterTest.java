@@ -55,8 +55,10 @@ class BudgetForbiddenObservationFilterTest {
             filter.doFilter(
                     request,
                     response,
-                    (servletRequest, servletResponse) ->
-                            ((MockHttpServletResponse) servletResponse).setStatus(403));
+                    (servletRequest, servletResponse) -> {
+                        ((MockHttpServletResponse) servletResponse).setStatus(403);
+                        SecurityContextHolder.clearContext();
+                    });
 
             assertThat(appender.list).hasSize(1);
             assertThat(appender.list.getFirst().getLevel()).isEqualTo(Level.WARN);
