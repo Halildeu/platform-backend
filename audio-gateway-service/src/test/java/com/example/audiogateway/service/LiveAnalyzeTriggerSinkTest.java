@@ -23,7 +23,7 @@ class LiveAnalyzeTriggerSinkTest {
     void forwardsToDelegateBeforeAggregating() throws Exception {
         final List<TranscriptResult> forwarded = new ArrayList<>();
         final DirectSttTranscriptResultSink base =
-                (r, c) -> forwarded.add(r);
+                (r, c) -> { forwarded.add(r); return null; };
 
         final MockWebServer server = new MockWebServer();
         server.start();
@@ -50,7 +50,7 @@ class LiveAnalyzeTriggerSinkTest {
     void aggregatorFailureDoesNotBreakDelegate() {
         final List<TranscriptResult> forwarded = new ArrayList<>();
         final DirectSttTranscriptResultSink base =
-                (r, c) -> forwarded.add(r);
+                (r, c) -> { forwarded.add(r); return null; };
 
         // Use a trigger that would throw on any offer — segment window 0 would
         // fail the constructor, so instead we simulate by giving it a client

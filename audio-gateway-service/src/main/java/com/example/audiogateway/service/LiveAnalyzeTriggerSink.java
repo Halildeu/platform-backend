@@ -25,13 +25,13 @@ public final class LiveAnalyzeTriggerSink implements DirectSttTranscriptResultSi
     }
 
     @Override
-    public void emit(
+    public String emit(
             final TranscriptResult result, final DirectSttTranscriptResultContext context) {
-        delegate.emit(result, context);
+        final String eventId = delegate.emit(result, context);
         if (context != null && context.assembly() != null) {
             // An assembled line repeats text the raw chunks already contributed.
             // Accumulating both would send meeting-ai every sentence twice.
-            return;
+            return eventId;
         }
         try {
             trigger.offer(context == null ? null : context.meetingId(), result);
@@ -39,5 +39,6 @@ public final class LiveAnalyzeTriggerSink implements DirectSttTranscriptResultSi
             // Live-analyze is best-effort. Never mask the (already-committed)
             // durable emission with a relay error.
         }
+        return eventId;
     }
 }

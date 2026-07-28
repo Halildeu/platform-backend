@@ -32,6 +32,12 @@ import java.util.List;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record LiveTranscriptEvent(
+        /**
+         * Durable id this event was stored under — the same id space the assembler's
+         * {@code sourceEventIds} audit trail is written in. {@code null} when unknown.
+         * Without it a viewer receives the trail but has nothing to match it against.
+         */
+        @JsonProperty("event_id") String eventId,
         String text,
         String language,
         @JsonProperty("language_probability") Double languageProbability,
@@ -65,10 +71,13 @@ public record LiveTranscriptEvent(
 
     /** Build the viewer-facing event from a result and the context that carried it. */
     public static LiveTranscriptEvent of(
-            final TranscriptResult result, final DirectSttTranscriptResultContext context) {
+            final TranscriptResult result,
+            final DirectSttTranscriptResultContext context,
+            final String eventId) {
         final DirectSttTranscriptResultContext.Assembly assembly =
                 context == null ? null : context.assembly();
         return new LiveTranscriptEvent(
+                eventId == null || eventId.isBlank() ? null : eventId,
                 result == null ? null : result.text(),
                 result == null ? null : result.language(),
                 result == null ? null : result.languageProbability(),

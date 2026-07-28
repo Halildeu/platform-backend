@@ -511,6 +511,7 @@ class DirectSttForwardingDispatcherTest {
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
+            return null;
         };
         final DirectSttForwardingDispatcher dispatcher = dispatcher(
                 acceptDelegate(), webClient, props, meters, recordingAuditSink(), hangingSink);
@@ -809,9 +810,10 @@ class DirectSttForwardingDispatcherTest {
         private final List<DirectSttTranscriptResultContext> contexts = new CopyOnWriteArrayList<>();
 
         @Override
-        public void emit(final TranscriptResult result, final DirectSttTranscriptResultContext context) {
+        public String emit(final TranscriptResult result, final DirectSttTranscriptResultContext context) {
             results.add(result);
             contexts.add(context);
+            return null;
         }
 
         List<TranscriptResult> results() {
