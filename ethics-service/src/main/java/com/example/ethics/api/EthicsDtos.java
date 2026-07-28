@@ -26,7 +26,28 @@ public final class EthicsDtos {
     public record MailboxSessionResponse(Instant expiresAt) {}
     public record MessageRequest(@NotBlank @Size(max=16000) String body) {}
     public record MessageResponse(UUID id, String authorType, String visibility, String body, Instant createdAt) {}
-    public record MailboxViewResponse(String status, List<MessageResponse> messages) {}
+    /**
+     * What the reporter can see of their own case.
+     *
+     * <p>{@code filedAt} and {@code acknowledgedAt} are added because the promise made to
+     * the person filing — a reply within seven days — was tracked on the case and shown to
+     * the handler, and never shown to them. A case acknowledged on day three and a case
+     * ignored for three weeks looked identical from this side, so the only way to find out
+     * was to keep opening the mailbox and reading the message list.
+     *
+     * <p>Neither field tells the reporter anything they could not already derive: they know
+     * when they filed, and {@code acknowledgedAt} is stamped by the first staff message
+     * already listed below. Nothing about the handler, the org, or who read the case is
+     * carried here.
+     *
+     * <p>Deliberately no "last viewed" marker. Recording when an anonymous reporter checked
+     * their case would build a timeline of that person\'s behaviour — who logs in at 3am
+     * from which network — which is exactly the correlation the product exists to avoid.
+     * The two timestamps here are facts about the case; a visit log would be a fact about
+     * the human.
+     */
+    public record MailboxViewResponse(String status, List<MessageResponse> messages,
+                                      Instant filedAt, Instant acknowledgedAt) {}
     /**
      * ES-203 slice 2 — {@code assignedTo} is gone; what remains is
      * {@code legacyAssignmentLabel}.
