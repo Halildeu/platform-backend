@@ -19,9 +19,9 @@ import java.util.UUID;
  * BE — race-safe write path for the append-only services snapshot
  * (Faz 22.5, AG-039-be). Mirrors AG-038-be
  * {@code EndpointDiagnosticsSnapshotRepositoryImpl} EXACTLY:
- * targetless {@code ON CONFLICT DO NOTHING} catches both partial
- * source_command_result_id UNIQUE + full (tenant, device, hash) UNIQUE
- * race-cleanly.
+ * targetless {@code ON CONFLICT DO NOTHING} catches the partial
+ * source_command_result_id UNIQUE race-cleanly. Payload hash remains indexed
+ * for lookup, but does not collapse observations from different commands.
  *
  * <h3>PostgreSQL (CI-authoritative)</h3>
  *

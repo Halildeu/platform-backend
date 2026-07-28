@@ -42,9 +42,10 @@ import java.util.UUID;
  *
  * <h3>Idempotency</h3>
  *
- * <p>Dual UNIQUE: partial UNIQUE source_command_result_id + full UNIQUE
- * (tenant_id, device_id, payload_hash_sha256). Targetless ON CONFLICT
- * DO NOTHING catches both legs race-cleanly.
+ * <p>Each distinct command result is a new observation, even when the
+ * canonical payload hash is unchanged. The partial UNIQUE on
+ * source_command_result_id makes retries of the same result idempotent
+ * without collapsing observations made by later commands.
  */
 @Entity
 @Table(name = "endpoint_services_snapshots",
@@ -52,9 +53,6 @@ import java.util.UUID;
                 @UniqueConstraint(
                         name = "uq_endpoint_svcs_snap_id_tnt",
                         columnNames = {"id", "tenant_id"}),
-                @UniqueConstraint(
-                        name = "uq_endpoint_svcs_snap_tnt_dev_hash",
-                        columnNames = {"tenant_id", "device_id", "payload_hash_sha256"})
         },
         indexes = {
                 @Index(name = "idx_endpoint_svcs_snap_tnt_dev_time",

@@ -10,7 +10,6 @@ import com.example.endpointadmin.repository.EndpointServicesSnapshotRepository;
 import com.example.endpointadmin.security.ServicesPayloadPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,8 +23,8 @@ import java.util.UUID;
 /**
  * BE — critical services inventory ingest + query service (Faz 22.5,
  * AG-039-be). Mirrors AG-038-be {@link EndpointDiagnosticsService}.
- * Dual-winner double-lookup invariant + canonical-form hash + retry-
- * idempotent dedupe.
+ * Source-result idempotency + canonical-form hash. A later command result
+ * always creates a fresh observation, even if the service state is unchanged.
  */
 @Service
 public class EndpointServicesService {
@@ -85,18 +84,6 @@ public class EndpointServicesService {
         ServicesPayloadPolicy.Projection projection = policy.projectAndHash(services);
         String payloadHash = projection.payloadHashSha256();
 
-        Optional<EndpointServicesSnapshot> identical =
-                repository.findByTenantDeviceAndPayloadHash(
-                        device.getTenantId(), device.getId(), payloadHash,
-                        PageRequest.of(0, 1))
-                        .stream()
-                        .findFirst();
-        if (identical.isPresent()) {
-            log.debug("Services ingest no-op for device_id={} (payload hash unchanged, snapshot_id={})",
-                    device.getId(), identical.get().getId());
-            return identical.get();
-        }
-
         Instant collectedAt = result != null && result.getReportedAt() != null
                 ? result.getReportedAt()
                 : Instant.now();
@@ -109,17 +96,6 @@ public class EndpointServicesService {
             Optional<EndpointServicesSnapshot> bySource = commandResultId == null
                     ? Optional.empty()
                     : repository.findBySourceCommandResultId(commandResultId);
-            Optional<EndpointServicesSnapshot> byHash =
-                    repository.findFirstByTenantIdAndDeviceIdAndPayloadHashSha256OrderByCollectedAtDescCreatedAtDescIdDesc(
-                            device.getTenantId(), device.getId(), payloadHash);
-            if (bySource.isPresent() && byHash.isPresent()
-                    && !bySource.get().getId().equals(byHash.get().getId())) {
-                throw new IllegalStateException(
-                        "services dual-winner invariant breach: source row "
-                                + bySource.get().getId() + " != hash row "
-                                + byHash.get().getId());
-            }
-            // Codex iter-2 #6 absorb: cross-check source row tenant/device match.
             if (bySource.isPresent()) {
                 EndpointServicesSnapshot bs = bySource.get();
                 if (!bs.getTenantId().equals(device.getTenantId())
@@ -134,13 +110,8 @@ public class EndpointServicesService {
                         commandResultId);
                 return bs;
             }
-            if (byHash.isPresent()) {
-                log.debug("Services ingest no-op for device_id={} (lost hash race, snapshot_id={})",
-                        device.getId(), byHash.get().getId());
-                return byHash.get();
-            }
             throw new IllegalStateException(
-                    "services insert no-op without resolvable winner");
+                    "services insert no-op without source-result winner");
         }
         return snapshot;
     }
