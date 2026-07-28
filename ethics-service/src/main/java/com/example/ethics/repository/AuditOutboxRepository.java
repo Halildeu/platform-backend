@@ -14,6 +14,15 @@ public interface AuditOutboxRepository extends JpaRepository<AuditOutbox, UUID> 
 
     List<AuditOutbox> findByClaimTokenOrderByCreatedAtAsc(UUID claimToken);
 
+    /**
+     * Everything that has happened to one case, oldest first.
+     *
+     * <p>Tenant-scoped on purpose: the audit trail is the record of who touched a
+     * whistleblowing report, and a lookup that omitted {@code org_id} could answer
+     * across orgs.
+     */
+    List<AuditOutbox> findAllByOrgIdAndAggregateIdOrderByCreatedAtAsc(UUID orgId, UUID aggregateId);
+
     long countByStatusIn(Collection<String> statuses);
 
     long countByStatus(String status);
