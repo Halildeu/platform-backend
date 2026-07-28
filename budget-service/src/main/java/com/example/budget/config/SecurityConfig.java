@@ -2,6 +2,7 @@ package com.example.budget.config;
 
 import com.example.budget.security.BudgetAudienceValidator;
 import com.example.budget.security.BudgetForbiddenObservationFilter;
+import jakarta.servlet.DispatcherType;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -41,6 +42,7 @@ public class SecurityConfig {
         http.csrf(csrf -> csrf.disable())
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(EndpointRequest.to("health", "info", "prometheus")).permitAll()
                         .requestMatchers("/api/v1/budgets/**").authenticated()
                         .anyRequest().denyAll())
