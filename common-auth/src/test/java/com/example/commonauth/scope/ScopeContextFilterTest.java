@@ -193,8 +193,8 @@ class ScopeContextFilterTest {
         }
 
         @Test
-        @DisplayName("OpenFGA failure → falls back to dev scope")
-        void openFgaFailure_fallback() throws Exception {
+        @DisplayName("OpenFGA failure → fails closed with empty scope")
+        void openFgaFailure_failsClosed() throws Exception {
             setJwtAuth("user-err");
             when(authzService.listObjectIds(anyString(), anyString(), anyString()))
                     .thenThrow(new RuntimeException("OpenFGA down"));
@@ -207,8 +207,10 @@ class ScopeContextFilterTest {
             new ScopeContextFilter(authzService, props)
                     .doFilterInternal(request, response, filterChain);
 
-            assertEquals("dev-user", captured.get().userId());
-            assertTrue(captured.get().allowedCompanyIds().contains(99L));
+            assertEquals("user-err", captured.get().userId());
+            assertTrue(captured.get().allowedCompanyIds().isEmpty());
+            assertTrue(captured.get().allowedProjectIds().isEmpty());
+            assertFalse(captured.get().superAdmin());
         }
     }
 
@@ -257,8 +259,8 @@ class ScopeContextFilterTest {
         }
 
         @Test
-        @DisplayName("cache with OpenFGA error falls back to dev scope")
-        void cacheError_fallback() throws Exception {
+        @DisplayName("cache with OpenFGA error fails closed")
+        void cacheError_failsClosed() throws Exception {
             setJwtAuth("err-user");
             when(authzService.listObjectIds(anyString(), anyString(), anyString()))
                     .thenThrow(new RuntimeException("timeout"));
@@ -274,7 +276,9 @@ class ScopeContextFilterTest {
             new ScopeContextFilter(authzService, props, null, cache, vp)
                     .doFilterInternal(request, response, filterChain);
 
-            assertEquals("dev-user", captured.get().userId());
+            assertEquals("err-user", captured.get().userId());
+            assertTrue(captured.get().allowedCompanyIds().isEmpty());
+            assertFalse(captured.get().superAdmin());
         }
     }
 

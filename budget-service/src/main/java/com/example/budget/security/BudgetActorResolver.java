@@ -1,6 +1,6 @@
 package com.example.budget.security;
 
-import java.util.Collection;
+import com.example.budget.security.BudgetAuthorizationClient.AuthorizationSnapshot;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -9,6 +9,11 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Component
 public class BudgetActorResolver {
+    private final BudgetAuthorizationClient authorizationClient;
+
+    public BudgetActorResolver(BudgetAuthorizationClient authorizationClient) {
+        this.authorizationClient = authorizationClient;
+    }
 
     public BudgetActor resolve(Authentication authentication, long requestedCompanyId) {
         if (authentication == null || !(authentication.getPrincipal() instanceof Jwt jwt)) {
@@ -20,27 +25,18 @@ public class BudgetActorResolver {
         if (tenantId == null || subject == null || subject.isBlank()) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Tenant and subject claims are required");
         }
-        if (!containsCompany(jwt, requestedCompanyId)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Company is outside the token scope");
+        AuthorizationSnapshot authorization = authorizationClient.fetch(jwt.getTokenValue());
+        if (!authorization.superAdmin()
+                && !authorization.allowedCompanyIds().contains(requestedCompanyId)) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN, "Company is outside the authoritative scope");
         }
-        return new BudgetActor(tenantId, requestedCompanyId, subject);
-    }
-
-    private boolean containsCompany(Jwt jwt, long companyId) {
-        Object many = jwt.getClaim("company_ids");
-        if (many instanceof Collection<?> values) {
-            return values.stream().anyMatch(value -> companyId == parseCompany(value));
-        }
-        Object one = jwt.getClaim("company_id");
-        return one != null && companyId == parseCompany(one);
-    }
-
-    private long parseCompany(Object raw) {
-        try {
-            return Long.parseLong(String.valueOf(raw));
-        } catch (NumberFormatException ignored) {
-            return Long.MIN_VALUE;
-        }
+        return new BudgetActor(
+                tenantId,
+                requestedCompanyId,
+                authorization.userId(),
+                authorization.allowedProjectIds(),
+                authorization.superAdmin());
     }
 
     private String claimText(Jwt jwt, String name) {

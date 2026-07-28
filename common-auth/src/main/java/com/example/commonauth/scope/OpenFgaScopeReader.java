@@ -51,9 +51,7 @@ import java.util.concurrent.CompletableFuture;
  * <ul>
  *   <li>{@link #readScopeContext} (strict): propagates the underlying
  *       OpenFGA exception. Used by {@link ScopeContextFilter} which
- *       wraps the throw and substitutes its legacy "production OpenFGA
- *       fail → dev scope" fallback (preserves pre-PR-BE-10 request-
- *       binding behavior).</li>
+ *       converts the failure to an empty, fail-closed request scope.</li>
  *   <li>{@link #readScopeSummarySafe} (admin): catches the exception
  *       and returns an empty map. Used by {@code UserScopeService}
  *       and {@code AuthorizationQueryService} where the UI prefers a
@@ -87,8 +85,8 @@ public class OpenFgaScopeReader {
     /**
      * Reads a complete {@link ScopeContext} for the given user from
      * OpenFGA. Throws on OpenFGA outage so callers can choose how to
-     * degrade: {@link ScopeContextFilter} maps the throw to its
-     * "production OpenFGA fail → dev scope" legacy fallback;
+     * degrade: {@link ScopeContextFilter} maps the throw to an empty
+     * fail-closed scope;
      * admin-side callers (UserScopeService, AuthorizationQueryService)
      * use {@link #readScopeSummarySafe} which catches and returns empty.
      *
