@@ -41,8 +41,19 @@ public final class EthicsDtos {
      * <p>It is {@code null} whenever the case has participants: once there is
      * a real answer, the legacy label must not sit next to it as a rival one.
      */
+    /**
+     * One row of the case list.
+     *
+     * <p>{@code subject}, {@code category}, {@code mode} and {@code participantCount} carry
+     * what triage needs: the list used to show an id fragment, a status and a timestamp, so
+     * two cases could not be told apart without opening each one. {@code mode} matters on its
+     * own — an anonymous report has no channel back to the reporter, which changes how it is
+     * handled. None of it widens the boundary: the list is already gated on {@code
+     * case_viewer}, and every field here is visible to the same reader on the detail.
+     */
     public record CaseSummary(UUID id, String status, String legacyAssignmentLabel, long version, Instant createdAt, Instant updatedAt,
-                              Instant acknowledgedAt, String outcome, Instant closedAt) {}
+                              Instant acknowledgedAt, String outcome, Instant closedAt,
+                              String subject, String category, String mode, int participantCount) {}
     public record CaseDetail(UUID id, String status, String legacyAssignmentLabel, long version, String mode, String category, String subject, String description, List<MessageResponse> messages,
                              Instant acknowledgedAt, String outcome, Instant closedAt) {}
     /**

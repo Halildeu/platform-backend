@@ -58,6 +58,8 @@ class EthicsCaseLifecycleIntegrationTest {
     @BeforeEach
     void allowStaff() {
         when(authorization.can(any(), anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
         org.mockito.Mockito.doNothing().when(authorization).require(any(), anyString(), any());
         when(entitlements.hasManageEntitlement(anyString())).thenReturn(true);
     }

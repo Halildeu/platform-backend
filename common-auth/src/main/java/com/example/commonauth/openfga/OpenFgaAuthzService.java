@@ -229,18 +229,27 @@ public class OpenFgaAuthzService {
     }
 
     /**
-     * List all objects of a type that a user has a relation on.
-     * Example: listObjects("1", "viewer", "company") → ["1", "5"]
-     * Returns object IDs (without type prefix).
+     * The objects of a type a user has a relation on, with "could not ask" kept apart
+     * from "holds it on nothing".
+     *
+     * <p>{@link #listObjects} collapses an open circuit and a transport failure into the
+     * same empty list as a genuine empty answer. That is safe only where the relation is
+     * <em>permissive</em>: losing grants denies access, which fails closed. It inverts for
+     * a <em>negative</em> relation — "who is recused from this case" — where an empty list
+     * reads as "nobody is recused" and an outage silently grants everything it should have
+     * withheld. Callers filtering on a negative relation must use this method and deny when
+     * {@code available} is false.
+     *
+     * <p>Mirrors {@link UserListResult}, which draws the same line for the inverse question.
      */
-    public List<String> listObjects(String userId, String relation, String objectType) {
+    public ObjectListResult listObjectsResult(String userId, String relation, String objectType) {
         if (!enabled) {
-            return devFallbackIds(objectType);
+            return new ObjectListResult(true, devFallbackIds(objectType), "disabled");
         }
         if (!circuitBreaker.allowRequest()) {
-            log.warn("OpenFGA circuit OPEN — returning empty for listObjects: user:{} {} {}",
+            log.warn("OpenFGA circuit OPEN — listObjects unavailable: user:{} {} {}",
                     userId, relation, objectType);
-            return Collections.emptyList();
+            return ObjectListResult.unavailable("circuit_open");
         }
         try {
             var request = new ClientListObjectsRequest()
@@ -250,9 +259,9 @@ public class OpenFgaAuthzService {
 
             var response = client.listObjects(request).get();
             List<String> objects = response.getObjects();
+            circuitBreaker.recordSuccess();
             if (objects == null) {
-                circuitBreaker.recordSuccess();
-                return Collections.emptyList();
+                return new ObjectListResult(true, List.of(), "no_objects");
             }
 
             String prefix = objectType + ":";
@@ -260,14 +269,33 @@ public class OpenFgaAuthzService {
                     .map(o -> o.startsWith(prefix) ? o.substring(prefix.length()) : o)
                     .collect(Collectors.toList());
 
-            circuitBreaker.recordSuccess();
             log.debug("OpenFGA listObjects: user:{} {} {} → {}", userId, relation, objectType, ids);
-            return ids;
+            return new ObjectListResult(true, ids, ids.isEmpty() ? "no_objects" : "ok");
         } catch (Exception e) {
             circuitBreaker.recordFailure();
             log.error("OpenFGA listObjects failed: user:{} {} {}", userId, relation, objectType, e);
-            return Collections.emptyList();
+            return ObjectListResult.unavailable("transport");
         }
+    }
+
+    /** The objects a user has a relation on, or an empty list. See {@link #listObjectsResult}. */
+    public record ObjectListResult(boolean available, List<String> objectIds, String reason) {
+        public static ObjectListResult unavailable(String reason) {
+            return new ObjectListResult(false, List.of(), reason);
+        }
+    }
+
+    /**
+     * List all objects of a type that a user has a relation on.
+     * Example: listObjects("1", "viewer", "company") → ["1", "5"]
+     * Returns object IDs (without type prefix).
+     *
+     * <p>An unreachable policy engine is reported as an empty list. That is the right
+     * default for a permissive relation and the wrong one for a negative relation — see
+     * {@link #listObjectsResult}. Delegates so the two cannot drift.
+     */
+    public List<String> listObjects(String userId, String relation, String objectType) {
+        return listObjectsResult(userId, relation, objectType).objectIds();
     }
 
     /**

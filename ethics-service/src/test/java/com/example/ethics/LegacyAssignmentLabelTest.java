@@ -56,6 +56,8 @@ class LegacyAssignmentLabelTest {
     void entitled() {
         when(entitlements.hasManageEntitlement(anyString())).thenReturn(true);
         when(authorization.can(any(), anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
         when(authorization.isProductMember(anyString(), any())).thenReturn(true);
         when(authorization.assignableStaff(any())).thenReturn(
                 new OpenFgaAuthzService.UserListResult(true, List.of("aaa"), "ok"));
@@ -171,6 +173,8 @@ class LegacyAssignmentLabelTest {
         stampLegacyLabel(caseId, "team:ethics-test");
 
         when(authorization.can(any(), anyString(), any())).thenReturn(false);
+        when(authorization.gateFor(any(), anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(false, java.util.Set.of()));
         org.mockito.Mockito.doThrow(new org.springframework.web.server.ResponseStatusException(
                         org.springframework.http.HttpStatus.NOT_FOUND, "Case not found."))
                 .when(authorization).require(any(), anyString(), any());
