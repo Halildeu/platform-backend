@@ -15,6 +15,7 @@ import com.example.endpointadmin.security.EndpointAdminAuthz;
 import com.example.endpointadmin.security.TenantContextResolver;
 import com.example.endpointadmin.service.EndpointDeviceLifecycleService;
 import com.example.endpointadmin.service.EndpointDeviceService;
+import com.example.endpointadmin.service.EndpointAdminCommandService;
 import com.example.endpointadmin.service.EndpointMaintenanceTokenService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,6 +47,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(controllers = {
         AdminEndpointDeviceController.class,
+        AdminEndpointCommandController.class,
         AdminMaintenanceTokenController.class
 })
 @ActiveProfiles("test")
@@ -67,6 +69,9 @@ class AdminEndpointAuthorizationSecurityTest {
 
     @MockitoBean
     private EndpointMaintenanceTokenService maintenanceTokenService;
+
+    @MockitoBean
+    private EndpointAdminCommandService commandService;
 
     @MockitoBean
     private TenantContextResolver tenantContextResolver;
@@ -126,6 +131,25 @@ class AdminEndpointAuthorizationSecurityTest {
                 .andExpect(status().isForbidden());
 
         verifyNoInteractions(maintenanceTokenService);
+    }
+
+    @Test
+    void viewerCannotRenewTpmCertificate() throws Exception {
+        when(authzService.check("user-1", EndpointAdminAuthz.MANAGER, "module", EndpointAdminAuthz.MODULE))
+                .thenReturn(false);
+
+        mockMvc.perform(post("/api/v1/admin/endpoint-devices/{deviceId}/tpm-renewals", DEVICE_ID)
+                        .with(adminJwt("user-1"))
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "idempotencyKey": "viewer-deny-tpm-001",
+                                  "reason": "viewer must remain read-only"
+                                }
+                                """))
+                .andExpect(status().isForbidden());
+
+        verifyNoInteractions(commandService);
     }
 
     @Test

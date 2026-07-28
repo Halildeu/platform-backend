@@ -1135,6 +1135,62 @@ class EndpointAgentCommandServiceTest {
     }
 
     @Test
+    void claimNextDoesNotRediscloseDeliveredTpmEnrollmentToken() {
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-TPM-RECLAIM"));
+        UUID enrollmentId = UUID.randomUUID();
+        EndpointCommand command = tpmRenewalCommand(device, "tpm-no-reclaim", enrollmentId);
+        command.setMaxAttempts(2);
+        EndpointCommand saved = commandRepository.saveAndFlush(command);
+        commandSecretService.createTpmEnrollmentTokenSecret(
+                saved.getTenantId(),
+                device,
+                saved,
+                "C".repeat(43),
+                Instant.now().plusSeconds(900),
+                "admin@example.com",
+                enrollmentId,
+                "browser renewal");
+        commandService.claimNext(principal(device)).orElseThrow();
+
+        EndpointCommand afterFirstClaim = commandRepository.findById(saved.getId()).orElseThrow();
+        afterFirstClaim.setLockedUntil(Instant.now().minusSeconds(1));
+        commandRepository.saveAndFlush(afterFirstClaim);
+
+        assertThatThrownBy(() -> commandService.claimNext(principal(device)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.GONE)
+                .hasMessageContaining("already delivered");
+    }
+
+    @Test
+    void claimNextRejectsExpiredTpmEnrollmentToken() {
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-TPM-EXPIRED"));
+        UUID enrollmentId = UUID.randomUUID();
+        EndpointCommand saved = commandRepository.saveAndFlush(
+                tpmRenewalCommand(device, "tpm-expired", enrollmentId));
+        commandSecretService.createTpmEnrollmentTokenSecret(
+                saved.getTenantId(),
+                device,
+                saved,
+                "D".repeat(43),
+                Instant.now().minusSeconds(1),
+                "admin@example.com",
+                enrollmentId,
+                "browser renewal");
+
+        assertThatThrownBy(() -> commandService.claimNext(principal(device)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.GONE)
+                .hasMessageContaining("expired");
+
+        assertThat(commandSecretRepository.findByCommand_Id(saved.getId()).orElseThrow())
+                .satisfies(secret -> {
+                    assertThat(secret.getDeliveredAt()).isNull();
+                    assertThat(secret.getEncryptedSecret()).isNotBlank();
+                });
+    }
+
+    @Test
     void submitTpmRenewalRejectsMismatchedEnrollmentAndClearsSecret() {
         EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-TPM-REJECT"));
         UUID enrollmentId = UUID.randomUUID();

@@ -34,11 +34,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -142,6 +145,105 @@ class EndpointAdminCommandServiceTpmRenewalTest {
                 new CreateTpmCertificateRenewalRequest("browser-1", "certificate rotation")))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("RENEW_TPM_CERTIFICATE");
+    }
+
+    @Test
+    void rejectsStaleHeartbeatBeforeCreatingEnrollmentOrSecret() {
+        EndpointDevice device = device();
+        when(deviceRepository.findVisibleToOrgAndIdForUpdate(TENANT_ID, DEVICE_ID))
+                .thenReturn(Optional.of(device));
+        EndpointHeartbeat heartbeat = heartbeat();
+        heartbeat.setReceivedAt(NOW.minus(Duration.ofMinutes(6)));
+        when(heartbeatRepository.findFirstByDevice_IdOrderByReceivedAtDesc(DEVICE_ID))
+                .thenReturn(Optional.of(heartbeat));
+
+        assertThatThrownBy(() -> service.createTpmCertificateRenewal(
+                CONTEXT,
+                DEVICE_ID,
+                new CreateTpmCertificateRenewalRequest("browser-1", "certificate rotation")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue(
+                        "statusCode",
+                        org.springframework.http.HttpStatus.FAILED_DEPENDENCY)
+                .hasMessageContaining("heartbeat");
+
+        verify(enrollmentService, never()).issueDeviceBoundEnrollment(
+                any(), any(), any(), any());
+        verify(commandSecretService, never()).createTpmEnrollmentTokenSecret(
+                any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void idempotentReplayReturnsSameCommandWithoutMintingAnotherToken() {
+        EndpointDevice device = device();
+        Instant expiresAt = NOW.plus(Duration.ofMinutes(15));
+        AtomicReference<EndpointCommand> savedCommand = new AtomicReference<>();
+        when(deviceRepository.findVisibleToOrgAndIdForUpdate(TENANT_ID, DEVICE_ID))
+                .thenReturn(Optional.of(device));
+        when(heartbeatRepository.findFirstByDevice_IdOrderByReceivedAtDesc(DEVICE_ID))
+                .thenReturn(Optional.of(heartbeat()));
+        when(commandRepository.findByTenantIdAndIdempotencyKey(
+                TENANT_ID, "admin-renew-tpm:" + DEVICE_ID + ":browser-1"))
+                .thenAnswer(invocation -> Optional.ofNullable(savedCommand.get()));
+        when(enrollmentService.issueDeviceBoundEnrollment(
+                CONTEXT, device, "browser-managed TPM certificate renewal", Duration.ofMinutes(15)))
+                .thenReturn(new EndpointEnrollmentService.IssuedEnrollmentToken(
+                        ENROLLMENT_ID, "A".repeat(43), expiresAt, DEVICE_ID));
+        when(commandRepository.saveAndFlush(any(EndpointCommand.class))).thenAnswer(invocation -> {
+            EndpointCommand command = invocation.getArgument(0);
+            setField(command, "id", COMMAND_ID);
+            savedCommand.set(command);
+            return command;
+        });
+        when(resultRepository.findByCommand_Id(COMMAND_ID)).thenReturn(Optional.empty());
+
+        CreateTpmCertificateRenewalRequest request =
+                new CreateTpmCertificateRenewalRequest("browser-1", "certificate rotation");
+        EndpointCommandDto first = service.createTpmCertificateRenewal(
+                CONTEXT, DEVICE_ID, request);
+        EndpointCommandDto replay = service.createTpmCertificateRenewal(
+                CONTEXT, DEVICE_ID, request);
+
+        assertThat(replay.id()).isEqualTo(first.id()).isEqualTo(COMMAND_ID);
+        verify(enrollmentService, times(1)).issueDeviceBoundEnrollment(
+                CONTEXT, device, "browser-managed TPM certificate renewal", Duration.ofMinutes(15));
+        verify(commandSecretService, times(1)).createTpmEnrollmentTokenSecret(
+                eq(TENANT_ID), eq(device), eq(savedCommand.get()), eq("A".repeat(43)),
+                eq(expiresAt), eq("platform-admin"), eq(ENROLLMENT_ID), eq("certificate rotation"));
+        verify(commandRepository, times(1)).saveAndFlush(any(EndpointCommand.class));
+    }
+
+    @Test
+    void idempotencyKeyRejectsDifferentRenewalReasonWithoutMintingAnotherToken() {
+        EndpointDevice device = device();
+        EndpointCommand existing = new EndpointCommand();
+        setField(existing, "id", COMMAND_ID);
+        existing.setTenantId(TENANT_ID);
+        existing.setDevice(device);
+        existing.setCommandType(CommandType.RENEW_TPM_CERTIFICATE);
+        existing.setPayload(Map.of("reason", "first reason"));
+        when(deviceRepository.findVisibleToOrgAndIdForUpdate(TENANT_ID, DEVICE_ID))
+                .thenReturn(Optional.of(device));
+        when(heartbeatRepository.findFirstByDevice_IdOrderByReceivedAtDesc(DEVICE_ID))
+                .thenReturn(Optional.of(heartbeat()));
+        when(commandRepository.findByTenantIdAndIdempotencyKey(
+                TENANT_ID, "admin-renew-tpm:" + DEVICE_ID + ":browser-1"))
+                .thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service.createTpmCertificateRenewal(
+                CONTEXT,
+                DEVICE_ID,
+                new CreateTpmCertificateRenewalRequest("browser-1", "different reason")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue(
+                        "statusCode",
+                        org.springframework.http.HttpStatus.CONFLICT)
+                .hasMessageContaining("idempotency key");
+
+        verify(enrollmentService, never()).issueDeviceBoundEnrollment(
+                any(), any(), any(), any());
+        verify(commandSecretService, never()).createTpmEnrollmentTokenSecret(
+                any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     private EndpointDevice device() {
