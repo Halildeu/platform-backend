@@ -120,6 +120,23 @@ public final class EthicsDtos {
      */
     public record CaseParticipantView(String handle, String displayName, String role,
                                       java.time.Instant addedAt) {}
+
+    /**
+     * One thing that happened to a case, in the order it happened.
+     *
+     * <p>The audit trail has recorded every one of these since the beginning and nobody
+     * could read it: the case screen showed the current state and the messages, so "who
+     * moved this to investigating, and when" had no answer on the surface where the
+     * question is asked.
+     *
+     * <p>{@code actorHandle} is the same case-scoped handle the participant list uses, not
+     * the {@code actorHash} the trail stores. The hash is one-way and there is no reverse
+     * table — by design (ES-203/D) — so the handle is recomputed by matching the hash
+     * against the org's own members. A staff member who has since left the product cannot
+     * be resolved, and the entry then says so rather than inventing an actor.
+     */
+    public record CaseTimelineEntry(Instant occurredAt, String event, String actorHandle,
+                                    String actorDisplayName, String detail) {}
     /**
      * ES-203/C — one selectable person in the assignment picker.
      *

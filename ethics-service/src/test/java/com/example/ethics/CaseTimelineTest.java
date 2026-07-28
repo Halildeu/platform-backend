@@ -1,0 +1,152 @@
+package com.example.ethics;
+
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+import com.example.commonauth.openfga.OpenFgaAuthzService;
+import java.util.List;
+import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+
+/**
+ * Faz 35 — the case's own history.
+ *
+ * <p>Every one of these events has been written since the first day and none of it could
+ * be read. The screen showed where a case ended up and not how it got there, so a handler
+ * inheriting one had no way to ask "who moved this, and when".
+ *
+ * <p>The properties worth holding are about what must not disappear: the sequence survives
+ * a directory outage, an unparseable payload does not shorten the history, and an actor who
+ * has left the product reads as unknown rather than as somebody else.
+ */
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+class CaseTimelineTest {
+
+    private static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000035");
+    private static final String SECRET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdef";
+
+    @Autowired MockMvc mvc;
+    @Autowired com.fasterxml.jackson.databind.ObjectMapper mapper;
+    @MockitoBean com.example.ethics.security.EthicsAuthorization authorization;
+    @MockitoBean com.example.ethics.security.EthicsEntitlementVerifier entitlements;
+    @MockitoBean com.example.ethics.directory.UserDirectoryClient directory;
+
+    @BeforeEach
+    void entitled() {
+        when(entitlements.hasManageEntitlement(anyString())).thenReturn(true);
+        when(authorization.can(any(), anyString(), any())).thenReturn(true);
+        when(authorization.gateFor(any(), anyString())).thenReturn(
+                new com.example.ethics.security.EthicsAuthorization.CaseGate(true, java.util.Set.of()));
+        when(authorization.assignableStaff(any())).thenReturn(
+                new OpenFgaAuthzService.UserListResult(true, List.of("staff-timeline"), "ok"));
+        when(directory.resolve(any())).thenReturn(
+                new com.example.ethics.directory.UserDirectoryClient.Resolution(
+                        true, java.util.Map.of("staff-timeline", "Ayşe Yılmaz")));
+    }
+
+    private static org.springframework.test.web.servlet.request.RequestPostProcessor staff() {
+        return jwt().jwt(j -> j.subject("staff-timeline").claim("org_id", ORG.toString()))
+                .authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage"));
+    }
+
+    private String newCase() throws Exception {
+        String key = "timeline-" + UUID.randomUUID();
+        String body = "{\"mode\":\"ANONYMOUS\",\"category\":\"OTHER\",\"subject\":\"Zaman çizelgesi\","
+                + "\"description\":\"Sentetik\",\"locale\":\"tr\",\"accessSecret\":\"" + SECRET
+                + "\",\"noticeVersion\":\"tr-test-pilot-v1\"}";
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/v1/public/ethics/reports")
+                        .header("Host", "etik.acik.com").header("Idempotency-Key", key)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated());
+        var list = mvc.perform(get("/api/v1/ethics/cases").with(staff()))
+                .andExpect(status().isOk()).andReturn();
+        return mapper.readTree(list.getResponse().getContentAsString()).get(0).get("id").asText();
+    }
+
+    @Test
+    @DisplayName("vakanın kendi geçmişi eskiden yeniye okunur ve intake ilk sırada durur")
+    void theHistoryReadsOldestFirst() throws Exception {
+        mvc.perform(get("/api/v1/ethics/cases/" + newCase() + "/timeline").with(staff()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].event").value("ethics.report.created"))
+                .andExpect(jsonPath("$[0].occurredAt").exists())
+                .andExpect(header().string("Cache-Control",
+                        org.hamcrest.Matchers.containsString("no-store")));
+    }
+
+    /**
+     * The trail stores a one-way hash and there is deliberately no reverse table, so an
+     * actor is found by hashing this org's own members and matching. A person who has left
+     * the product no longer hashes to anything here — and that must read as unknown, never
+     * as whoever happens to be left.
+     */
+    @Test
+    @DisplayName("çözülemeyen aktör bilinmiyor kalır — başkası olarak gösterilmez")
+    void anUnresolvableActorStaysUnknown() throws Exception {
+        String caseId = newCase();
+        // Nobody in the org: no hash can match, so no entry may claim an actor.
+        when(authorization.assignableStaff(any())).thenReturn(
+                new OpenFgaAuthzService.UserListResult(true, List.of(), "ok"));
+
+        var result = mvc.perform(get("/api/v1/ethics/cases/" + caseId + "/timeline").with(staff()))
+                .andExpect(status().isOk()).andReturn();
+
+        for (var entry : mapper.readTree(result.getResponse().getContentAsString())) {
+            org.assertj.core.api.Assertions.assertThat(entry.get("actorHandle").isNull()).isTrue();
+            org.assertj.core.api.Assertions.assertThat(entry.get("actorDisplayName").isNull()).isTrue();
+        }
+    }
+
+    /**
+     * A display surface, so it degrades. Losing the name directory costs the names; the
+     * sequence of what happened to the case is the part that must not go missing.
+     */
+    @Test
+    @DisplayName("ad servisi düşse de tarih kaybolmaz — yalnız isimler eksilir")
+    void anUnreachableDirectoryCostsNamesNotHistory() throws Exception {
+        String caseId = newCase();
+        when(directory.resolve(any())).thenReturn(
+                com.example.ethics.directory.UserDirectoryClient.Resolution.unavailable());
+
+        mvc.perform(get("/api/v1/ethics/cases/" + caseId + "/timeline").with(staff()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", org.hamcrest.Matchers.hasSize(
+                        org.hamcrest.Matchers.greaterThan(0))))
+                .andExpect(jsonPath("$[0].event").value("ethics.report.created"));
+    }
+
+    /**
+     * The case gate, not a separate one: a reader who cannot see the case sees no history.
+     *
+     * <p>Stubs {@code require}, not {@code can}. {@code requireCase} calls the former, and
+     * it returns void — so on a mock it does nothing by default and a test that only stubs
+     * {@code can} passes against an endpoint with no gate at all. That is the failure this
+     * assertion exists to catch, so it has to reach the method the code actually calls.
+     */
+    @Test
+    @DisplayName("vakayı göremeyen geçmişini de göremez")
+    void theCaseGateGuardsTheHistory() throws Exception {
+        String caseId = newCase();
+        org.mockito.Mockito.doThrow(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "Case not found."))
+                .when(authorization).require(any(), anyString(), any());
+
+        mvc.perform(get("/api/v1/ethics/cases/" + caseId + "/timeline").with(staff()))
+                .andExpect(status().isNotFound());
+    }
+}

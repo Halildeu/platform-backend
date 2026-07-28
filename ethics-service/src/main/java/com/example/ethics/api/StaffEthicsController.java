@@ -48,6 +48,16 @@ public class StaffEthicsController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(service.listParticipants(context.required(),id));
     }
+
+    /**
+     * The case's own history, oldest first. {@code no-store} like every other staff read:
+     * a whistleblowing case's audit trail must not sit in a shared cache.
+     */
+    @GetMapping("/{id}/timeline")
+    ResponseEntity<List<CaseTimelineEntry>> timeline(@PathVariable UUID id){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.caseTimeline(context.required(),id));
+    }
     /**
      * ES-203 — step away from a case. The body is empty on purpose: the actor is the token, so
      * there is no field through which one person could recuse another.

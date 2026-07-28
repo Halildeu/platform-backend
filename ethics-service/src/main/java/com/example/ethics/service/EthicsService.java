@@ -425,6 +425,68 @@ public class EthicsService {
     }
 
     /**
+     * What has happened to this case, oldest first.
+     *
+     * <p>Every one of these has been recorded since the first day and none of it could be
+     * read: the screen showed the case's current state and its messages, so "who moved
+     * this to investigating, and when" had no answer where the question gets asked. A
+     * handler inheriting a case could see where it ended up and not how it got there.
+     *
+     * <p>Actors are resolved the way ES-203 resolves everyone else — by recomputing, not by
+     * looking up. The trail stores a one-way hash of the subject and there is deliberately
+     * no reverse table, so each of this org's own members is hashed and matched. Someone
+     * who has since left the product does not resolve, and that entry says the actor is
+     * unknown rather than inventing one.
+     *
+     * <p>A display surface, so it degrades: an unreachable name directory costs the names,
+     * not the history. The sequence of what happened is the part that must not disappear.
+     */
+    @Transactional(readOnly=true)
+    public List<CaseTimelineEntry> caseTimeline(StaffContext staff,UUID caseId) {
+        requireCase(staff,caseId,"case_viewer");
+        var rows=audit.findAllByOrgIdAndAggregateIdOrderByCreatedAtAsc(staff.orgId(),caseId);
+        if(rows.isEmpty()) return List.of();
+
+        // hash -> subject for this org's members only. Building it costs one hash apiece and
+        // leaves nothing behind; a stored reverse map would be the correlation table ES-203
+        // exists to avoid.
+        Map<String,String> subjectByHash=new LinkedHashMap<>();
+        var members=authorization.assignableStaff(staff.orgId());
+        if(members.available())
+            for(String subject:members.subjects()) subjectByHash.put(secrets.sha256(subject),subject);
+        var names=directory.resolve(List.copyOf(subjectByHash.values()));
+
+        return rows.stream().map(row -> {
+            String actorSubject=null;
+            String detail=null;
+            try {
+                var payload=auditMapper.readTree(row.getPayload());
+                if(payload.hasNonNull("actorHash"))
+                    actorSubject=subjectByHash.get(payload.get("actorHash").asText());
+                detail=timelineDetail(row.getEventType(),payload);
+            } catch(RuntimeException|com.fasterxml.jackson.core.JsonProcessingException unreadable) {
+                // A payload this service cannot parse is still an event that happened. Dropping
+                // the row would quietly shorten the history; the entry keeps its time and type.
+                detail=null;
+            }
+            return new CaseTimelineEntry(row.getCreatedAt(),row.getEventType(),
+                    actorSubject==null?null:handles.mint(staff.orgId(),caseId,actorSubject),
+                    actorSubject==null?null:names.names().get(actorSubject),
+                    detail);
+        }).toList();
+    }
+
+    /** The one field of each payload worth reading back, or null. Never the free text. */
+    private static String timelineDetail(String eventType,com.fasterxml.jackson.databind.JsonNode payload) {
+        return switch(eventType) {
+            case "ethics.case.updated" -> payload.hasNonNull("status")?payload.get("status").asText():null;
+            case "ethics.case.participant.added" -> payload.hasNonNull("role")?payload.get("role").asText():null;
+            case "ethics.case.reopened" -> payload.hasNonNull("reopenReason")?payload.get("reopenReason").asText():null;
+            default -> null;
+        };
+    }
+
+    /**
      * ES-203 — the acting staff member steps away from a case.
      *
      * <p>Ordering is deliberate: {@code requireCase} runs first, so someone who cannot already see
