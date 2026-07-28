@@ -2,21 +2,29 @@ package com.example.budget.config;
 
 import com.example.budget.security.BudgetAudienceValidator;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.convert.converter.Converter;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
@@ -24,15 +32,49 @@ import org.springframework.security.web.SecurityFilterChain;
 public class SecurityConfig {
 
     @Bean
-    SecurityFilterChain budgetSecurity(HttpSecurity http, JwtDecoder jwtDecoder) throws Exception {
+    SecurityFilterChain budgetSecurity(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder,
+            JwtAuthenticationConverter budgetJwtAuthenticationConverter) throws Exception {
         http.csrf(csrf -> csrf.disable())
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(EndpointRequest.to("health", "info", "prometheus")).permitAll()
                         .requestMatchers("/api/v1/budgets/**").authenticated()
                         .anyRequest().denyAll())
-                .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.decoder(jwtDecoder)));
+                .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt
+                        .decoder(jwtDecoder)
+                        .jwtAuthenticationConverter(budgetJwtAuthenticationConverter)));
         return http.build();
+    }
+
+    @Bean
+    JwtAuthenticationConverter budgetJwtAuthenticationConverter() {
+        JwtGrantedAuthoritiesConverter scopes = new JwtGrantedAuthoritiesConverter();
+        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+        converter.setPrincipalClaimName("sub");
+        converter.setJwtGrantedAuthoritiesConverter(jwt -> {
+            LinkedHashSet<GrantedAuthority> authorities =
+                    new LinkedHashSet<>(scopes.convert(jwt));
+            Map<String, Object> realmAccess = jwt.getClaimAsMap("realm_access");
+            Object rawRoles = realmAccess == null ? null : realmAccess.get("roles");
+            if (rawRoles instanceof Iterable<?> roles) {
+                for (Object rawRole : roles) {
+                    if (rawRole instanceof String role && !role.isBlank()) {
+                        authorities.add(new SimpleGrantedAuthority(toRoleAuthority(role)));
+                    }
+                }
+            }
+            return authorities;
+        });
+        return converter;
+    }
+
+    private String toRoleAuthority(String role) {
+        return "ROLE_" + role.trim()
+                .toUpperCase(Locale.ROOT)
+                .replaceAll("[^A-Z0-9]+", "_")
+                .replaceAll("^_+|_+$", "");
     }
 
     @Bean
