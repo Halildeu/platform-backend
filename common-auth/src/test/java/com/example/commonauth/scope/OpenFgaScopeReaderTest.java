@@ -26,8 +26,8 @@ import static org.mockito.Mockito.when;
  * Codex thread 019e0891 iter-2 AGREE absorb (PR-BE-10 Phase 3):
  * unit tests for {@link OpenFgaScopeReader} — relation alignment,
  * cache integration, parallel fetch, superAdmin bypass, and the
- * exception contract that lets {@link ScopeContextFilter} fall back
- * to dev scope while admin-side callers use the safe variant.
+ * exception contract that lets {@link ScopeContextFilter} fail closed
+ * while admin-side callers use the safe variant.
  */
 @ExtendWith(MockitoExtension.class)
 class OpenFgaScopeReaderTest {

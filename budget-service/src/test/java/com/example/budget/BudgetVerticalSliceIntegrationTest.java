@@ -8,11 +8,14 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.example.budget.security.BudgetAuthorizationClient;
+import com.example.budget.security.BudgetAuthorizationClient.AuthorizationSnapshot;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -174,6 +177,7 @@ class BudgetVerticalSliceIntegrationTest {
 
     private RequestPostProcessor actor(String subject, String tenant, long company, String authority) {
         return jwt().jwt(token -> token
+                        .tokenValue(subject + "|" + company)
                         .subject(subject)
                         .claim("tenant_id", tenant)
                         .claim("company_ids", List.of(company)))
@@ -191,6 +195,19 @@ class BudgetVerticalSliceIntegrationTest {
                     .claim("tenant_id", "tenant-a")
                     .claim("company_ids", List.of(35))
                     .build();
+        }
+
+        @Bean
+        @Primary
+        BudgetAuthorizationClient testBudgetAuthorizationClient() {
+            return token -> {
+                String[] parts = token.split("\\|", 2);
+                return new AuthorizationSnapshot(
+                        parts[0],
+                        Set.of(Long.parseLong(parts[1])),
+                        Set.of(),
+                        false);
+            };
         }
     }
 }

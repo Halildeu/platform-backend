@@ -89,17 +89,17 @@ public class ScopeContextFilter extends OncePerRequestFilter {
             return ScopeContext.empty(null);
         }
 
-        // OpenFgaScopeReader handles cache + parallel fetch internally
-        // and propagates exceptions; preserve the pre-PR-BE-10
-        // ScopeContextFilter contract: production OpenFGA fail → dev
-        // scope fallback (NOT empty), so a misconfigured/outage cluster
-        // still serves the dev YAML scope rather than failing all
-        // requests with empty scope.
+        // OpenFgaScopeReader handles cache + parallel fetch internally and
+        // propagates exceptions. In production an authorization dependency
+        // failure is not evidence of access: keep the authenticated identity
+        // for diagnostics/RLS but grant no company/project/warehouse scope.
+        // Dev YAML scope remains available only when OpenFGA is explicitly
+        // disabled above.
         try {
             return scopeReader.readScopeContext(userId);
         } catch (Exception e) {
-            log.error("Failed to build ScopeContext from OpenFGA for user {}, falling back to dev scope", userId, e);
-            return buildDevScopeContext();
+            log.error("Failed to build ScopeContext from OpenFGA for user {}; failing closed", userId, e);
+            return ScopeContext.empty(userId);
         }
     }
 

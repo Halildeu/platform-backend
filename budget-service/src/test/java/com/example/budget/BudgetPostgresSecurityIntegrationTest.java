@@ -200,6 +200,95 @@ class BudgetPostgresSecurityIntegrationTest {
         }
     }
 
+    @Test
+    void projectActualTablesAreTenantIsolatedAndHistoryIsAppendOnly() throws Exception {
+        UUID bindingId = UUID.randomUUID();
+        UUID batchId = UUID.randomUUID();
+        UUID snapshotId = UUID.randomUUID();
+        UUID versionId = UUID.randomUUID();
+        try (Connection connection = appConnection()) {
+            connection.setAutoCommit(false);
+            setTenant(connection, "tenant-project-a");
+            execute(connection, """
+                    INSERT INTO budget_project_bindings (
+                      id, tenant_id, company_id, platform_project_ref, source_system,
+                      external_company_no, external_project_id, created_by, created_at
+                    ) VALUES (
+                      ?, 'tenant-project-a', 35, 'platform-idc1', 'WORKCUBE',
+                      35, 44200, 'sync-user', ?
+                    )
+                    """, bindingId, OffsetDateTime.now());
+            execute(connection, """
+                    INSERT INTO actual_sync_batches (
+                      id, tenant_id, company_id, project_binding_id, source_system,
+                      window_from, window_to, status, started_by, started_at
+                    ) VALUES (
+                      ?, 'tenant-project-a', 35, ?, 'WORKCUBE',
+                      DATE '2026-06-01', DATE '2026-06-30', 'RUNNING', 'sync-user', ?
+                    )
+                    """, batchId, bindingId, OffsetDateTime.now());
+            execute(connection, """
+                    INSERT INTO actual_snapshots (
+                      id, tenant_id, company_id, fiscal_year, period_start,
+                      journal_card_id, journal_row_id, resolution_status, direction,
+                      normalized_amount, currency, source_hash, is_cancelled, synced_at,
+                      project_binding_id, source_system, source_partition, account_code,
+                      debit_credit, cost_treatment, sync_batch_id
+                    ) VALUES (
+                      ?, 'tenant-project-a', 35, 2026, DATE '2026-06-10',
+                      9000, 1, 'HEADER_ONLY', 'EXPENSE',
+                      100, 'TRY', ?, FALSE, ?, ?, 'WORKCUBE',
+                      'ledger-year:2026', '740.01', 'DEBIT',
+                      'INCLUDE_COST', ?
+                    )
+                    """, snapshotId, "c".repeat(64), OffsetDateTime.now(), bindingId, batchId);
+            execute(connection, """
+                    INSERT INTO actual_snapshot_versions (
+                      id, tenant_id, snapshot_id, version_no, sync_batch_id,
+                      recorded_reason, source_hash, normalized_amount, currency,
+                      debit_credit, account_code, cost_treatment, resolution_status,
+                      is_cancelled, recorded_at
+                    ) VALUES (
+                      ?, 'tenant-project-a', ?, 1, ?, 'FIRST_SEEN', ?,
+                      100, 'TRY', 'DEBIT', '740.01', 'INCLUDE_COST',
+                      'HEADER_ONLY', FALSE, ?
+                    )
+                    """, versionId, snapshotId, batchId, "c".repeat(64), OffsetDateTime.now());
+            connection.commit();
+
+            connection.setAutoCommit(false);
+            setTenant(connection, "tenant-project-a");
+            assertThatThrownBy(() -> execute(connection, """
+                    UPDATE actual_snapshot_versions
+                       SET normalized_amount=0
+                     WHERE id=?
+                    """, versionId))
+                    .isInstanceOf(SQLException.class)
+                    .hasMessageContaining("append-only");
+            connection.rollback();
+        }
+
+        try (Connection otherTenant = appConnection()) {
+            otherTenant.setAutoCommit(false);
+            setTenant(otherTenant, "tenant-project-b");
+            assertThat(count(otherTenant, "SELECT COUNT(*) FROM budget_project_bindings")).isZero();
+            assertThat(count(otherTenant, "SELECT COUNT(*) FROM actual_sync_batches")).isZero();
+            assertThat(count(otherTenant, "SELECT COUNT(*) FROM actual_snapshot_versions")).isZero();
+            assertThatThrownBy(() -> execute(otherTenant, """
+                    INSERT INTO budget_project_bindings (
+                      id, tenant_id, company_id, platform_project_ref, source_system,
+                      external_company_no, external_project_id, created_by, created_at
+                    ) VALUES (
+                      ?, 'tenant-project-a', 35, 'cross-tenant', 'WORKCUBE',
+                      35, 44201, 'attacker', ?
+                    )
+                    """, UUID.randomUUID(), OffsetDateTime.now()))
+                    .isInstanceOf(SQLException.class)
+                    .hasMessageContaining("row-level security");
+            otherTenant.rollback();
+        }
+    }
+
     private static Connection appConnection() throws SQLException {
         String jdbcUrl = POSTGRES.getJdbcUrl();
         String separator = jdbcUrl.contains("?") ? "&" : "?";

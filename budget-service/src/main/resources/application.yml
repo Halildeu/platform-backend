@@ -31,8 +31,15 @@ server:
 
 budget:
   jwt-audience: ${BUDGET_JWT_AUDIENCE:budget-service}
+  jwt-allowed-client-ids: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:frontend,admin-cli,serban-web}
   rls-session-enabled: ${BUDGET_RLS_SESSION_ENABLED:true}
   database-role-guard-enabled: ${BUDGET_DATABASE_ROLE_GUARD_ENABLED:true}
+  actual-provider:
+    base-url: ${BUDGET_ACTUAL_PROVIDER_BASE_URL:http://report-service:8080}
+
+permission:
+  service:
+    base-url: ${PERMISSION_SERVICE_BASE_URL:http://permission-service}
 
 management:
   endpoints:
