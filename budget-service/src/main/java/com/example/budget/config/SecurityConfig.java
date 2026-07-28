@@ -1,6 +1,7 @@
 package com.example.budget.config;
 
 import com.example.budget.security.BudgetAudienceValidator;
+import com.example.budget.security.BudgetForbiddenObservationFilter;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -25,6 +26,7 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
@@ -45,6 +47,9 @@ public class SecurityConfig {
                 .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt
                         .decoder(jwtDecoder)
                         .jwtAuthenticationConverter(budgetJwtAuthenticationConverter)));
+        http.addFilterAfter(
+                new BudgetForbiddenObservationFilter(),
+                BearerTokenAuthenticationFilter.class);
         return http.build();
     }
 
