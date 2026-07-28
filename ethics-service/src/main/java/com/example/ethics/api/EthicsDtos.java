@@ -134,9 +134,38 @@ public final class EthicsDtos {
      * table — by design (ES-203/D) — so the handle is recomputed by matching the hash
      * against the org's own members. A staff member who has since left the product cannot
      * be resolved, and the entry then says so rather than inventing an actor.
+     *
+     * <p>{@code actorState} exists because a null handle used to mean two different things
+     * and the reader could not tell them apart: nobody was recorded as acting, or somebody
+     * was and no longer resolves. On an audit trail those are opposite claims — "nobody
+     * touched this" versus "we cannot say who did" — and collapsing them let the record
+     * quietly lose fidelity whenever the name directory was down.
      */
     public record CaseTimelineEntry(Instant occurredAt, String event, String actorHandle,
-                                    String actorDisplayName, String detail) {}
+                                    String actorDisplayName, String detail,
+                                    TimelineActorState actorState) {}
+
+    /**
+     * Whether this entry has an actor, and whether it can be named.
+     *
+     * <p>Derived fail-closed from the recorded payload: {@link #NONE} is asserted only when
+     * the payload was read and carried no actor reference at all. A payload this service
+     * cannot parse yields {@link #UNRESOLVED}, never {@code NONE} — claiming nobody acted
+     * is a statement about the case, and an unreadable record cannot support it.
+     *
+     * <p>There is deliberately no state for <em>why</em> an actor failed to resolve. The
+     * person may have left the product, or the directory may be unreachable this second;
+     * the service cannot reliably tell those apart, and a guess would both mislead and say
+     * more about a named individual than this surface should.
+     */
+    public enum TimelineActorState {
+        /** The payload was read and records no actor: an anonymous filing, a pipeline step. */
+        NONE,
+        /** An actor is recorded and resolves to a current member of this organization. */
+        RESOLVED,
+        /** An actor is recorded (or may be) but cannot be named right now. */
+        UNRESOLVED
+    }
     /**
      * ES-203/C — one selectable person in the assignment picker.
      *

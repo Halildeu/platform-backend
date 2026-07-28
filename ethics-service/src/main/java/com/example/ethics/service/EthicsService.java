@@ -459,20 +459,27 @@ public class EthicsService {
         return rows.stream().map(row -> {
             String actorSubject=null;
             String detail=null;
+            // Fail-closed: NONE is asserted only after the payload was read and shown to carry
+            // no actor. An unreadable payload keeps UNRESOLVED, because "nobody acted" is a
+            // claim about the case and a record we cannot parse does not support it.
+            var actorState=TimelineActorState.UNRESOLVED;
             try {
                 var payload=auditMapper.readTree(row.getPayload());
                 if(payload.hasNonNull("actorHash"))
                     actorSubject=subjectByHash.get(payload.get("actorHash").asText());
+                else
+                    actorState=TimelineActorState.NONE;
                 detail=timelineDetail(row.getEventType(),payload);
             } catch(RuntimeException|com.fasterxml.jackson.core.JsonProcessingException unreadable) {
                 // A payload this service cannot parse is still an event that happened. Dropping
                 // the row would quietly shorten the history; the entry keeps its time and type.
                 detail=null;
             }
+            if(actorSubject!=null) actorState=TimelineActorState.RESOLVED;
             return new CaseTimelineEntry(row.getCreatedAt(),row.getEventType(),
                     actorSubject==null?null:handles.mint(staff.orgId(),caseId,actorSubject),
                     actorSubject==null?null:names.names().get(actorSubject),
-                    detail);
+                    detail,actorState);
         }).toList();
     }
 

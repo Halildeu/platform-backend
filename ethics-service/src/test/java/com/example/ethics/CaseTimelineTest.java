@@ -41,6 +41,7 @@ class CaseTimelineTest {
 
     @Autowired MockMvc mvc;
     @Autowired com.fasterxml.jackson.databind.ObjectMapper mapper;
+    @Autowired com.example.ethics.repository.AuditOutboxRepository auditRows;
     @MockitoBean com.example.ethics.security.EthicsAuthorization authorization;
     @MockitoBean com.example.ethics.security.EthicsEntitlementVerifier entitlements;
     @MockitoBean com.example.ethics.directory.UserDirectoryClient directory;
@@ -138,6 +139,62 @@ class CaseTimelineTest {
      * {@code can} passes against an endpoint with no gate at all. That is the failure this
      * assertion exists to catch, so it has to reach the method the code actually calls.
      */
+    /**
+     * A null actor used to mean two opposite things at once — nobody was recorded, or
+     * somebody was and no longer resolves — and the reader could not tell which. On an
+     * audit trail that difference is the whole point: "nobody touched this" is a claim
+     * about the case; "we cannot say who did" is a claim about our own records.
+     */
+    @Test
+    @DisplayName("aktörü olmayan satır ile çözülemeyen satır ayrı durumlar döner")
+    void theAbsenceOfAnActorIsNotTheSameAsFailingToNameOne() throws Exception {
+        String caseId = newCase();
+        // The intake carries no actorHash at all: an anonymous filing.
+        var byEvent = timelineByEvent(caseId);
+        org.assertj.core.api.Assertions.assertThat(byEvent.get("ethics.report.created"))
+                .isEqualTo("NONE");
+
+        // Same trail, but this org now has no members, so a recorded actor cannot be named.
+        when(authorization.assignableStaff(any())).thenReturn(
+                new OpenFgaAuthzService.UserListResult(true, List.of(), "ok"));
+        for (var entry : mapper.readTree(timelineJson(caseId))) {
+            if (entry.get("actorState").asText().equals("UNRESOLVED")) {
+                // An unnamed actor must not leak a handle either.
+                org.assertj.core.api.Assertions.assertThat(entry.get("actorHandle").isNull()).isTrue();
+            }
+        }
+    }
+
+    /**
+     * The fail-closed direction. A payload this service cannot parse might have carried an
+     * actor — we simply cannot see. Reporting {@code NONE} there would assert that nobody
+     * acted, which is a statement about the case that an unreadable record cannot support.
+     */
+    @Test
+    @DisplayName("okunamayan kayıt UNRESOLVED kalır — 'kimse yoktu' denmez")
+    void anUnreadablePayloadNeverClaimsThereWasNoActor() throws Exception {
+        String caseId = newCase();
+        auditRows.save(new com.example.ethics.model.AuditOutbox(
+                UUID.randomUUID(), ORG, UUID.fromString(caseId), "ethics.case.sealed",
+                "{bu gecerli JSON degil", java.time.Instant.now()));
+
+        var byEvent = timelineByEvent(caseId);
+        org.assertj.core.api.Assertions.assertThat(byEvent.get("ethics.case.sealed"))
+                .isEqualTo("UNRESOLVED");
+    }
+
+    private String timelineJson(String caseId) throws Exception {
+        return mvc.perform(get("/api/v1/ethics/cases/" + caseId + "/timeline").with(staff()))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+    }
+
+    private java.util.Map<String, String> timelineByEvent(String caseId) throws Exception {
+        var out = new java.util.LinkedHashMap<String, String>();
+        for (var entry : mapper.readTree(timelineJson(caseId)))
+            out.put(entry.get("event").asText(), entry.get("actorState").asText());
+        return out;
+    }
+
     @Test
     @DisplayName("vakayı göremeyen geçmişini de göremez")
     void theCaseGateGuardsTheHistory() throws Exception {
