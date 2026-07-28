@@ -150,18 +150,18 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
     }
 
     @Override
-    public void emit(
+    public String emit(
             final TranscriptResult result, final DirectSttTranscriptResultContext context) {
         // Durable first, unchanged. Everything below is an addition on top of a result
         // that has already been delivered.
-        delegate.emit(result, context);
+        final String eventId = delegate.emit(result, context);
 
         if (context == null || context.sessionId() == null || context.sessionId().isBlank()) {
-            return;
+            return eventId;
         }
         // Never re-assemble something this sink itself produced.
         if (context.assembly() != null) {
-            return;
+            return eventId;
         }
 
         final SessionState[] target = new SessionState[1];
@@ -181,9 +181,10 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                     "sentence assembly skipped sessionId={} reason={}",
                     context.sessionId(),
                     ex.getClass().getSimpleName());
-            return;
+            return eventId;
         }
         drain(target[0]);
+        return eventId;
     }
 
     /**

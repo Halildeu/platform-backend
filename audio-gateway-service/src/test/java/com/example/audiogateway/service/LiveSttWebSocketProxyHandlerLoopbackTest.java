@@ -476,6 +476,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         final DirectSttTranscriptResultSink resultSink = (result, context) -> {
             persistedResult.set(result);
             persistedContext.set(context);
+            return null;
         };
         final LiveSttWebSocketProxyHandler handler = new LiveSttWebSocketProxyHandler(
                 sessions, properties, auditSink, resultSink,
@@ -866,6 +867,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             }
+            return null;
         };
         final LiveSttWebSocketProxyHandler handler = new LiveSttWebSocketProxyHandler(
                 sessions, properties, auditSink, hangingSink,

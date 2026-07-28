@@ -12,10 +12,20 @@ import com.example.audiogateway.dto.TranscriptResult;
 @FunctionalInterface
 public interface DirectSttTranscriptResultSink {
 
-    void emit(TranscriptResult result, DirectSttTranscriptResultContext context);
+    /**
+     * Hand the result downstream.
+     *
+     * @return the durable event id this result was stored under, or {@code null} when this
+     *     sink does not assign one. {@code null} means "unknown", never "failed" — a failed
+     *     durable handoff still throws, as before.
+     *     <p>The id is returned rather than discarded because it is the key the assembler's
+     *     {@code sourceEventIds} audit trail is written in. Without it a live viewer receives
+     *     the trail but nothing to match it against, and cannot tell which lines on screen an
+     *     assembled utterance replaced.
+     */
+    String emit(TranscriptResult result, DirectSttTranscriptResultContext context);
 
     static DirectSttTranscriptResultSink noop() {
-        return (result, context) -> {
-        };
+        return (result, context) -> null;
     }
 }

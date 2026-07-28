@@ -29,16 +29,20 @@ public final class LiveTranscriptBroadcastSink implements DirectSttTranscriptRes
     }
 
     @Override
-    public void emit(
+    public String emit(
             final TranscriptResult result, final DirectSttTranscriptResultContext context) {
-        delegate.emit(result, context);
+        // Durable first: the id only exists once the record is written, and the
+        // broadcast carries it so a viewer can match an assembled line's
+        // sourceEventIds against the raw lines already on its screen.
+        final String eventId = delegate.emit(result, context);
         try {
             hub.publish(
                     context == null ? null : context.meetingId(),
-                    LiveTranscriptEvent.of(result, context));
+                    LiveTranscriptEvent.of(result, context, eventId));
         } catch (final RuntimeException ex) {
             // Broadcast is best-effort. Never mask the (already-committed)
             // durable emission with a relay error.
         }
+        return eventId;
     }
 }

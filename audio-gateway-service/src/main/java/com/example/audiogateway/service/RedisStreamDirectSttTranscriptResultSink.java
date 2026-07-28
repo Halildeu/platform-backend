@@ -38,7 +38,7 @@ public class RedisStreamDirectSttTranscriptResultSink implements DirectSttTransc
     }
 
     @Override
-    public void emit(final TranscriptResult result, final DirectSttTranscriptResultContext context) {
+    public String emit(final TranscriptResult result, final DirectSttTranscriptResultContext context) {
         final Map<String, String> fields = new LinkedHashMap<>();
         fields.put("schemaVersion", SCHEMA_VERSION);
         fields.put("eventType", EVENT_TYPE_DIRECT_STT_TRANSCRIPT_RESULT);
@@ -101,6 +101,8 @@ public class RedisStreamDirectSttTranscriptResultSink implements DirectSttTransc
         if (recordId == null) {
             throw new IllegalStateException("direct-STT transcript XADD returned no record id");
         }
+        // This is the id the assembler's sourceEventIds audit trail is written in.
+        return recordId.getValue();
     }
 
     private static String nullSafe(final String value) {

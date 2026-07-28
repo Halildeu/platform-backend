@@ -29,7 +29,7 @@ class SentenceAssemblingSinkTest {
     private record Emission(TranscriptResult result, DirectSttTranscriptResultContext context) {}
 
     private final DirectSttTranscriptResultSink recorder =
-            (result, context) -> emissions.add(new Emission(result, context));
+            (result, context) -> { emissions.add(new Emission(result, context)); return null; };
 
     private SentenceAssemblingSink sink(final DirectSttTranscriptResultSink delegate) {
         return new SentenceAssemblingSink(
@@ -169,6 +169,7 @@ class SentenceAssemblingSinkTest {
                                 throw new IllegalStateException("stream write refused");
                             }
                             delivered.add(new Emission(result, context));
+                            return null;
                         });
 
         assertThatCode(() -> offer(sink, "Tamam.", 0, 0, 1_000)).doesNotThrowAnyException();
@@ -329,6 +330,7 @@ class SentenceAssemblingSinkTest {
                             if (context != null && context.assembly() != null) {
                                 throw new IllegalStateException("stream write refused");
                             }
+                            return null;
                         });
 
         offer(sink, "Tamam.", 0, 0, 1_000);
@@ -610,7 +612,7 @@ class SentenceAssemblingSinkTest {
                 sink(
                         (result, context) -> {
                             if (context == null || context.assembly() == null) {
-                                return;
+                                return null;
                             }
                             delivered.add(result.text());
                             if (delivered.size() == 1) {
@@ -621,6 +623,7 @@ class SentenceAssemblingSinkTest {
                                     Thread.currentThread().interrupt();
                                 }
                             }
+                            return null;
                         });
 
         // First line closes and its delivery blocks inside the delegate.

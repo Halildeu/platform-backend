@@ -10,6 +10,56 @@ import org.junit.jupiter.api.Test;
 
 class LiveTranscriptBroadcastSinkTest {
 
+    @Test
+    void the_broadcast_carries_the_durable_event_id_so_a_viewer_can_match_the_audit_trail() {
+        final List<com.example.audiogateway.dto.LiveTranscriptEvent> published = new ArrayList<>();
+        final LiveTranscriptStreamHub hub =
+                new LiveTranscriptStreamHub() {
+                    @Override
+                    public void publish(
+                            final String meetingId,
+                            final com.example.audiogateway.dto.LiveTranscriptEvent event) {
+                        published.add(event);
+                    }
+                };
+        // The durable sink is what assigns the id; the broadcast must relay the
+        // exact value, not a copy of some other field.
+        final LiveTranscriptBroadcastSink sink =
+                new LiveTranscriptBroadcastSink((r, c) -> "1700000000000-7", hub);
+
+        sink.emit(result("ham parça"), context("m-9"));
+
+        assertThat(published).hasSize(1);
+        assertThat(published.get(0).eventId()).isEqualTo("1700000000000-7");
+    }
+
+    @Test
+    void an_unknown_id_is_published_as_null_rather_than_an_empty_string() {
+        // A viewer must be able to tell "no id" apart from "an id that is the
+        // empty string"; only null means unmatched.
+        final List<com.example.audiogateway.dto.LiveTranscriptEvent> published = new ArrayList<>();
+        final LiveTranscriptStreamHub hub =
+                new LiveTranscriptStreamHub() {
+                    @Override
+                    public void publish(
+                            final String meetingId,
+                            final com.example.audiogateway.dto.LiveTranscriptEvent event) {
+                        published.add(event);
+                    }
+                };
+        final LiveTranscriptBroadcastSink blank =
+                new LiveTranscriptBroadcastSink((r, c) -> "   ", hub);
+        final LiveTranscriptBroadcastSink absent =
+                new LiveTranscriptBroadcastSink((r, c) -> null, hub);
+
+        blank.emit(result("a"), context("m-9"));
+        absent.emit(result("b"), context("m-9"));
+
+        assertThat(published).hasSize(2);
+        assertThat(published.get(0).eventId()).isNull();
+        assertThat(published.get(1).eventId()).isNull();
+    }
+
     private static TranscriptResult result(final String text) {
         return new TranscriptResult(text, "tr", 0.99, 1.0, 100.0, "m", "int8", "cpu", null);
     }
@@ -58,7 +108,7 @@ class LiveTranscriptBroadcastSinkTest {
                     }
                 };
         final LiveTranscriptBroadcastSink sink =
-                new LiveTranscriptBroadcastSink((r, c) -> {}, hub);
+                new LiveTranscriptBroadcastSink((r, c) -> null, hub);
 
         sink.emit(result("ham parça"), context("m-3"));
         sink.emit(
@@ -96,7 +146,7 @@ class LiveTranscriptBroadcastSinkTest {
     @Test
     void forwardsToDelegateBeforeBroadcast() {
         final List<TranscriptResult> forwarded = new ArrayList<>();
-        final DirectSttTranscriptResultSink base = (r, c) -> forwarded.add(r);
+        final DirectSttTranscriptResultSink base = (r, c) -> { forwarded.add(r); return null; };
         final LiveTranscriptStreamHub hub = new LiveTranscriptStreamHub();
         final LiveTranscriptBroadcastSink sink = new LiveTranscriptBroadcastSink(base, hub);
 
@@ -109,7 +159,7 @@ class LiveTranscriptBroadcastSinkTest {
     @Test
     void hubFailureDoesNotBreakDelegate() {
         final List<TranscriptResult> forwarded = new ArrayList<>();
-        final DirectSttTranscriptResultSink base = (r, c) -> forwarded.add(r);
+        final DirectSttTranscriptResultSink base = (r, c) -> { forwarded.add(r); return null; };
         final LiveTranscriptStreamHub throwingHub =
                 new LiveTranscriptStreamHub() {
                     @Override
@@ -130,7 +180,7 @@ class LiveTranscriptBroadcastSinkTest {
     @Test
     void nullContextIsHandledGracefully() {
         final List<TranscriptResult> forwarded = new ArrayList<>();
-        final DirectSttTranscriptResultSink base = (r, c) -> forwarded.add(r);
+        final DirectSttTranscriptResultSink base = (r, c) -> { forwarded.add(r); return null; };
         final LiveTranscriptStreamHub hub = new LiveTranscriptStreamHub();
         final LiveTranscriptBroadcastSink sink = new LiveTranscriptBroadcastSink(base, hub);
 
