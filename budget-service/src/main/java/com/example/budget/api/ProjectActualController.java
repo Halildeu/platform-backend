@@ -40,7 +40,7 @@ public class ProjectActualController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @PreAuthorize("hasAuthority('SCOPE_budget:write')")
+    @PreAuthorize("hasAuthority('SCOPE_budget:write') and hasAuthority('ROLE_BUDGET_PLANNER')")
     ProjectBindingView createBinding(
             @RequestHeader("X-Company-Id") long companyId,
             @Valid @RequestBody CreateProjectBindingRequest request,
@@ -49,7 +49,7 @@ public class ProjectActualController {
     }
 
     @GetMapping("/bindings")
-    @PreAuthorize("hasAuthority('SCOPE_budget:read')")
+    @PreAuthorize("hasAuthority('SCOPE_budget:read') and hasAuthority('ROLE_BUDGET_PLANNER')")
     ProjectBindingView findBinding(
             @RequestHeader("X-Company-Id") long companyId,
             @RequestParam(defaultValue = "WORKCUBE") String sourceSystem,
@@ -62,7 +62,7 @@ public class ProjectActualController {
     }
 
     @PutMapping("/cost-rules")
-    @PreAuthorize("hasAuthority('SCOPE_budget:approve')")
+    @PreAuthorize("hasAuthority('SCOPE_budget:approve') and hasAuthority('ROLE_BUDGET_APPROVER')")
     CostRuleSetView replaceCostRules(
             @RequestHeader("X-Company-Id") long companyId,
             @Valid @RequestBody ReplaceCostRulesRequest request,
@@ -72,7 +72,7 @@ public class ProjectActualController {
     }
 
     @PostMapping("/{bindingId}/actuals/sync")
-    @PreAuthorize("hasAuthority('SCOPE_budget:write')")
+    @PreAuthorize("hasAuthority('SCOPE_budget:write') and hasAuthority('ROLE_BUDGET_PLANNER')")
     ProjectActualSyncResult sync(
             @RequestHeader("X-Company-Id") long companyId,
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization,
@@ -84,7 +84,7 @@ public class ProjectActualController {
     }
 
     @GetMapping("/{bindingId}/actuals")
-    @PreAuthorize("hasAuthority('SCOPE_budget:read')")
+    @PreAuthorize("hasAuthority('SCOPE_budget:read') and hasAuthority('ROLE_BUDGET_PLANNER')")
     List<ProjectActualRow> rows(
             @RequestHeader("X-Company-Id") long companyId,
             @PathVariable UUID bindingId,
@@ -97,7 +97,7 @@ public class ProjectActualController {
     }
 
     @GetMapping("/{bindingId}/actuals/summary")
-    @PreAuthorize("hasAuthority('SCOPE_budget:read')")
+    @PreAuthorize("hasAuthority('SCOPE_budget:read') and hasAuthority('ROLE_BUDGET_PLANNER')")
     ProjectActualSummary summary(
             @RequestHeader("X-Company-Id") long companyId,
             @PathVariable UUID bindingId,
