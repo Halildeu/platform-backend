@@ -42,6 +42,13 @@ public class BudgetActorResolver {
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN, "Company is outside the authoritative scope");
         }
+        log.info(
+                "budget_authorization_resolved companyId={} superAdmin={} "
+                        + "allowedCompanyCount={} allowedProjectCount={}",
+                requestedCompanyId,
+                authorization.superAdmin(),
+                authorization.allowedCompanyIds().size(),
+                authorization.allowedProjectIds().size());
         return new BudgetActor(
                 tenantId,
                 requestedCompanyId,

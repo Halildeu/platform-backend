@@ -22,18 +22,19 @@ public class BudgetForbiddenObservationFilter extends OncePerRequestFilter {
             HttpServletRequest request,
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
+        Authentication authentication =
+                SecurityContextHolder.getContext().getAuthentication();
+        Jwt jwt = authentication != null
+                        && authentication.isAuthenticated()
+                        && authentication.getPrincipal() instanceof Jwt principal
+                ? principal
+                : null;
+
         filterChain.doFilter(request, response);
 
         if (response.getStatus() != HttpServletResponse.SC_FORBIDDEN
-                || !isProjectPath(request.getRequestURI())) {
-            return;
-        }
-
-        Authentication authentication =
-                SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null
-                || !authentication.isAuthenticated()
-                || !(authentication.getPrincipal() instanceof Jwt jwt)) {
+                || !isProjectPath(request.getRequestURI())
+                || jwt == null) {
             return;
         }
 
