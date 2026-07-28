@@ -187,9 +187,11 @@ public class EthicsService {
         EthicsCase item=requireCase(staff,caseId,"case_viewer"); EthicsReport report=reports.findByCaseId(caseId).orElseThrow();
         List<MessageResponse> all=messages.findAllByCaseIdAndVisibilityInOrderByCreatedAtAsc(caseId,List.of("REPORTER_VISIBLE","INTERNAL"))
                 .stream().map(EthicsService::messageResponse).toList();
-        boolean named=!participants.findAllByCaseIdOrderByCreatedAtAsc(caseId).isEmpty();
+        var onCase=participants.findAllByCaseIdOrderByCreatedAtAsc(caseId);
+        boolean named=!onCase.isEmpty();
         return new CaseDetail(item.getId(),item.getStatus(),named?null:item.getAssignedTo(),item.getVersion(),report.getMode(),report.getCategory(),report.getSubject(),report.getNarrative(),all,
-                item.getAcknowledgedAt(),item.getOutcome(),item.getClosedAt());
+                item.getAcknowledgedAt(),item.getOutcome(),item.getClosedAt(),
+                item.getCreatedAt(),item.getUpdatedAt(),onCase.size());
     }
 
     /**

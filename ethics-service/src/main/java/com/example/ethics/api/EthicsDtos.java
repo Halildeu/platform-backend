@@ -75,8 +75,22 @@ public final class EthicsDtos {
     public record CaseSummary(UUID id, String status, String legacyAssignmentLabel, long version, Instant createdAt, Instant updatedAt,
                               Instant acknowledgedAt, String outcome, Instant closedAt,
                               String subject, String category, String mode, int participantCount) {}
+    /**
+     * One case, opened.
+     *
+     * <p>Carries every field {@link CaseSummary} carries, plus the narrative and messages.
+     * That is not decoration — the client declares the detail as an extension of the
+     * summary, and the two records used to disagree: {@code createdAt}, {@code updatedAt}
+     * and {@code participantCount} were on the list and missing here. The screen computes
+     * the acknowledgement deadline from {@code createdAt}, so opening a case that had been
+     * acknowledged in sixteen seconds reported "acknowledgement status unreadable".
+     *
+     * <p>A field added to {@code CaseSummary} belongs here too; the invariant is asserted
+     * rather than remembered (see {@code CaseDetailFieldParityTest}).
+     */
     public record CaseDetail(UUID id, String status, String legacyAssignmentLabel, long version, String mode, String category, String subject, String description, List<MessageResponse> messages,
-                             Instant acknowledgedAt, String outcome, Instant closedAt) {}
+                             Instant acknowledgedAt, String outcome, Instant closedAt,
+                             Instant createdAt, Instant updatedAt, int participantCount) {}
     /**
      * ES-301A / ES-301B. {@code outcome} is required when closing and refused otherwise;
      * {@code reason} is required only when reopening a closed case. Neither is a free-form
