@@ -110,6 +110,37 @@ class V41ServicesOrgExpansionPostgresIntegrationTest {
     }
 
     @Test
+    void v82AllowsFreshObservationWhenCanonicalPayloadIsUnchanged() {
+        UUID org = UUID.randomUUID();
+        UUID device = seedDevice(org);
+
+        insertSnapshot(UUID.randomUUID(), org, org, device);
+        insertSnapshot(UUID.randomUUID(), org, org, device);
+
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM " + SCHEMA
+                        + ".endpoint_services_snapshots"
+                        + " WHERE tenant_id=? AND device_id=? AND payload_hash_sha256=?",
+                Long.class,
+                org,
+                device,
+                HEX64))
+                .isEqualTo(2L);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM pg_indexes"
+                        + " WHERE schemaname=? AND indexname='svcs_snap_tenant_device_hash_uq'",
+                Long.class,
+                SCHEMA))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM pg_indexes"
+                        + " WHERE schemaname=? AND indexname='svcs_snap_tenant_device_hash_ix'",
+                Long.class,
+                SCHEMA))
+                .isEqualTo(1L);
+    }
+
+    @Test
     void crossOrgEntryInsert_isRejectedBySnapshotOrgFk_23503() {
         UUID org = UUID.randomUUID(), orgB = UUID.randomUUID();
         UUID device = seedDevice(org);
