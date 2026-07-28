@@ -18,6 +18,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -31,6 +33,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class ProjectActualService {
+    private static final Logger log = LoggerFactory.getLogger(ProjectActualService.class);
+
     private static final int PROVIDER_PAGE_SIZE = 1000;
     private static final int MAX_PROVIDER_PAGES = 1000;
     private static final BigDecimal RECONCILIATION_TOLERANCE = new BigDecimal("0.01");
@@ -824,6 +828,13 @@ public class ProjectActualService {
 
     private void requireProjectAccess(BudgetActor actor, long projectId) {
         if (!actor.canAccessProject(projectId)) {
+            log.warn(
+                    "budget_authorization_denied reason=project_scope companyId={} projectId={} "
+                            + "superAdmin={} allowedProjectCount={}",
+                    actor.companyId(),
+                    projectId,
+                    actor.superAdmin(),
+                    actor.allowedProjectIds().size());
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN, "Project is outside the authoritative scope");
         }

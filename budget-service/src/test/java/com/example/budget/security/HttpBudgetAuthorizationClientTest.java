@@ -53,6 +53,24 @@ class HttpBudgetAuthorizationClientTest {
     }
 
     @Test
+    void preservesAuthoritativeSuperAdminDecision() {
+        server.expect(requestTo("http://permission-service/api/v1/authz/me"))
+                .andExpect(header(HttpHeaders.AUTHORIZATION, "Bearer browser-token"))
+                .andRespond(withSuccess("""
+                        {
+                          "userId":"redacted-test-user",
+                          "superAdmin":true,
+                          "allowedScopes":[]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        var snapshot = client.fetch("browser-token");
+
+        assertThat(snapshot.superAdmin()).isTrue();
+        server.verify();
+    }
+
+    @Test
     void locallyAcceptedTokenRejectedUpstreamIsContractFailure() {
         server.expect(requestTo("http://permission-service/api/v1/authz/me"))
                 .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
