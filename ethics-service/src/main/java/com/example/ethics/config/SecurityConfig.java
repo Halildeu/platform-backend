@@ -5,6 +5,7 @@ import com.example.ethics.security.PublicRateLimitFilter;
 import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.beans.factory.annotation.Value;
+import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -61,11 +62,33 @@ public class SecurityConfig {
         return http.build();
     }
 
+    /**
+     * Everything the two chains above do not claim, denied.
+     *
+     * <p>The {@code ERROR} dispatch is permitted, and that is a fix rather than a loosening.
+     * A request to a path that does not exist produces a 404, Spring forwards it to
+     * {@code /error} to be rendered, and {@code /error} is outside the staff matcher — so it
+     * landed here and {@code denyAll} turned it into a body-less 403. "No such endpoint" and
+     * "you may not use this endpoint" became the same answer.
+     *
+     * <p>That cost real time: a frontend shipped ahead of its service asked for
+     * {@code /cases/{id}/timeline} before the endpoint existed, and the 403 read as an
+     * authorization fault. Ingress, edge, NetPol and token claims were all eliminated before
+     * the cause turned out to be that the endpoint was simply not there yet.
+     *
+     * <p>Nothing is disclosed by allowing it. The 404 is about a path the caller already
+     * typed, and it carries no information about who they are or what exists behind the
+     * authorization boundary. <b>Case identity is a different matter and is untouched:</b> a
+     * case the caller may not see still answers 404 rather than 403, deliberately, so that
+     * probing cannot reveal whether a case exists. That decision lives in the gate, runs on
+     * the {@code REQUEST} dispatch, and is unaffected by how the response is rendered.
+     */
     @Bean
     @Order(3)
     SecurityFilterChain defaultChain(HttpSecurity http) throws Exception {
         http.csrf(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth
+                        .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(EndpointRequest.to("health", "info", "prometheus")).permitAll()
                         .anyRequest().denyAll());
         return http.build();
