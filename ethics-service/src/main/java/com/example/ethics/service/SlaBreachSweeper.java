@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -46,6 +47,11 @@ public class SlaBreachSweeper {
     private final UUID orgId;
     private final Clock clock;
 
+    // Two constructors, so Spring must be told which one. Without this it looks for a
+    // default constructor, fails to find one, and the whole application context dies —
+    // taking every integration test with it. The unit test below cannot catch that: it
+    // builds the sweeper by hand and never asks Spring to wire it.
+    @Autowired
     public SlaBreachSweeper(
             EthicsCaseRepository cases,
             NotificationOutboxRepository outbox,
