@@ -62,6 +62,25 @@ public class StaffEthicsController {
      * ES-203 — step away from a case. The body is empty on purpose: the actor is the token, so
      * there is no field through which one person could recuse another.
      */
+    /**
+     * Records why a case is waiting. Returns no dates on purpose: this moves no deadline,
+     * and answering with one would suggest it had.
+     */
+    @PostMapping("/{id}/waiting")
+    ResponseEntity<Void> declareWaiting(@PathVariable UUID id, @RequestBody WaitingRequest body){
+        service.declareWaiting(context.required(), id, body.reason());
+        return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
+    }
+
+    @DeleteMapping("/{id}/waiting")
+    ResponseEntity<Void> resolveWaiting(@PathVariable UUID id){
+        service.resolveWaiting(context.required(), id);
+        return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
+    }
+
+    /** Closed vocabulary; free text here would collect names. */
+    record WaitingRequest(String reason) {}
+
     @PostMapping("/{id}/recusal")
     ResponseEntity<Void> recuse(@PathVariable UUID id){
         service.declareRecusal(context.required(),id);

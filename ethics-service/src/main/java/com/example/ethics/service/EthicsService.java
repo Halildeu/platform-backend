@@ -25,6 +25,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class EthicsService {
     private final EthicsProperties properties;
     private final CaseSlaClock sla;
+    private final com.example.ethics.repository.CaseWaitingReasonRepository waits;
     private final SecretHasher secrets;
     private final EthicsCaseRepository cases;
     private final EthicsReportRepository reports;
@@ -55,8 +56,10 @@ public class EthicsService {
             CaseParticipantRepository participants,
             ParticipantHandles handles,
             UserDirectoryClient directory,
-            CaseSlaClock sla) {
+            CaseSlaClock sla,
+            com.example.ethics.repository.CaseWaitingReasonRepository waits) {
         this.sla=sla;
+        this.waits=waits;
         this.handles=handles;
         this.directory=directory;
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
@@ -603,6 +606,55 @@ public class EthicsService {
      * while there is nothing better, and never turned into a principal.
      */
     /** One case on its own — the caller already has just this row, so a lookup apiece is honest. */
+    private static final java.util.Set<String> WAITING_REASONS = java.util.Set.of(
+            com.example.ethics.model.CaseWaitingReason.AWAITING_REPORTER,
+            com.example.ethics.model.CaseWaitingReason.AWAITING_EXTERNAL_AUTHORITY,
+            com.example.ethics.model.CaseWaitingReason.AWAITING_INTERNAL_INPUT);
+
+    /**
+     * Records why a case is waiting. Deliberately returns nothing about deadlines: this
+     * changes no date, and a method that answered with a new due date would suggest it had.
+     */
+    @Transactional
+    public void declareWaiting(StaffContext staff, UUID caseId, String reason) {
+        authorization.require(staff, "case_handler", caseId);
+        if (!WAITING_REASONS.contains(reason)) {
+            throw new IllegalArgumentException("unsupported waiting reason");
+        }
+        var item = cases.findById(caseId)
+                .filter(c -> c.getOrgId().equals(staff.orgId()))
+                .orElseThrow(() -> new IllegalArgumentException("case not found"));
+        // Already waiting is not an error worth surfacing: the handler's intent is satisfied
+        // and the database enforces the single open row anyway.
+        if (waits.findByCaseIdAndEndedAtIsNull(caseId).isPresent()) return;
+        waits.save(new com.example.ethics.model.CaseWaitingReason(
+                UUID.randomUUID(), caseId, item.getOrgId(), reason, Instant.now()));
+        audit.save(new AuditOutbox(UUID.randomUUID(), item.getOrgId(), caseId,
+                "ethics.case.waiting_declared",
+                encodeAuditPayload(Map.of(
+                        "actorHash", secrets.sha256(staff.subject()),
+                        "reason", reason)),
+                Instant.now()));
+    }
+
+    /** Ends the open wait, if there is one. Idempotent. */
+    @Transactional
+    public void resolveWaiting(StaffContext staff, UUID caseId) {
+        authorization.require(staff, "case_handler", caseId);
+        var item = cases.findById(caseId)
+                .filter(c -> c.getOrgId().equals(staff.orgId()))
+                .orElseThrow(() -> new IllegalArgumentException("case not found"));
+        waits.findByCaseIdAndEndedAtIsNull(caseId).ifPresent(open -> {
+            open.end(Instant.now());
+            audit.save(new AuditOutbox(UUID.randomUUID(), item.getOrgId(), caseId,
+                    "ethics.case.waiting_resolved",
+                    encodeAuditPayload(Map.of(
+                            "actorHash", secrets.sha256(staff.subject()),
+                            "reason", open.getReason())),
+                    Instant.now()));
+        });
+    }
+
     private static Long secs(java.time.Duration d){ return d==null?null:d.toSeconds(); }
 
     private CaseSummary summary(EthicsCase c){

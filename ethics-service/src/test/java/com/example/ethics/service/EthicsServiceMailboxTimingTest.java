@@ -62,7 +62,9 @@ class EthicsServiceMailboxTimingTest {
                 participants,
                 new com.example.ethics.security.ParticipantHandles(props),
                 directory,
-                new CaseSlaClock(new com.example.ethics.config.EthicsSlaProperties(null, null)));
+                new CaseSlaClock(new com.example.ethics.config.EthicsSlaProperties(null, null)),
+                org.mockito.Mockito.mock(
+                        com.example.ethics.repository.CaseWaitingReasonRepository.class));
     }
 
     @Test
