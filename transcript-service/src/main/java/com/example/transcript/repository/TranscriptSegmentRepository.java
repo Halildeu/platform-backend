@@ -131,6 +131,7 @@ public interface TranscriptSegmentRepository extends JpaRepository<TranscriptSeg
     List<TranscriptSegment> findAllVisibleToOrgByMeeting(
             @Param("orgId") UUID orgId, @Param("meetingId") UUID meetingId, Pageable pageable);
 
+    /** Replay identity keyed by the gateway-owned sequence space and window number. */
     @Query("""
             select s
             from TranscriptSegment s
@@ -138,40 +139,15 @@ public interface TranscriptSegmentRepository extends JpaRepository<TranscriptSeg
               and s.meetingId = :meetingId
               and s.sourceSystem = 'DIRECT_STT'
               and s.sourceSessionId = :sourceSessionId
+              and s.sourceTransportEpoch = :transportEpoch
               and s.sourceWindowSeq = :sourceWindowSeq
             """)
-    Optional<TranscriptSegment> findDirectSttSourceWindow(
+    Optional<TranscriptSegment> findDirectSttSourceTransportWindow(
             @Param("tenantId") UUID tenantId,
             @Param("meetingId") UUID meetingId,
             @Param("sourceSessionId") String sourceSessionId,
+            @Param("transportEpoch") Long transportEpoch,
             @Param("sourceWindowSeq") Long sourceWindowSeq);
-
-    /**
-     * Replay identity keyed on the audio a window represents.
-     *
-     * <p>The producer's window counter is not stable inside a session: live
-     * evidence (2026-07-26) shows it restarting mid-session, so two different
-     * audio windows shared one sequence number and the second was discarded as
-     * a replay. The chunk range comes from the audio pipeline and identifies
-     * the window unambiguously, so genuine replays (same chunks, different
-     * text) are still caught while a restarted counter is not a collision.
-     */
-    @Query("""
-            select s
-            from TranscriptSegment s
-            where s.tenantId = :tenantId
-              and s.meetingId = :meetingId
-              and s.sourceSystem = 'DIRECT_STT'
-              and s.sourceSessionId = :sourceSessionId
-              and s.sourceFirstChunkSeq = :firstChunkSeq
-              and s.sourceLastChunkSeq = :lastChunkSeq
-            """)
-    Optional<TranscriptSegment> findDirectSttSourceChunkWindow(
-            @Param("tenantId") UUID tenantId,
-            @Param("meetingId") UUID meetingId,
-            @Param("sourceSessionId") String sourceSessionId,
-            @Param("firstChunkSeq") Long firstChunkSeq,
-            @Param("lastChunkSeq") Long lastChunkSeq);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""

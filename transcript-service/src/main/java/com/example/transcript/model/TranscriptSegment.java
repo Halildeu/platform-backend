@@ -46,7 +46,8 @@ import java.util.UUID;
                 @Index(name = "idx_transcript_segments_tenant_status",
                         columnList = "tenant_id,status"),
                 @Index(name = "idx_transcript_segments_tenant_source_order",
-                        columnList = "tenant_id,source_system,source_session_id,source_window_seq")
+                        columnList = "tenant_id,source_system,source_session_id,"
+                                + "source_transport_epoch,source_window_seq")
         })
 public class TranscriptSegment {
 
@@ -117,7 +118,11 @@ public class TranscriptSegment {
     @Column(name = "source_chunk_seq")
     private Long sourceChunkSeq;
 
-    /** Producer window sequence used as the Direct-STT replay identity. */
+    /** Gateway transport sequence-space epoch used as part of replay identity. */
+    @Column(name = "source_transport_epoch")
+    private Long sourceTransportEpoch;
+
+    /** Producer window sequence, unique only inside one transport epoch. */
     @Column(name = "source_window_seq")
     private Long sourceWindowSeq;
 
@@ -309,6 +314,14 @@ public class TranscriptSegment {
 
     public void setSourceChunkSeq(Long sourceChunkSeq) {
         this.sourceChunkSeq = sourceChunkSeq;
+    }
+
+    public Long getSourceTransportEpoch() {
+        return sourceTransportEpoch;
+    }
+
+    public void setSourceTransportEpoch(Long sourceTransportEpoch) {
+        this.sourceTransportEpoch = sourceTransportEpoch;
     }
 
     public Long getSourceWindowSeq() {

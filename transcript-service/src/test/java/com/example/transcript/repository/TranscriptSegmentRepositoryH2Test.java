@@ -153,18 +153,19 @@ class TranscriptSegmentRepositoryH2Test {
         seg.setSourceSystem("DIRECT_STT");
         seg.setSourceSessionId("SES-abc");
         seg.setSourceChunkSeq(5L);
+        seg.setSourceTransportEpoch(0L);
         seg.setSourceWindowSeq(2L);
         seg.setSourceFirstChunkSeq(3L);
         seg.setSourceLastChunkSeq(5L);
         repository.saveAndFlush(seg);
 
         Optional<TranscriptSegment> hit =
-                repository.findDirectSttSourceWindow(orgA, meetingId, "SES-abc", 2L);
+                repository.findDirectSttSourceTransportWindow(orgA, meetingId, "SES-abc", 0L, 2L);
         Optional<TranscriptSegment> miss =
-                repository.findDirectSttSourceWindow(orgA, meetingId, "SES-abc", 5L);
+                repository.findDirectSttSourceTransportWindow(orgA, meetingId, "SES-abc", 0L, 5L);
         Optional<TranscriptSegment> otherTenant =
-                repository.findDirectSttSourceWindow(
-                        UUID.randomUUID(), meetingId, "SES-abc", 2L);
+                repository.findDirectSttSourceTransportWindow(
+                        UUID.randomUUID(), meetingId, "SES-abc", 0L, 2L);
 
         assertThat(hit).isPresent();
         assertThat(hit.get().getId()).isEqualTo(seg.getId());
@@ -184,6 +185,7 @@ class TranscriptSegmentRepositoryH2Test {
         segment.setSourceSystem("DIRECT_STT");
         segment.setSourceSessionId("SES-order");
         segment.setSourceChunkSeq(lastChunkSeq);
+        segment.setSourceTransportEpoch(0L);
         segment.setSourceWindowSeq(windowSeq);
         segment.setSourceFirstChunkSeq(firstChunkSeq);
         segment.setSourceLastChunkSeq(lastChunkSeq);

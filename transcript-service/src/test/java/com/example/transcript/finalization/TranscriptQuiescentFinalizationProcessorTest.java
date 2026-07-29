@@ -219,6 +219,7 @@ class TranscriptQuiescentFinalizationProcessorTest {
         segment.setEndTime(1.0);
         segment.setSourceSystem("DIRECT_STT");
         segment.setSourceSessionId("SES-desktop-1");
+        segment.setSourceTransportEpoch(0L);
         segment.setSourceWindowSeq(1L);
         segment.setSourceFirstChunkSeq(1L);
         segment.setSourceLastChunkSeq(2L);

@@ -7,6 +7,10 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface TranscriptSourceRetentionFenceRepository
         extends JpaRepository<TranscriptSourceRetentionFence, UUID> {
 
-    boolean existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceWindowSeq(
-            UUID tenantId, UUID meetingId, String sourceSessionHash, long sourceWindowSeq);
+    boolean existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceTransportEpochAndSourceWindowSeq(
+            UUID tenantId,
+            UUID meetingId,
+            String sourceSessionHash,
+            long sourceTransportEpoch,
+            long sourceWindowSeq);
 }

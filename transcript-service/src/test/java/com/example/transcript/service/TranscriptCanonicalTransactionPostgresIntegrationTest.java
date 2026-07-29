@@ -142,7 +142,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         insertResolvedAssociation();
         DirectSttTranscriptResultEvent event = new DirectSttTranscriptResultEvent(
                 "race-entry", TENANT, TENANT.toString(), "7", MEETING, "SES-42",
-                1L, 1L, 1L, 1_000L, "race-correlation", "a".repeat(64),
+                0L, 1L, 1L, 1L, 1_000L, "race-correlation", "a".repeat(64),
                 "race payload", 1.0d);
         CountDownLatch writerLocked = new CountDownLatch(1);
         CountDownLatch releaseWriter = new CountDownLatch(1);
@@ -179,7 +179,8 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
             executor.shutdownNow();
         }
 
-        assertThat(segments.findDirectSttSourceWindow(TENANT, MEETING, "SES-42", 1L)).isEmpty();
+        assertThat(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-42", 0L, 1L)).isEmpty();
         assertThat(erasureTombstones.existsByTenantIdAndMeetingIdAndSessionId(
                 TENANT, MEETING, SESSION)).isTrue();
         assertThat(associations.findByTenantIdAndMeetingIdAndSourceSystemAndSourceSessionId(
@@ -257,7 +258,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
                 TranscriptSegmentStatus.DRAFT, "retained payload");
         DirectSttTranscriptResultEvent replay = new DirectSttTranscriptResultEvent(
                 "retention-race", TENANT, TENANT.toString(), "7", MEETING, "SES-42",
-                1L, 1L, 1L, 1_000L, "retention-correlation", "a".repeat(64),
+                0L, 1L, 1L, 1L, 1_000L, "retention-correlation", "a".repeat(64),
                 "retained payload", 1.0d);
         CountDownLatch cleanupLocked = new CountDownLatch(1);
         CountDownLatch releaseCleanup = new CountDownLatch(1);
@@ -293,7 +294,8 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
             executor.shutdownNow();
         }
 
-        assertThat(segments.findDirectSttSourceWindow(TENANT, MEETING, "SES-42", 1L)).isEmpty();
+        assertThat(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-42", 0L, 1L)).isEmpty();
     }
 
     @Test
@@ -833,6 +835,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         row.setSourceSystem(DirectSttTranscriptResultEvent.SOURCE_SYSTEM);
         row.setSourceSessionId(sourceSession);
         row.setSourceChunkSeq(chunk);
+        row.setSourceTransportEpoch(0L);
         row.setSourceWindowSeq(chunk);
         row.setSourceFirstChunkSeq(chunk);
         row.setSourceLastChunkSeq(chunk);

@@ -38,6 +38,10 @@ public class TranscriptSnapshotHasher {
                 update(digest, text(segment.getEndTime()));
                 update(digest, segment.getSourceSystem());
                 update(digest, segment.getSourceSessionId());
+                if (segment.getSourceTransportEpoch() != null
+                        && segment.getSourceTransportEpoch() != 0L) {
+                    update(digest, text(segment.getSourceTransportEpoch()));
+                }
                 update(digest, text(segment.getSourceWindowSeq()));
                 update(digest, text(segment.getSourceFirstChunkSeq()));
                 update(digest, text(segment.getSourceLastChunkSeq()));

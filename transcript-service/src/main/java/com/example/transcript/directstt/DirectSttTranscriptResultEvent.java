@@ -18,6 +18,7 @@ public record DirectSttTranscriptResultEvent(
         String sourceUserId,
         UUID meetingId,
         String sourceSessionId,
+        long transportEpoch,
         long windowSeq,
         long firstChunkSeq,
         long lastChunkSeq,
@@ -68,6 +69,10 @@ public record DirectSttTranscriptResultEvent(
         }
         UUID tenantId = canonicalTenantId(sourceTenantId);
         UUID meetingId = requiredUuid(fields, "meetingId");
+        long transportEpoch = optionalLong(fields, "transportEpoch", 0L);
+        if (transportEpoch < 0) {
+            throw invalid("transportEpoch must be >= 0");
+        }
         SourceWindow sourceWindow = sourceWindow(fields);
         long chunkStartedAtMs = requiredLong(fields, "chunkStartedAtMs");
         if (chunkStartedAtMs < 0) {
@@ -93,6 +98,7 @@ public record DirectSttTranscriptResultEvent(
                 optional(fields, "userId", MAX_SOURCE_ID_LEN),
                 meetingId,
                 sourceSessionId,
+                transportEpoch,
                 sourceWindow.windowSeq(),
                 sourceWindow.firstChunkSeq(),
                 sourceWindow.lastChunkSeq(),
@@ -174,6 +180,11 @@ public record DirectSttTranscriptResultEvent(
 
     private static long requiredLong(Map<String, String> fields, String key) {
         return parseLong(required(fields, key, 64), key);
+    }
+
+    private static long optionalLong(Map<String, String> fields, String key, long defaultValue) {
+        String value = optional(fields, key, 64);
+        return value == null ? defaultValue : parseLong(value, key);
     }
 
     private static long parseLong(String value, String key) {
