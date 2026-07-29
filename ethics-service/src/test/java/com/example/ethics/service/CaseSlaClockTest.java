@@ -100,6 +100,56 @@ class CaseSlaClockTest {
     }
 
     /**
+     * The second obligation, EU 2019/1937 art. 9(1)(f): feedback within three months. It is
+     * separate from acknowledgement and can disagree with it — a case acknowledged on day
+     * one can still owe feedback on day ninety-one.
+     */
+    @Test
+    @DisplayName("geri bildirim yükümlülüğü teyitten ayrı ilerler")
+    void feedbackIsATrackedSeparatelyFromAcknowledgement() {
+        var clock = clockAt(NOW);
+        Instant created = NOW.minus(Duration.ofDays(100));
+
+        var ack = clock.acknowledgement(created, created.plusSeconds(60));
+        var feedback = clock.feedback(created, null);
+
+        assertThat(ack.state()).isEqualTo(AcknowledgementState.MET);
+        assertThat(feedback.state())
+                .as("ilk gün teyit verilmiş olması yüz gün sonra geri bildirim borcunu kapatmaz")
+                .isEqualTo(CaseSlaClock.FeedbackState.BREACHED);
+    }
+
+    /**
+     * Closure is what satisfies it, because closing requires a reporter-facing message about
+     * what was found. A case still open at ninety-one days owes feedback whatever else has
+     * happened on it.
+     */
+    @Test
+    @DisplayName("kapanış geri bildirimi karşılar, açık kalmak karşılamaz")
+    void closureSatisfiesFeedbackAndStayingOpenDoesNot() {
+        var clock = clockAt(NOW);
+        Instant created = NOW.minus(Duration.ofDays(100));
+
+        assertThat(clock.feedback(created, NOW.minus(Duration.ofDays(5))).state())
+                .isEqualTo(CaseSlaClock.FeedbackState.MET);
+        assertThat(clock.feedback(created, null).state())
+                .isEqualTo(CaseSlaClock.FeedbackState.BREACHED);
+        assertThat(clock.feedback(NOW.minus(Duration.ofDays(10)), null).state())
+                .isEqualTo(CaseSlaClock.FeedbackState.PENDING);
+    }
+
+    /** A closure after the deadline still concludes the case; the delay is kept readable. */
+    @Test
+    @DisplayName("geç kapanış geri bildirimi karşılar ama gecikme kaydedilir")
+    void aLateClosureIsStillFeedbackAndTheDelaySurvives() {
+        var clock = clockAt(NOW);
+        Instant created = NOW.minus(Duration.ofDays(200));
+        var late = clock.feedback(created, created.plus(Duration.ofDays(120)));
+        assertThat(late.state()).isEqualTo(CaseSlaClock.FeedbackState.MET);
+        assertThat(late.wasLate()).isTrue();
+    }
+
+    /**
      * The channel may promise to answer sooner than the law requires. It may not promise
      * to answer later — a config that allowed thirty days would turn a legal maximum into
      * a setting and make the breach invisible by configuration rather than by oversight.
