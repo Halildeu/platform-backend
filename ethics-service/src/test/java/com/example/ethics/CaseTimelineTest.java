@@ -42,6 +42,7 @@ class CaseTimelineTest {
     @Autowired MockMvc mvc;
     @Autowired com.fasterxml.jackson.databind.ObjectMapper mapper;
     @Autowired com.example.ethics.repository.AuditOutboxRepository auditRows;
+    @Autowired com.example.ethics.repository.EvidenceAttachmentRepository attachments;
     @MockitoBean com.example.ethics.security.EthicsAuthorization authorization;
     @MockitoBean com.example.ethics.security.EthicsEntitlementVerifier entitlements;
     @MockitoBean com.example.ethics.directory.UserDirectoryClient directory;
@@ -181,6 +182,37 @@ class CaseTimelineTest {
         var byEvent = timelineByEvent(caseId);
         org.assertj.core.api.Assertions.assertThat(byEvent.get("ethics.case.sealed"))
                 .isEqualTo("UNRESOLVED");
+    }
+
+    /**
+     * The gap this query closes. {@code aggregate_id} is polymorphic: a case event carries
+     * the case id, an evidence event carries the attachment id. Querying by case id alone
+     * returned the case's own events and dropped its whole evidence custody chain — on the
+     * live cell, one visible event against thirteen invisible ones for the same case.
+     *
+     * <p>A history that omits what happened to the evidence is the failure this screen was
+     * built to end: a handler reads a short list and concludes little happened.
+     */
+    @Test
+    @DisplayName("kanıt olayları da vakanın geçmişinde görünür")
+    void theHistoryIncludesEventsFiledUnderAnAttachment() throws Exception {
+        String caseId = newCase();
+        UUID attachment = UUID.randomUUID();
+        var now = java.time.Instant.now();
+        attachments.save(new com.example.ethics.model.EvidenceAttachment(
+                attachment, UUID.fromString(caseId), ORG, "etik.acik.com",
+                "idem-" + attachment, "0".repeat(64), "tr-test-pilot-v1",
+                "text/plain", 10L, "0".repeat(64),
+                "quarantine/" + attachment, "sealed/" + attachment, "derivative/" + attachment,
+                "0".repeat(64), now.plusSeconds(900), now));
+        auditRows.save(new com.example.ethics.model.AuditOutbox(
+                UUID.randomUUID(), ORG, attachment, "ethics.evidence.declared",
+                "{\"sizeClass\":\"SMALL\"}", java.time.Instant.now()));
+
+        var byEvent = timelineByEvent(caseId);
+        org.assertj.core.api.Assertions.assertThat(byEvent)
+                .as("ek dosya kimliğiyle yazılan olay vakanın geçmişinde yok")
+                .containsKey("ethics.evidence.declared");
     }
 
     private String timelineJson(String caseId) throws Exception {

@@ -23,6 +23,30 @@ public interface AuditOutboxRepository extends JpaRepository<AuditOutbox, UUID> 
      */
     List<AuditOutbox> findAllByOrgIdAndAggregateIdOrderByCreatedAtAsc(UUID orgId, UUID aggregateId);
 
+    /**
+     * Every recorded event that belongs to a case — including the ones filed under one of
+     * its attachments.
+     *
+     * <p>{@code aggregate_id} is polymorphic with no discriminator: a case event carries the
+     * case id, an evidence event carries the <em>attachment</em> id. Querying by case id
+     * alone therefore returns the case's own events and silently drops its entire evidence
+     * custody chain. On the live cell one case showed a single event by that query while
+     * thirteen evidence events about the same case sat one join away.
+     *
+     * <p>Written as an explicit union of the two id sources rather than a join on event-type
+     * prefix. Reading the type out of a name would tie the history to a naming convention
+     * that nothing enforces; the attachment table already knows which case it belongs to.
+     */
+    @org.springframework.data.jpa.repository.Query("""
+        select a from AuditOutbox a
+        where a.orgId = :orgId
+          and (a.aggregateId = :caseId
+               or a.aggregateId in (select e.id from EvidenceAttachment e where e.caseId = :caseId))
+        order by a.createdAt asc
+        """)
+    List<AuditOutbox> findCaseHistory(@org.springframework.data.repository.query.Param("orgId") UUID orgId,
+                                      @org.springframework.data.repository.query.Param("caseId") UUID caseId);
+
     long countByStatusIn(Collection<String> statuses);
 
     long countByStatus(String status);
