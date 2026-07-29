@@ -27,7 +27,10 @@ public class NotificationOutboxPublisher {
      * into a transport the outbox was deliberately kept free of.
      */
     public static final String SLA_BREACH = "SLA_BREACH";
-    private static final Set<String> ALLOWED_EVENTS = Set.of(NEW_REPORT, REPORTER_MESSAGE, SLA_BREACH);
+    /** ES-301 (#882): a legal deadline is close in working days — urgency, not yet failure. */
+    public static final String SLA_APPROACHING = "SLA_APPROACHING";
+    private static final Set<String> ALLOWED_EVENTS =
+            Set.of(NEW_REPORT, REPORTER_MESSAGE, SLA_BREACH, SLA_APPROACHING);
 
     private final NotificationOutboxRepository outbox;
 

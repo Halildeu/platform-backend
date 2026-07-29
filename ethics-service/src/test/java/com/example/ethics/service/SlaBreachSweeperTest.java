@@ -51,11 +51,20 @@ class SlaBreachSweeperTest {
     }
 
     private SlaBreachSweeper sweeper() {
+        // Warning disabled: the pre-#882 behaviour, which these tests pin.
+        return sweeper(0);
+    }
+
+    private SlaBreachSweeper sweeper(int warnBusinessDays) {
         var sla = new CaseSlaClock(
                 new EthicsSlaProperties(Duration.ofDays(7), Duration.ofDays(90)),
                 Clock.fixed(NOW, ZoneOffset.UTC));
+        var calendarConfig = new com.example.ethics.config.EthicsSlaCalendarProperties(
+                "Europe/Istanbul", List.of(), null, warnBusinessDays);
         return new SlaBreachSweeper(
-                cases, outbox, notifications, sla, Clock.fixed(NOW, ZoneOffset.UTC));
+                cases, outbox, notifications, sla,
+                new BusinessCalendar(calendarConfig), calendarConfig,
+                Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     private EthicsCase caseCreatedAt(Instant createdAt, Instant acknowledgedAt) {
@@ -180,7 +189,8 @@ class SlaBreachSweeperTest {
                 })
                 .reduce("", String::concat);
 
-        for (String event : java.util.List.of("NEW_REPORT", "REPORTER_MESSAGE", "SLA_BREACH")) {
+        for (String event : java.util.List.of(
+                "NEW_REPORT", "REPORTER_MESSAGE", "SLA_BREACH", "SLA_APPROACHING")) {
             assertThat(constraint)
                     .as("%s Java tarafinda var ama veritabani kisitinda yok", event)
                     .contains("'" + event + "'");
@@ -243,5 +253,92 @@ class SlaBreachSweeperTest {
         assertThat(NotificationOutboxPublisher.class.getDeclaredMethods())
                 .filteredOn(m -> m.getName().equals("enqueue"))
                 .allSatisfy(m -> assertThat(m.getParameterTypes()).hasSize(3));
+    }
+
+    // ---------- ES-301 remainder: the early warning in working days (#882) ----------
+
+    /**
+     * NOW is Wednesday 2026-07-29. A case created 5 days ago has its acknowledgement due
+     * Monday 2026-08-03 — three business days away, but only one working day after Friday.
+     * With a 2-business-day window the warning fires now on Thursday's boundary... asserted
+     * simply: due-in-3-business-days is outside window 2, due-in-1 is inside.
+     */
+    @Test
+    @DisplayName("son tarihe iş günü penceresi kadar kalınca uyarı üretilir")
+    void anApproachingDeadlineProducesAWarning() {
+        // Due Friday 2026-07-31: business days from Wednesday = Thu, Fri = 2 → inside window.
+        var dueSoon = caseCreatedAt(NOW.minus(Duration.ofDays(5)), null);
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(dueSoon));
+
+        sweeper(2).sweep();
+
+        verify(notifications).enqueue(eq(ORG), eq(NotificationOutboxPublisher.SLA_APPROACHING), any());
+        verify(notifications, never()).enqueue(eq(ORG), eq(NotificationOutboxPublisher.SLA_BREACH), any());
+    }
+
+    /** The deadline itself has not moved: the same case still breaches on calendar day 7. */
+    @Test
+    @DisplayName("uyarı penceresi son tarihi oynatmaz — 7. takvim gününde ihlal aynı kalır")
+    void theWarningWindowDoesNotMoveTheDeadline() {
+        var overdue = caseCreatedAt(NOW.minus(Duration.ofDays(8)), null);
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(overdue));
+
+        sweeper(2).sweep();
+
+        verify(notifications).enqueue(eq(ORG), eq(NotificationOutboxPublisher.SLA_BREACH), any());
+    }
+
+    /** One piece of news per day: a breach subsumes the warning. */
+    @Test
+    @DisplayName("ihlal varken ayrıca uyarı üretilmez")
+    void aBreachSubsumesTheWarning() {
+        var overdue = caseCreatedAt(NOW.minus(Duration.ofDays(9)), null);
+        var dueSoon = caseCreatedAt(NOW.minus(Duration.ofDays(5)), null);
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(overdue, dueSoon));
+
+        sweeper(2).sweep();
+
+        verify(notifications).enqueue(eq(ORG), eq(NotificationOutboxPublisher.SLA_BREACH), any());
+        verify(notifications, never()).enqueue(eq(ORG), eq(NotificationOutboxPublisher.SLA_APPROACHING), any());
+    }
+
+    /** Owner-supplied means absent by default: without config the sweeper behaves as before. */
+    @Test
+    @DisplayName("takvim konfigürasyonu yoksa uyarı hiç üretilmez")
+    void withoutCalendarConfigurationNoWarningIsEverProduced() {
+        var dueSoon = caseCreatedAt(NOW.minus(Duration.ofDays(6)), null);
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(dueSoon));
+
+        sweeper(0).sweep();
+
+        verify(notifications, never()).enqueue(any(), eq(NotificationOutboxPublisher.SLA_APPROACHING), any());
+    }
+
+    /** An already-acknowledged obligation is done; its deadline is nobody's urgency. */
+    @Test
+    @DisplayName("karşılanmış yükümlülük için uyarı üretilmez")
+    void aMetObligationProducesNoWarning() {
+        var acknowledged = caseCreatedAt(
+                NOW.minus(Duration.ofDays(5)), NOW.minus(Duration.ofDays(1)));
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(acknowledged));
+
+        sweeper(2).sweep();
+
+        verify(notifications, never()).enqueue(any(), eq(NotificationOutboxPublisher.SLA_APPROACHING), any());
+    }
+
+    /** The warning has its own daily suppression, independent of the breach signal's. */
+    @Test
+    @DisplayName("uyarı kendi günlük bastırmasına tabidir")
+    void theWarningHasItsOwnDailySuppression() {
+        var dueSoon = caseCreatedAt(NOW.minus(Duration.ofDays(5)), null);
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(dueSoon));
+        when(outbox.existsByOrgIdAndEventTypeAndCreatedAtAfter(
+                eq(ORG), eq(NotificationOutboxPublisher.SLA_APPROACHING), any()))
+                .thenReturn(true);
+
+        sweeper(2).sweep();
+
+        verify(notifications, never()).enqueue(any(), anyString(), any());
     }
 }

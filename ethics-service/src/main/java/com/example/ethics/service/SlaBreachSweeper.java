@@ -49,6 +49,8 @@ public class SlaBreachSweeper {
     private final NotificationOutboxRepository outbox;
     private final NotificationOutboxPublisher notifications;
     private final CaseSlaClock sla;
+    private final BusinessCalendar calendar;
+    private final com.example.ethics.config.EthicsSlaCalendarProperties calendarConfig;
     private final Clock clock;
 
     // Two constructors, so Spring must be told which one. Without this it looks for a
@@ -60,8 +62,10 @@ public class SlaBreachSweeper {
             EthicsCaseRepository cases,
             NotificationOutboxRepository outbox,
             NotificationOutboxPublisher notifications,
-            CaseSlaClock sla) {
-        this(cases, outbox, notifications, sla, Clock.systemUTC());
+            CaseSlaClock sla,
+            BusinessCalendar calendar,
+            com.example.ethics.config.EthicsSlaCalendarProperties calendarConfig) {
+        this(cases, outbox, notifications, sla, calendar, calendarConfig, Clock.systemUTC());
     }
 
     SlaBreachSweeper(
@@ -69,11 +73,15 @@ public class SlaBreachSweeper {
             NotificationOutboxRepository outbox,
             NotificationOutboxPublisher notifications,
             CaseSlaClock sla,
+            BusinessCalendar calendar,
+            com.example.ethics.config.EthicsSlaCalendarProperties calendarConfig,
             Clock clock) {
         this.cases = cases;
         this.outbox = outbox;
         this.notifications = notifications;
         this.sla = sla;
+        this.calendar = calendar;
+        this.calendarConfig = calendarConfig;
         this.clock = clock;
     }
 
@@ -88,14 +96,27 @@ public class SlaBreachSweeper {
                     orgId, NotificationOutboxPublisher.SLA_BREACH, now.minus(ONE_PER))) {
                 continue;
             }
-            if (!hasBreach(orgId)) {
+            if (hasBreach(orgId)) {
+                notifications.enqueue(orgId, NotificationOutboxPublisher.SLA_BREACH, now);
+                // Deliberately no count and no case id: the log line is operational, and a breach
+                // count is a fact about live whistleblowing cases. The organisation is not named
+                // either — which tenant is behind is the same class of fact.
+                log.info("Etik Speak: SLA breach signal enqueued for one organisation");
+                // A breach subsumes a warning. "You have missed a deadline" and "a deadline is
+                // near" on the same day are one piece of news, not two.
                 continue;
             }
-            notifications.enqueue(orgId, NotificationOutboxPublisher.SLA_BREACH, now);
-            // Deliberately no count and no case id: the log line is operational, and a breach
-            // count is a fact about live whistleblowing cases. The organisation is not named
-            // either — which tenant is behind is the same class of fact.
-            log.info("Etik Speak: SLA breach signal enqueued for one organisation");
+            if (!calendarConfig.warningEnabled()) {
+                continue;
+            }
+            if (outbox.existsByOrgIdAndEventTypeAndCreatedAtAfter(
+                    orgId, NotificationOutboxPublisher.SLA_APPROACHING, now.minus(ONE_PER))) {
+                continue;
+            }
+            if (hasApproachingDeadline(orgId, now)) {
+                notifications.enqueue(orgId, NotificationOutboxPublisher.SLA_APPROACHING, now);
+                log.info("Etik Speak: SLA approaching signal enqueued for one organisation");
+            }
         }
     }
 
@@ -103,6 +124,31 @@ public class SlaBreachSweeper {
      * Stops at the first breach. The signal is the same whether one obligation is overdue or
      * fifty, so counting them would cost a full scan to produce a number nothing reads.
      */
+    /**
+     * A pending obligation whose deadline is at most the configured number of working days
+     * away. The deadline itself stays calendar time — EU 2019/1937 counts calendar days and
+     * {@code CaseSlaClock} has no parameter through which this calendar could reach it. What
+     * the working-day count changes is only <em>when the organisation is told</em>: a Monday
+     * deadline is more urgent on Friday than the calendar distance suggests, because the days
+     * between are days nobody is at work.
+     */
+    private boolean hasApproachingDeadline(UUID orgId, Instant now) {
+        int window = calendarConfig.warnBusinessDays();
+        for (var item : cases.findAllByOrgIdOrderByUpdatedAtDesc(orgId)) {
+            var ack = sla.acknowledgement(item.getCreatedAt(), item.getAcknowledgedAt());
+            if (ack.state() == CaseSlaClock.AcknowledgementState.PENDING
+                    && calendar.businessDaysUntil(now, ack.dueAt()) <= window) {
+                return true;
+            }
+            var feedback = sla.feedback(item.getCreatedAt(), item.getClosedAt());
+            if (feedback.state() == CaseSlaClock.FeedbackState.PENDING
+                    && calendar.businessDaysUntil(now, feedback.dueAt()) <= window) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean hasBreach(UUID orgId) {
         for (var item : cases.findAllByOrgIdOrderByUpdatedAtDesc(orgId)) {
             var ack = sla.acknowledgement(item.getCreatedAt(), item.getAcknowledgedAt());
