@@ -153,6 +153,40 @@ class SlaBreachSweeperTest {
     }
 
     /**
+     * The event vocabulary is enumerated twice — here in Java and again in a database CHECK
+     * constraint (V5, amended by V12). #1011 moved only the Java half, so the sweeper logged
+     * that it had enqueued a signal and then lost it on commit:
+     *
+     * <pre>ERROR: new row violates check constraint "ck_ethics_notification_event"</pre>
+     *
+     * <p>Nothing above could see it: these tests mock the repository, so no statement ever
+     * reaches Postgres. This one compares the two lists as text instead, which is the cheap
+     * half of the guard — the expensive half is the constraint itself, which now fails closed
+     * for a third writer who forgets the migration.
+     */
+    @Test
+    @DisplayName("izin listesi ile veritabanı kısıtı aynı olay kümesini tanır")
+    void theJavaAllowlistAndTheDatabaseConstraintAgree() throws Exception {
+        var migrations = java.nio.file.Path.of("src/main/resources/db/migration");
+        String constraint = java.nio.file.Files.list(migrations)
+                .filter(f -> f.getFileName().toString().contains("notification"))
+                .map(f -> {
+                    try {
+                        return java.nio.file.Files.readString(f);
+                    } catch (java.io.IOException e) {
+                        throw new java.io.UncheckedIOException(e);
+                    }
+                })
+                .reduce("", String::concat);
+
+        for (String event : java.util.List.of("NEW_REPORT", "REPORTER_MESSAGE", "SLA_BREACH")) {
+            assertThat(constraint)
+                    .as("%s Java tarafinda var ama veritabani kisitinda yok", event)
+                    .contains("'" + event + "'");
+        }
+    }
+
+    /**
      * The outbox contract: the signal names the organisation and the event type, and nothing
      * else. A case id here would put case-level facts into a transport deliberately kept
      * free of them.
