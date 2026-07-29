@@ -23,6 +23,8 @@ public class TranscriptSourceRetentionFence {
     private UUID sessionId;
     @Column(name = "source_session_hash", nullable = false, length = 64, updatable = false)
     private String sourceSessionHash;
+    @Column(name = "source_transport_epoch", nullable = false, updatable = false)
+    private long sourceTransportEpoch;
     @Column(name = "source_window_seq", nullable = false, updatable = false)
     private long sourceWindowSeq;
     @Column(name = "retained_at", nullable = false, updatable = false)
@@ -40,6 +42,10 @@ public class TranscriptSourceRetentionFence {
     public void setSessionId(UUID sessionId) { this.sessionId = sessionId; }
     public String getSourceSessionHash() { return sourceSessionHash; }
     public void setSourceSessionHash(String sourceSessionHash) { this.sourceSessionHash = sourceSessionHash; }
+    public long getSourceTransportEpoch() { return sourceTransportEpoch; }
+    public void setSourceTransportEpoch(long sourceTransportEpoch) {
+        this.sourceTransportEpoch = sourceTransportEpoch;
+    }
     public long getSourceWindowSeq() { return sourceWindowSeq; }
     public void setSourceWindowSeq(long sourceWindowSeq) { this.sourceWindowSeq = sourceWindowSeq; }
     public Instant getRetainedAt() { return retainedAt; }

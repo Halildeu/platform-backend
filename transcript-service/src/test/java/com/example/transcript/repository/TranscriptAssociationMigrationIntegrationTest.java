@@ -48,6 +48,13 @@ class TranscriptAssociationMigrationIntegrationTest {
         UUID legacyFinalization = insertLegacyFinalization(
                 tenant, finalizedMeeting, finalizedSession, 2L);
 
+        migrateTo("11");
+        // Live TEST shape from 2026-07-29: different producer windows in
+        // different transport epochs can refer to the same chunk counters.
+        // V12 must preserve both rows; chunk range is provenance, not identity.
+        insertPreEpochWindowSegment(tenant, meeting, "SES-legacy", 47L, 995L, 997L);
+        insertPreEpochWindowSegment(tenant, meeting, "SES-legacy", 398L, 995L, 997L);
+
         migrateTo(null);
 
         try (Connection connection = connection()) {
@@ -72,7 +79,7 @@ class TranscriptAssociationMigrationIntegrationTest {
             assertThat(singleLong(connection,
                     "SELECT count(*) FROM " + SCHEMA + ".transcript_segments "
                             + "WHERE tenant_id = ? AND meeting_id = ? AND session_id IS NULL",
-                    tenant, meeting)).isEqualTo(3L);
+                    tenant, meeting)).isEqualTo(5L);
             assertThat(singleString(connection,
                     "SELECT status || ':' || last_error_code FROM " + SCHEMA
                             + ".transcript_session_associations "
@@ -81,32 +88,32 @@ class TranscriptAssociationMigrationIntegrationTest {
                             tenant, meeting)).isEqualTo("DEAD:INVALID_SOURCE_SESSION_ID");
 
             assertThat(singleString(connection,
-                    "SELECT source_window_seq || ':' || source_first_chunk_seq || ':' "
+                    "SELECT source_transport_epoch || ':' || source_window_seq || ':' "
+                            + "|| source_first_chunk_seq || ':' "
                             + "|| source_last_chunk_seq FROM " + SCHEMA
                             + ".transcript_segments WHERE tenant_id = ? AND meeting_id = ? "
                             + "AND source_session_id = 'SES-legacy' AND source_chunk_seq = 5",
-                    tenant, meeting)).isEqualTo("5:5:5");
+                    tenant, meeting)).isEqualTo("0:5:5:5");
 
-            // V12 keys replay by tenant + meeting + source session + chunk range.
+            // V12 keys replay by tenant + meeting + source session + transport
+            // epoch + window sequence.
             // Reusing an external recorder/window in another meeting is legal.
             insertWindowSegment(
-                    connection, tenant, UUID.randomUUID(), "SES-legacy", 5L, 5L, 5L);
-            // The producer restarts its window counter inside a session (live
-            // evidence 2026-07-26), so a repeated window number carrying new
-            // audio must be accepted — under V6 it was rejected and the window
-            // was lost.
+                    connection, tenant, UUID.randomUUID(), "SES-legacy", 0L, 5L, 5L, 5L);
+            // A reconnect opens another epoch. Both window and chunk counters
+            // may restart, so the same values in a new epoch are valid.
             insertWindowSegment(
-                    connection, tenant, meeting, "SES-legacy", 5L, 20L, 22L);
-            // The audio itself is the identity: the same chunk range twice is a
-            // genuine replay and stays rejected — even under a different number.
+                    connection, tenant, meeting, "SES-legacy", 10L, 5L, 5L, 5L);
+            // The same epoch/window pair is a replay even if conflicting
+            // provenance arrives and must stay rejected.
             assertThatThrownBy(() -> insertWindowSegment(
-                    connection, tenant, meeting, "SES-legacy", 8L, 20L, 22L))
+                    connection, tenant, meeting, "SES-legacy", 10L, 5L, 20L, 22L))
                     .isInstanceOf(SQLException.class)
                     .satisfies(error -> assertThat(((SQLException) error).getSQLState())
                             .isEqualTo("23505"));
 
             assertThatThrownBy(() -> insertWindowSegment(
-                    connection, tenant, meeting, "SES-invalid-range", 9L, 8L, 7L))
+                    connection, tenant, meeting, "SES-invalid-range", 10L, 9L, 8L, 7L))
                     .isInstanceOf(SQLException.class)
                     .satisfies(error -> assertThat(((SQLException) error).getSQLState())
                             .isEqualTo("23514"));
@@ -126,10 +133,12 @@ class TranscriptAssociationMigrationIntegrationTest {
                             + "WHERE table_schema = ? AND table_name = 'transcript_event_outbox' "
                             + "AND column_name = 'payload'",
                     SCHEMA)).isEqualTo("text");
-            // V12 replaced the window-counter index with the chunk-range one.
+            // V12 replaces the session-global counter index with the
+            // gateway transport-epoch/window identity.
             assertThat(singleLong(connection,
                     "SELECT count(*) FROM pg_indexes WHERE schemaname = ? "
-                            + "AND indexname = 'ux_transcript_segments_direct_stt_chunk_window'",
+                            + "AND indexname = "
+                            + "'ux_transcript_segments_direct_stt_transport_window'",
                     SCHEMA)).isEqualTo(1L);
             assertThat(singleLong(connection,
                     "SELECT count(*) FROM pg_indexes WHERE schemaname = ? "
@@ -290,15 +299,17 @@ class TranscriptAssociationMigrationIntegrationTest {
             UUID tenant,
             UUID meeting,
             String sourceSession,
+            long transportEpoch,
             long windowSeq,
             long firstChunkSeq,
             long lastChunkSeq)
             throws SQLException {
         String sql = "INSERT INTO " + SCHEMA + ".transcript_segments "
                 + "(id,tenant_id,org_id,meeting_id,start_time,end_time,text_draft,status,"
-                + "source_system,source_session_id,source_chunk_seq,source_window_seq,"
+                + "source_system,source_session_id,source_chunk_seq,source_transport_epoch,"
+                + "source_window_seq,"
                 + "source_first_chunk_seq,source_last_chunk_seq,created_at,updated_at,version) "
-                + "VALUES (?,?,?,?,0,1,'window draft','DRAFT','DIRECT_STT',?,?,?,?,?, ?,?,0)";
+                + "VALUES (?,?,?,?,0,1,'window draft','DRAFT','DIRECT_STT',?,?,?,?,?,?, ?,?,0)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setObject(1, UUID.randomUUID());
             statement.setObject(2, tenant);
@@ -306,13 +317,46 @@ class TranscriptAssociationMigrationIntegrationTest {
             statement.setObject(4, meeting);
             statement.setString(5, sourceSession);
             statement.setLong(6, lastChunkSeq);
-            statement.setLong(7, windowSeq);
-            statement.setLong(8, firstChunkSeq);
-            statement.setLong(9, lastChunkSeq);
+            statement.setLong(7, transportEpoch);
+            statement.setLong(8, windowSeq);
+            statement.setLong(9, firstChunkSeq);
+            statement.setLong(10, lastChunkSeq);
             Timestamp now = Timestamp.from(Instant.now());
-            statement.setTimestamp(10, now);
             statement.setTimestamp(11, now);
+            statement.setTimestamp(12, now);
             statement.executeUpdate();
+        }
+    }
+
+    private void insertPreEpochWindowSegment(
+            UUID tenant,
+            UUID meeting,
+            String sourceSession,
+            long windowSeq,
+            long firstChunkSeq,
+            long lastChunkSeq)
+            throws SQLException {
+        try (Connection connection = connection()) {
+            String sql = "INSERT INTO " + SCHEMA + ".transcript_segments "
+                    + "(id,tenant_id,org_id,meeting_id,start_time,end_time,text_draft,status,"
+                    + "source_system,source_session_id,source_chunk_seq,source_window_seq,"
+                    + "source_first_chunk_seq,source_last_chunk_seq,created_at,updated_at,version) "
+                    + "VALUES (?,?,?,?,0,1,'pre-epoch window','DRAFT','DIRECT_STT',?,?,?,?,?, ?,?,0)";
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setObject(1, UUID.randomUUID());
+                statement.setObject(2, tenant);
+                statement.setObject(3, tenant);
+                statement.setObject(4, meeting);
+                statement.setString(5, sourceSession);
+                statement.setLong(6, lastChunkSeq);
+                statement.setLong(7, windowSeq);
+                statement.setLong(8, firstChunkSeq);
+                statement.setLong(9, lastChunkSeq);
+                Timestamp now = Timestamp.from(Instant.now());
+                statement.setTimestamp(10, now);
+                statement.setTimestamp(11, now);
+                statement.executeUpdate();
+            }
         }
     }
 

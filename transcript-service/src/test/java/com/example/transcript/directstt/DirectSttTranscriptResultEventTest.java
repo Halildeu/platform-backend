@@ -25,6 +25,7 @@ class DirectSttTranscriptResultEventTest {
         assertThat(event.sourceUserId()).isEqualTo("7");
         assertThat(event.meetingId()).isEqualTo(MEETING);
         assertThat(event.sourceSessionId()).isEqualTo("SES-abc");
+        assertThat(event.transportEpoch()).isEqualTo(11L);
         assertThat(event.windowSeq()).isEqualTo(2L);
         assertThat(event.firstChunkSeq()).isEqualTo(3L);
         assertThat(event.lastChunkSeq()).isEqualTo(5L);
@@ -46,6 +47,27 @@ class DirectSttTranscriptResultEventTest {
         assertThat(event.windowSeq()).isEqualTo(5L);
         assertThat(event.firstChunkSeq()).isEqualTo(5L);
         assertThat(event.lastChunkSeq()).isEqualTo(5L);
+    }
+
+    @Test
+    void parseAssignsLegacyEpochZeroWhenTransportEpochIsAbsent() {
+        Map<String, String> fields = validFields();
+        fields.remove("transportEpoch");
+
+        DirectSttTranscriptResultEvent event =
+                DirectSttTranscriptResultEvent.parse(fields, "1680000000000-0");
+
+        assertThat(event.transportEpoch()).isZero();
+    }
+
+    @Test
+    void parseRejectsNegativeTransportEpoch() {
+        Map<String, String> fields = validFields();
+        fields.put("transportEpoch", "-1");
+
+        assertThatThrownBy(() -> DirectSttTranscriptResultEvent.parse(fields, "1-0"))
+                .isInstanceOf(DirectSttTranscriptResultEvent.InvalidDirectSttTranscriptResultException.class)
+                .hasMessageContaining("transportEpoch must be >= 0");
     }
 
     @Test
@@ -155,6 +177,7 @@ class DirectSttTranscriptResultEventTest {
         fields.put("userId", "7");
         fields.put("meetingId", MEETING.toString());
         fields.put("chunkSeq", "5");
+        fields.put("transportEpoch", "11");
         fields.put("windowSeq", "2");
         fields.put("firstChunkSeq", "3");
         fields.put("lastChunkSeq", "5");

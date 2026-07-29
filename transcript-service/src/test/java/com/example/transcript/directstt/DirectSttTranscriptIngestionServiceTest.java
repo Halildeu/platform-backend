@@ -33,6 +33,7 @@ class DirectSttTranscriptIngestionServiceTest {
     private static final UUID MEETING = UUID.randomUUID();
     private static final UUID SESSION = UUID.randomUUID();
     private static final UUID SEGMENT = UUID.randomUUID();
+    private static final long EPOCH = 11L;
 
     private final TranscriptSegmentRepository segments = mock(TranscriptSegmentRepository.class);
     private final TranscriptSessionAssociationRepository associations =
@@ -62,7 +63,8 @@ class DirectSttTranscriptIngestionServiceTest {
     @Test
     void createsDraftWithSourceWindowAndCanonicalSessionUuid() {
         DirectSttTranscriptResultEvent event = event("1-0", 2L, 3L, 5L, "merhaba dunya");
-        when(segments.findDirectSttSourceChunkWindow(TENANT, MEETING, "SES-abc", 3L, 5L))
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", EPOCH, 2L))
                 .thenReturn(Optional.empty());
         ArgumentCaptor<TranscriptSegment> saved = ArgumentCaptor.forClass(TranscriptSegment.class);
         when(segments.saveAndFlush(saved.capture())).thenAnswer(invocation -> {
@@ -78,6 +80,7 @@ class DirectSttTranscriptIngestionServiceTest {
         assertThat(saved.getValue().getMeetingId()).isEqualTo(MEETING);
         assertThat(saved.getValue().getSourceSessionId()).isEqualTo("SES-abc");
         assertThat(saved.getValue().getSessionId()).isEqualTo(SESSION);
+        assertThat(saved.getValue().getSourceTransportEpoch()).isEqualTo(EPOCH);
         assertThat(saved.getValue().getSourceWindowSeq()).isEqualTo(2L);
         assertThat(saved.getValue().getSourceFirstChunkSeq()).isEqualTo(3L);
         assertThat(saved.getValue().getSourceLastChunkSeq()).isEqualTo(5L);
@@ -113,7 +116,8 @@ class DirectSttTranscriptIngestionServiceTest {
     @Test
     void retentionFenceRejectsDestroyedWindowBeforeAssociationOrSegmentMutation() {
         doThrow(new SourceWindowRetentionFence.SourceWindowRetainedException())
-                .when(retentionFence).lockAndRejectRetained(TENANT, MEETING, "SES-abc", 2L);
+                .when(retentionFence).lockAndRejectRetained(
+                        TENANT, MEETING, "SES-abc", EPOCH, 2L);
 
         assertThatThrownBy(() -> service.upsert(
                 event("1-0", 2L, 3L, 5L, "draft"), SESSION))
@@ -127,7 +131,8 @@ class DirectSttTranscriptIngestionServiceTest {
     void sameWindowSameContentReplayIsNoOp() {
         TranscriptSegment existing = storedSegment(2L, 3L, 5L);
         existing.setTextDraft("original");
-        when(segments.findDirectSttSourceChunkWindow(TENANT, MEETING, "SES-abc", 3L, 5L))
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", EPOCH, 2L))
                 .thenReturn(Optional.of(existing));
 
         var result = service.upsert(
@@ -139,10 +144,56 @@ class DirectSttTranscriptIngestionServiceTest {
     }
 
     @Test
+    void epochAwareReplayOfLegacyRowIsNoOpWithoutRewritingFinalizedHistory() {
+        TranscriptSegment legacy = storedSegment(2L, 3L, 5L);
+        legacy.setSourceTransportEpoch(0L);
+        legacy.setTextDraft("original");
+        legacy.setTextFinal("human final");
+        legacy.setStatus(TranscriptSegmentStatus.FINALIZED);
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", EPOCH, 2L))
+                .thenReturn(Optional.empty());
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", 0L, 2L))
+                .thenReturn(Optional.of(legacy));
+
+        var result = service.upsert(
+                event("redelivered", 2L, 3L, 5L, "original"), SESSION);
+
+        assertThat(result.textFinal()).isEqualTo("human final");
+        assertThat(legacy.getSourceTransportEpoch()).isZero();
+        verify(segments, never()).saveAndFlush(any());
+        verify(finalizationStateMachine, never()).recordDistinctContent(any(), any());
+    }
+
+    @Test
+    void distinctContentDoesNotCollideWithLegacyEpochZeroRow() {
+        TranscriptSegment legacy = storedSegment(2L, 3L, 5L);
+        legacy.setSourceTransportEpoch(0L);
+        legacy.setTextDraft("legacy");
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", EPOCH + 1, 2L))
+                .thenReturn(Optional.empty());
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", 0L, 2L))
+                .thenReturn(Optional.of(legacy));
+        when(segments.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.upsert(event(
+                "new-epoch", EPOCH + 1, 2L, 3L, 5L, "distinct"), SESSION);
+
+        ArgumentCaptor<TranscriptSegment> saved = ArgumentCaptor.forClass(TranscriptSegment.class);
+        verify(segments).saveAndFlush(saved.capture());
+        assertThat(saved.getValue().getSourceTransportEpoch()).isEqualTo(EPOCH + 1);
+        assertThat(saved.getValue().getTextDraft()).isEqualTo("distinct");
+    }
+
+    @Test
     void sameWindowDifferentTextFailsClosed() {
         TranscriptSegment existing = storedSegment(2L, 3L, 5L);
         existing.setTextDraft("original");
-        when(segments.findDirectSttSourceChunkWindow(TENANT, MEETING, "SES-abc", 3L, 5L))
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", EPOCH, 2L))
                 .thenReturn(Optional.of(existing));
 
         assertThatThrownBy(() -> service.upsert(
@@ -153,20 +204,18 @@ class DirectSttTranscriptIngestionServiceTest {
     }
 
     @Test
-    void restartedWindowCounterWithNewAudioIsPersisted() {
-        // Live evidence 2026-07-26: the producer restarts its window counter
-        // inside a session, so window 2 arrived a second time carrying chunks
-        // 4-5 instead of 3-5. That is new audio, not a replay — it must be
-        // stored, otherwise the transcript silently loses the window.
-        when(segments.findDirectSttSourceChunkWindow(TENANT, MEETING, "SES-abc", 4L, 5L))
+    void newTransportEpochCanRestartWindowAndChunkCounters() {
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", EPOCH + 1, 2L))
                 .thenReturn(Optional.empty());
         when(segments.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        service.upsert(event("2-1", 2L, 4L, 5L, "yeni pencere"), SESSION);
+        service.upsert(event("2-1", EPOCH + 1, 2L, 3L, 5L, "yeni pencere"), SESSION);
 
         ArgumentCaptor<TranscriptSegment> saved = ArgumentCaptor.forClass(TranscriptSegment.class);
         verify(segments).saveAndFlush(saved.capture());
-        assertThat(saved.getValue().getSourceFirstChunkSeq()).isEqualTo(4L);
+        assertThat(saved.getValue().getSourceTransportEpoch()).isEqualTo(EPOCH + 1);
+        assertThat(saved.getValue().getSourceFirstChunkSeq()).isEqualTo(3L);
         assertThat(saved.getValue().getTextDraft()).isEqualTo("yeni pencere");
     }
 
@@ -178,7 +227,8 @@ class DirectSttTranscriptIngestionServiceTest {
         TranscriptSegment existing = storedSegment(2L, 3L, 5L);
         existing.setTextDraft("original");
         existing.setSourceSha256("sha256:" + existing.getSourceSha256());
-        when(segments.findDirectSttSourceChunkWindow(TENANT, MEETING, "SES-abc", 3L, 5L))
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", EPOCH, 2L))
                 .thenReturn(Optional.of(existing));
 
         var result = service.upsert(event("different-entry", 2L, 3L, 5L, "original"), SESSION);
@@ -188,16 +238,20 @@ class DirectSttTranscriptIngestionServiceTest {
     }
 
     @Test
-    void sameAudioRelabelledWithAnotherWindowNumberIsStillTheSameWindow() {
+    void sameChunkRangeInAnotherEpochIsANewWindow() {
         TranscriptSegment existing = storedSegment(2L, 3L, 5L);
         existing.setTextDraft("original");
-        when(segments.findDirectSttSourceChunkWindow(TENANT, MEETING, "SES-abc", 3L, 5L))
-                .thenReturn(Optional.of(existing));
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", EPOCH + 1, 2L))
+                .thenReturn(Optional.empty());
+        when(segments.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        var result = service.upsert(event("2-0", 7L, 3L, 5L, "original"), SESSION);
+        service.upsert(event("2-0", EPOCH + 1, 2L, 3L, 5L, "distinct"), SESSION);
 
-        assertThat(result.textDraft()).isEqualTo("original");
-        verify(segments, never()).saveAndFlush(any());
+        ArgumentCaptor<TranscriptSegment> saved = ArgumentCaptor.forClass(TranscriptSegment.class);
+        verify(segments).saveAndFlush(saved.capture());
+        assertThat(saved.getValue().getSourceTransportEpoch()).isEqualTo(EPOCH + 1);
+        assertThat(saved.getValue().getTextDraft()).isEqualTo("distinct");
     }
 
     @Test
@@ -207,7 +261,8 @@ class DirectSttTranscriptIngestionServiceTest {
         existing.setTextDraft("original");
         existing.setTextFinal("human final");
         existing.setStatus(TranscriptSegmentStatus.FINALIZED);
-        when(segments.findDirectSttSourceChunkWindow(TENANT, MEETING, "SES-abc", 3L, 5L))
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", EPOCH, 2L))
                 .thenReturn(Optional.of(existing));
 
         var result = service.upsert(
@@ -221,7 +276,8 @@ class DirectSttTranscriptIngestionServiceTest {
     @Test
     void postFinalizationNewWindowIsPersistedAndStartsAnotherCycle() {
         when(association.getFinalizationVersion()).thenReturn(1L);
-        when(segments.findDirectSttSourceChunkWindow(TENANT, MEETING, "SES-abc", 6L, 8L))
+        when(segments.findDirectSttSourceTransportWindow(
+                TENANT, MEETING, "SES-abc", EPOCH, 3L))
                 .thenReturn(Optional.empty());
         when(segments.saveAndFlush(any())).thenAnswer(invocation -> {
             TranscriptSegment row = invocation.getArgument(0);
@@ -248,6 +304,7 @@ class DirectSttTranscriptIngestionServiceTest {
         row.setSourceSystem(DirectSttTranscriptResultEvent.SOURCE_SYSTEM);
         row.setSourceSessionId("SES-abc");
         row.setSourceChunkSeq(lastChunkSeq);
+        row.setSourceTransportEpoch(EPOCH);
         row.setSourceWindowSeq(windowSeq);
         row.setSourceFirstChunkSeq(firstChunkSeq);
         row.setSourceLastChunkSeq(lastChunkSeq);
@@ -264,9 +321,19 @@ class DirectSttTranscriptIngestionServiceTest {
             long firstChunkSeq,
             long lastChunkSeq,
             String text) {
+        return event(entryId, EPOCH, windowSeq, firstChunkSeq, lastChunkSeq, text);
+    }
+
+    private DirectSttTranscriptResultEvent event(
+            String entryId,
+            long transportEpoch,
+            long windowSeq,
+            long firstChunkSeq,
+            long lastChunkSeq,
+            String text) {
         return new DirectSttTranscriptResultEvent(
                 entryId, TENANT, TENANT.toString(), "7", MEETING, "SES-abc",
-                windowSeq, firstChunkSeq, lastChunkSeq, 1_250L,
+                transportEpoch, windowSeq, firstChunkSeq, lastChunkSeq, 1_250L,
                 "corr-direct-stt", "deadbeefcafe0000sha", text, 1.2d);
     }
 }

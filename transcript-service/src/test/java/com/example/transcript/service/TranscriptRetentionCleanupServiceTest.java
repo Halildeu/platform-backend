@@ -99,14 +99,14 @@ class TranscriptRetentionCleanupServiceTest {
         assertThat(segmentRepository.findById(freshSegment.getId())).isPresent();
         assertThat(accessAuditRepository.findById(freshAccess.getId())).isPresent();
         assertThat(sourceRetentionFenceRepository
-                .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceWindowSeq(
+                .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceTransportEpochAndSourceWindowSeq(
                         expiredSegment.getTenantId(), expiredSegment.getMeetingId(),
-                        SessionErasureFence.sourceHash(expiredSegment.getSourceSessionId()), 1L))
+                        SessionErasureFence.sourceHash(expiredSegment.getSourceSessionId()), 0L, 1L))
                 .isTrue();
         assertThat(sourceRetentionFenceRepository
-                .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceWindowSeq(
+                .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceTransportEpochAndSourceWindowSeq(
                         freshSegment.getTenantId(), freshSegment.getMeetingId(),
-                        SessionErasureFence.sourceHash(freshSegment.getSourceSessionId()), 1L))
+                        SessionErasureFence.sourceHash(freshSegment.getSourceSessionId()), 0L, 1L))
                 .isFalse();
         assertThat(sourceRetentionFenceRepository.findAll().getFirst().getRetainedAt())
                 .isEqualTo(NOW);
@@ -125,6 +125,23 @@ class TranscriptRetentionCleanupServiceTest {
                 .isEqualTo(TranscriptRetentionCleanupService.JOB_TRANSCRIPT_RECORDS);
         assertThat(accessAudits.get(0).getJobId())
                 .isEqualTo(TranscriptRetentionCleanupService.JOB_KVKK_ACCESS_LOG);
+    }
+
+    @Test
+    void legacyEpochZeroFenceRejectsEpochAwareReplayAfterRetention() {
+        TranscriptSegment expired = segment(
+                EXPIRED_TRANSCRIPT, "destroyed transcript must not be resurrected");
+
+        service.cleanup(NOW);
+
+        assertThat(segmentRepository.findById(expired.getId())).isEmpty();
+        assertThatThrownBy(() -> sourceWindowRetentionFence.lockAndRejectRetained(
+                expired.getTenantId(),
+                expired.getMeetingId(),
+                expired.getSourceSessionId(),
+                11L,
+                expired.getSourceWindowSeq()))
+                .isInstanceOf(SourceWindowRetentionFence.SourceWindowRetainedException.class);
     }
 
     @Test
@@ -239,9 +256,9 @@ class TranscriptRetentionCleanupServiceTest {
         assertThat(segmentRepository.findById(first.getId())).isEmpty();
         assertThat(segmentRepository.findById(second.getId())).isPresent();
         assertThat(sourceRetentionFenceRepository
-                .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceWindowSeq(
+                .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceTransportEpochAndSourceWindowSeq(
                         first.getTenantId(), first.getMeetingId(),
-                        SessionErasureFence.sourceHash(first.getSourceSessionId()), 1L))
+                        SessionErasureFence.sourceHash(first.getSourceSessionId()), 0L, 1L))
                 .isTrue();
         assertThat(destructionAuditRepository.findByLayerIdOrderByExecutedAtDesc(
                 TranscriptRetentionCleanupService.LAYER_TRANSCRIPT_RECORDS))
@@ -278,6 +295,7 @@ class TranscriptRetentionCleanupServiceTest {
         segment.setSessionId(UUID.randomUUID());
         segment.setSourceSystem("DIRECT_STT");
         segment.setSourceSessionId("SES-" + UUID.randomUUID());
+        segment.setSourceTransportEpoch(0L);
         segment.setSourceWindowSeq(1L);
         segment.setSourceFirstChunkSeq(1L);
         segment.setSourceLastChunkSeq(1L);

@@ -56,7 +56,8 @@ public class DirectSttTranscriptIngestionService {
                         event.tenantId(), event.meetingId(), event.sourceSessionId()));
         erasureFence.rejectErased(scope, event.sourceSessionId());
         retentionFence.lockAndRejectRetained(
-                event.tenantId(), event.meetingId(), event.sourceSessionId(), event.windowSeq());
+                event.tenantId(), event.meetingId(), event.sourceSessionId(),
+                event.transportEpoch(), event.windowSeq());
         TranscriptSessionAssociation association = associations.findSourceForUpdate(
                         event.tenantId(), event.meetingId(), DirectSttTranscriptResultEvent.SOURCE_SYSTEM,
                         event.sourceSessionId())
@@ -67,19 +68,30 @@ public class DirectSttTranscriptIngestionService {
             throw new SessionAssociationNotResolvedException();
         }
 
-        // Identity is the audio the window represents, not the producer's window
-        // counter — the counter restarts inside a session (live evidence
-        // 2026-07-26) and made unrelated windows collide.
-        TranscriptSegment segment = segments.findDirectSttSourceChunkWindow(
+        // windowSeq is unique only inside the gateway-owned transport epoch.
+        // Both values restart across reconnects/transport legs, so neither the
+        // counter nor the chunk range is a session-global identity.
+        TranscriptSegment segment = segments.findDirectSttSourceTransportWindow(
                         event.tenantId(), event.meetingId(),
-                        event.sourceSessionId(), event.firstChunkSeq(), event.lastChunkSeq())
+                        event.sourceSessionId(), event.transportEpoch(), event.windowSeq())
                 .orElse(null);
+        boolean legacyReplay = false;
+        if (segment == null && event.transportEpoch() != 0) {
+            TranscriptSegment legacy = segments.findDirectSttSourceTransportWindow(
+                            event.tenantId(), event.meetingId(),
+                            event.sourceSessionId(), 0L, event.windowSeq())
+                    .orElse(null);
+            if (legacy != null && sameSourceContent(legacy, event, false)) {
+                segment = legacy;
+                legacyReplay = true;
+            }
+        }
         if (segment != null) {
             if (!event.meetingId().equals(segment.getMeetingId())
                     || !canonicalSessionId.equals(segment.getSessionId())) {
                 throw new SessionAssociationConflictException();
             }
-            if (!sameSourceContent(segment, event)) {
+            if (!sameSourceContent(segment, event, !legacyReplay)) {
                 throw new SourceWindowReplayConflictException();
             }
             return TranscriptSegmentDto.from(segment);
@@ -92,6 +104,7 @@ public class DirectSttTranscriptIngestionService {
             segment.setSourceSystem(DirectSttTranscriptResultEvent.SOURCE_SYSTEM);
             segment.setSourceSessionId(event.sourceSessionId());
             segment.setSourceChunkSeq(event.lastChunkSeq());
+            segment.setSourceTransportEpoch(event.transportEpoch());
             segment.setSourceWindowSeq(event.windowSeq());
             segment.setSourceFirstChunkSeq(event.firstChunkSeq());
             segment.setSourceLastChunkSeq(event.lastChunkSeq());
@@ -115,16 +128,17 @@ public class DirectSttTranscriptIngestionService {
     }
 
     private boolean sameSourceContent(
-            TranscriptSegment segment, DirectSttTranscriptResultEvent event) {
+            TranscriptSegment segment,
+            DirectSttTranscriptResultEvent event,
+            boolean requireTransportEpoch) {
         double startSeconds = event.chunkStartedAtMs() / 1000.0d;
         double endSeconds = startSeconds + durationSeconds(event);
         return DirectSttTranscriptResultEvent.SOURCE_SYSTEM.equals(segment.getSourceSystem())
                 && event.tenantId().equals(segment.getTenantId())
                 && event.sourceSessionId().equals(segment.getSourceSessionId())
-                // sourceWindowSeq is deliberately absent: the producer may label
-                // the same audio with a different counter value after a restart.
-                // That is not a content difference, and treating it as one would
-                // discard the window all over again.
+                && (!requireTransportEpoch
+                        || Objects.equals(segment.getSourceTransportEpoch(), event.transportEpoch()))
+                && Objects.equals(segment.getSourceWindowSeq(), event.windowSeq())
                 && Objects.equals(segment.getSourceFirstChunkSeq(), event.firstChunkSeq())
                 && Objects.equals(segment.getSourceLastChunkSeq(), event.lastChunkSeq())
                 && Objects.equals(segment.getSourceChunkSeq(), event.lastChunkSeq())

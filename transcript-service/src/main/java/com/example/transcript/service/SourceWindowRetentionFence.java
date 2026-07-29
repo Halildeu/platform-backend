@@ -26,12 +26,31 @@ public class SourceWindowRetentionFence {
     }
 
     public void lockAndRejectRetained(
-            UUID tenantId, UUID meetingId, String sourceSessionId, long sourceWindowSeq) {
+            UUID tenantId,
+            UUID meetingId,
+            String sourceSessionId,
+            long sourceTransportEpoch,
+            long sourceWindowSeq) {
         String sourceHash = SessionErasureFence.sourceHash(sourceSessionId);
-        advisoryLocks.lock(windowKey(tenantId, meetingId, sourceHash, sourceWindowSeq));
-        if (sourceHash != null
-                && fences.existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceWindowSeq(
-                        tenantId, meetingId, sourceHash, sourceWindowSeq)) {
+        advisoryLocks.lock(
+                windowKey(tenantId, meetingId, sourceHash, 0L, sourceWindowSeq),
+                windowKey(
+                        tenantId, meetingId, sourceHash,
+                        sourceTransportEpoch, sourceWindowSeq));
+        boolean retained = sourceHash != null
+                && fences
+                .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceTransportEpochAndSourceWindowSeq(
+                        tenantId, meetingId, sourceHash,
+                        sourceTransportEpoch, sourceWindowSeq);
+        // V12 backfills pre-epoch fences to epoch 0. Treat that legacy marker as
+        // covering later epoch-aware replays too: after source content has been
+        // destroyed, privacy wins over accepting an ambiguous counter restart.
+        boolean retainedByLegacyFence = sourceHash != null
+                && sourceTransportEpoch != 0
+                && fences
+                .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceTransportEpochAndSourceWindowSeq(
+                        tenantId, meetingId, sourceHash, 0L, sourceWindowSeq);
+        if (retained || retainedByLegacyFence) {
             throw new SourceWindowRetainedException();
         }
     }
@@ -42,10 +61,12 @@ public class SourceWindowRetentionFence {
                         segment.getSourceSystem()))
                 .filter(segment -> segment.getSourceSessionId() != null
                         && !segment.getSourceSessionId().isBlank()
+                        && segment.getSourceTransportEpoch() != null
                         && segment.getSourceWindowSeq() != null)
                 .map(segment -> windowKey(
                         segment.getTenantId(), segment.getMeetingId(),
                         SessionErasureFence.sourceHash(segment.getSourceSessionId()),
+                        segment.getSourceTransportEpoch(),
                         segment.getSourceWindowSeq()))
                 .toArray(String[]::new));
     }
@@ -56,11 +77,13 @@ public class SourceWindowRetentionFence {
             if (DirectSttTranscriptResultEvent.SOURCE_SYSTEM.equals(segment.getSourceSystem())
                     && segment.getSourceSessionId() != null
                     && !segment.getSourceSessionId().isBlank()
+                    && segment.getSourceTransportEpoch() != null
                     && segment.getSourceWindowSeq() != null) {
                 String sourceHash = SessionErasureFence.sourceHash(segment.getSourceSessionId());
                 uniqueWindows.putIfAbsent(
                         new WindowKey(
                                 segment.getTenantId(), segment.getMeetingId(), sourceHash,
+                                segment.getSourceTransportEpoch(),
                                 segment.getSourceWindowSeq()),
                         segment);
             }
@@ -70,9 +93,10 @@ public class SourceWindowRetentionFence {
         for (Map.Entry<WindowKey, TranscriptSegment> entry : uniqueWindows.entrySet()) {
             WindowKey key = entry.getKey();
             TranscriptSegment segment = entry.getValue();
-            if (fences.existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceWindowSeq(
-                    key.tenantId(), key.meetingId(), key.sourceSessionHash(),
-                    key.sourceWindowSeq())) {
+            if (fences
+                    .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceTransportEpochAndSourceWindowSeq(
+                            key.tenantId(), key.meetingId(), key.sourceSessionHash(),
+                            key.sourceTransportEpoch(), key.sourceWindowSeq())) {
                 continue;
             }
             TranscriptSourceRetentionFence fence = new TranscriptSourceRetentionFence();
@@ -82,6 +106,7 @@ public class SourceWindowRetentionFence {
             fence.setMeetingId(key.meetingId());
             fence.setSessionId(segment.getSessionId());
             fence.setSourceSessionHash(key.sourceSessionHash());
+            fence.setSourceTransportEpoch(key.sourceTransportEpoch());
             fence.setSourceWindowSeq(key.sourceWindowSeq());
             fence.setRetainedAt(retainedAt);
             fences.save(fence);
@@ -91,13 +116,21 @@ public class SourceWindowRetentionFence {
     }
 
     private record WindowKey(
-            UUID tenantId, UUID meetingId, String sourceSessionHash, long sourceWindowSeq) {}
+            UUID tenantId,
+            UUID meetingId,
+            String sourceSessionHash,
+            long sourceTransportEpoch,
+            long sourceWindowSeq) {}
 
     private static String windowKey(
-            UUID tenantId, UUID meetingId, String sourceHash, long sourceWindowSeq) {
+            UUID tenantId,
+            UUID meetingId,
+            String sourceHash,
+            long sourceTransportEpoch,
+            long sourceWindowSeq) {
         return sourceHash == null ? null
                 : "retention-window|" + tenantId + "|" + meetingId + "|"
-                + sourceHash + "|" + sourceWindowSeq;
+                + sourceHash + "|" + sourceTransportEpoch + "|" + sourceWindowSeq;
     }
 
     public static class SourceWindowRetainedException extends IllegalStateException {

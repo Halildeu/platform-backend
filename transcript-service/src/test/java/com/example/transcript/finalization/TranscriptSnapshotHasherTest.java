@@ -41,6 +41,31 @@ class TranscriptSnapshotHasherTest {
     }
 
     @Test
+    void sourceTransportEpochChangesSnapshot() {
+        TranscriptSegment first = segment();
+        first.setStatus(TranscriptSegmentStatus.FINALIZED);
+        first.setTextFinal("ayni metin");
+        TranscriptSegment changed = copy(first);
+        changed.setSourceTransportEpoch(12L);
+
+        assertThat(hasher.editorialSnapshot(List.of(first)).sha256())
+                .isNotEqualTo(hasher.editorialSnapshot(List.of(changed)).sha256());
+    }
+
+    @Test
+    void legacyEpochZeroBackfillPreservesPreMigrationSnapshotHash() {
+        TranscriptSegment preMigration = segment();
+        preMigration.setStatus(TranscriptSegmentStatus.FINALIZED);
+        preMigration.setTextFinal("ayni metin");
+        preMigration.setSourceTransportEpoch(null);
+        TranscriptSegment backfilled = copy(preMigration);
+        backfilled.setSourceTransportEpoch(0L);
+
+        assertThat(hasher.editorialSnapshot(List.of(backfilled)).sha256())
+                .isEqualTo(hasher.editorialSnapshot(List.of(preMigration)).sha256());
+    }
+
+    @Test
     void retainedTextOnRedactedSegmentFailsClosed() {
         TranscriptSegment segment = segment();
         segment.setStatus(TranscriptSegmentStatus.REDACTED);
@@ -59,6 +84,7 @@ class TranscriptSnapshotHasherTest {
         row.setEndTime(2.5d);
         row.setSourceSystem("DIRECT_STT");
         row.setSourceSessionId("SES-test");
+        row.setSourceTransportEpoch(11L);
         row.setSourceWindowSeq(3L);
         row.setSourceFirstChunkSeq(4L);
         row.setSourceLastChunkSeq(8L);

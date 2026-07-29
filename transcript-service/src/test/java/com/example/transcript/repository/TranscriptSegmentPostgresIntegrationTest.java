@@ -224,27 +224,29 @@ class TranscriptSegmentPostgresIntegrationTest {
     }
 
     @Test
-    void directSttChunkWindowUniqueIndex_rejectsDuplicateAudioButNotRepeatedWindowNumber() {
+    void directSttTransportWindowUniqueIndexAllowsCounterRestartsAcrossEpochs() {
         UUID org = UUID.randomUUID();
         UUID meeting = UUID.randomUUID();
         Timestamp now = Timestamp.from(Instant.parse("2026-06-25T10:00:00Z"));
         jdbc.update("INSERT INTO " + SCHEMA + ".transcript_segments "
                         + "(id, tenant_id, org_id, meeting_id, start_time, end_time, text_draft, status, "
-                        + " source_system, source_session_id, source_chunk_seq, source_window_seq, "
+                        + " source_system, source_session_id, source_chunk_seq, source_transport_epoch, "
+                        + " source_window_seq, "
                         + " source_first_chunk_seq, source_last_chunk_seq, "
                         + " created_at, updated_at, version) "
                         + "VALUES (?, ?, ?, ?, 0.0, 1.0, 'first', 'DRAFT', "
-                        + " 'DIRECT_STT', 'SES-abc', 5, 2, 3, 5, ?, ?, 0)",
+                        + " 'DIRECT_STT', 'SES-abc', 5, 10, 2, 3, 5, ?, ?, 0)",
                 UUID.randomUUID(), org, org, meeting, now, now);
 
         jdbc.update("INSERT INTO " + SCHEMA + ".transcript_segments "
                         + "(id, tenant_id, org_id, meeting_id, start_time, end_time, text_draft, status, "
-                        + " source_system, source_session_id, source_chunk_seq, source_window_seq, "
+                        + " source_system, source_session_id, source_chunk_seq, source_transport_epoch, "
+                        + " source_window_seq, "
                         + " source_first_chunk_seq, source_last_chunk_seq, "
                         + " created_at, updated_at, version) "
-                        // Producer restarted its counter: window 2 again, new audio.
+                        // A new transport epoch may restart both counters.
                         + "VALUES (?, ?, ?, ?, 2.0, 3.0, 'next window', 'DRAFT', "
-                        + " 'DIRECT_STT', 'SES-abc', 8, 2, 6, 8, ?, ?, 0)",
+                        + " 'DIRECT_STT', 'SES-abc', 5, 11, 2, 3, 5, ?, ?, 0)",
                 UUID.randomUUID(), org, org, meeting, now, now);
 
         assertThat(jdbc.queryForObject(
@@ -256,16 +258,17 @@ class TranscriptSegmentPostgresIntegrationTest {
         // transaction and PostgreSQL aborts that transaction after 23505.
         assertThatThrownBy(() -> jdbc.update("INSERT INTO " + SCHEMA + ".transcript_segments "
                         + "(id, tenant_id, org_id, meeting_id, start_time, end_time, text_draft, status, "
-                        + " source_system, source_session_id, source_chunk_seq, source_window_seq, "
+                        + " source_system, source_session_id, source_chunk_seq, source_transport_epoch, "
+                        + " source_window_seq, "
                         + " source_first_chunk_seq, source_last_chunk_seq, "
                         + " created_at, updated_at, version) "
-                        // Same audio (chunks 3-5) relabelled: a genuine replay.
+                        // Same epoch/window pair is a replay despite conflicting provenance.
                         + "VALUES (?, ?, ?, ?, 1.0, 2.0, 'duplicate', 'DRAFT', "
-                        + " 'DIRECT_STT', 'SES-abc', 5, 9, 3, 5, ?, ?, 0)",
+                        + " 'DIRECT_STT', 'SES-abc', 8, 10, 2, 6, 8, ?, ?, 0)",
                 UUID.randomUUID(), org, org, meeting, now, now))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .satisfies(t -> assertThat(rootSqlState(t))
-                        .as("duplicate direct-STT audio window must be unique_violation")
+                        .as("duplicate direct-STT transport window must be unique_violation")
                         .isEqualTo("23505"));
     }
 
