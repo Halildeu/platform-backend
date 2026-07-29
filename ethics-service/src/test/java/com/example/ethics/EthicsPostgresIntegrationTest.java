@@ -310,8 +310,13 @@ class EthicsPostgresIntegrationTest {
 
         UUID outboxId = UUID.randomUUID();
         UUID claim = UUID.randomUUID();
-        Instant now = Instant.now();
-        Instant lockedUntil = now.plusSeconds(60);
+        // Truncated to microseconds like every other timestamp on this path. Postgres stores
+        // microseconds; Instant.now() carries nanoseconds on Linux and usually not on macOS,
+        // so an untruncated value round-trips unequal and the claim fence rejects the caller —
+        // green locally, red on CI. EthicsAuditChain.normalizeTimestamp exists for this.
+        Instant now = com.example.ethics.audit.EthicsAuditChain.normalizeTimestamp(Instant.now());
+        Instant lockedUntil = com.example.ethics.audit.EthicsAuditChain
+                .normalizeTimestamp(now.plusSeconds(60));
         jdbc.update("""
                 INSERT INTO ethics_service.ethics_audit_outbox
                     (id, org_id, aggregate_id, event_type, payload, status, created_at,
