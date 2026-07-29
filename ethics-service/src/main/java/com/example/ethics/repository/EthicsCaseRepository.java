@@ -7,6 +7,18 @@ import org.springframework.data.repository.query.Param;
 
 public interface EthicsCaseRepository extends JpaRepository<EthicsCase,UUID>{
     List<EthicsCase> findAllByOrgIdOrderByUpdatedAtDesc(UUID orgId);
+
+    /**
+     * Every organisation that actually holds a case.
+     *
+     * <p>Derived from the data rather than from configuration on purpose. The cell's tenant
+     * list also exists as a host→org map, but a tenant whose host entry is missing or stale
+     * still has real cases and real legal deadlines; reading the map would let that tenant
+     * fall out of the sweep silently. Measured on the live cell: 139 cases under one
+     * organisation and 28 under a second.
+     */
+    @Query("select distinct c.orgId from EthicsCase c")
+    List<UUID> findDistinctOrgIds();
     Optional<EthicsCase> findByIdAndOrgId(UUID id,UUID orgId);
 
     /**

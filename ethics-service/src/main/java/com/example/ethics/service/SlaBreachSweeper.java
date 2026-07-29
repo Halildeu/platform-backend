@@ -10,7 +10,6 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +30,12 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>Carries no case id, matching the outbox's existing contract: the transport stays free of
  * case-level facts even though this sweeper knows them.
+ *
+ * <p><strong>Every tenant, not the configured one.</strong> The first version swept the single
+ * organisation named by {@code ethics.public-org-id}, which on the live cell covered 139 cases
+ * and missed 28 belonging to a second tenant. Those cases carry the same legal deadlines; a
+ * sweep that reads a config value would let a tenant whose host entry is missing or stale drop
+ * out silently. The organisation list therefore comes from the cases themselves.
  */
 @Component
 public class SlaBreachSweeper {
@@ -44,7 +49,6 @@ public class SlaBreachSweeper {
     private final NotificationOutboxRepository outbox;
     private final NotificationOutboxPublisher notifications;
     private final CaseSlaClock sla;
-    private final UUID orgId;
     private final Clock clock;
 
     // Two constructors, so Spring must be told which one. Without this it looks for a
@@ -56,9 +60,8 @@ public class SlaBreachSweeper {
             EthicsCaseRepository cases,
             NotificationOutboxRepository outbox,
             NotificationOutboxPublisher notifications,
-            CaseSlaClock sla,
-            @Value("${ethics.public-org-id}") UUID orgId) {
-        this(cases, outbox, notifications, sla, orgId, Clock.systemUTC());
+            CaseSlaClock sla) {
+        this(cases, outbox, notifications, sla, Clock.systemUTC());
     }
 
     SlaBreachSweeper(
@@ -66,13 +69,11 @@ public class SlaBreachSweeper {
             NotificationOutboxRepository outbox,
             NotificationOutboxPublisher notifications,
             CaseSlaClock sla,
-            UUID orgId,
             Clock clock) {
         this.cases = cases;
         this.outbox = outbox;
         this.notifications = notifications;
         this.sla = sla;
-        this.orgId = orgId;
         this.clock = clock;
     }
 
@@ -80,24 +81,29 @@ public class SlaBreachSweeper {
     @Transactional
     public void sweep() {
         Instant now = clock.instant();
-        if (outbox.existsByOrgIdAndEventTypeAndCreatedAtAfter(
-                orgId, NotificationOutboxPublisher.SLA_BREACH, now.minus(ONE_PER))) {
-            return;
+        for (UUID orgId : cases.findDistinctOrgIds()) {
+            // Suppression is per organisation: one tenant's quiet day must not silence
+            // another tenant's breach.
+            if (outbox.existsByOrgIdAndEventTypeAndCreatedAtAfter(
+                    orgId, NotificationOutboxPublisher.SLA_BREACH, now.minus(ONE_PER))) {
+                continue;
+            }
+            if (!hasBreach(orgId)) {
+                continue;
+            }
+            notifications.enqueue(orgId, NotificationOutboxPublisher.SLA_BREACH, now);
+            // Deliberately no count and no case id: the log line is operational, and a breach
+            // count is a fact about live whistleblowing cases. The organisation is not named
+            // either — which tenant is behind is the same class of fact.
+            log.info("Etik Speak: SLA breach signal enqueued for one organisation");
         }
-        if (!hasBreach()) {
-            return;
-        }
-        notifications.enqueue(orgId, NotificationOutboxPublisher.SLA_BREACH, now);
-        // Deliberately no count and no case id: the log line is operational, and a breach
-        // count is a fact about live whistleblowing cases.
-        log.info("Etik Speak: SLA breach signal enqueued for the ethics organisation");
     }
 
     /**
      * Stops at the first breach. The signal is the same whether one obligation is overdue or
      * fifty, so counting them would cost a full scan to produce a number nothing reads.
      */
-    private boolean hasBreach() {
+    private boolean hasBreach(UUID orgId) {
         for (var item : cases.findAllByOrgIdOrderByUpdatedAtDesc(orgId)) {
             var ack = sla.acknowledgement(item.getCreatedAt(), item.getAcknowledgedAt());
             if (ack.state() == CaseSlaClock.AcknowledgementState.BREACHED) return true;

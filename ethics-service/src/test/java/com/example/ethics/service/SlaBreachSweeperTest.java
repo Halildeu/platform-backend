@@ -47,6 +47,7 @@ class SlaBreachSweeperTest {
         notifications = mock(NotificationOutboxPublisher.class);
         when(outbox.existsByOrgIdAndEventTypeAndCreatedAtAfter(any(), anyString(), any()))
                 .thenReturn(false);
+        when(cases.findDistinctOrgIds()).thenReturn(List.of(ORG));
     }
 
     private SlaBreachSweeper sweeper() {
@@ -54,7 +55,7 @@ class SlaBreachSweeperTest {
                 new EthicsSlaProperties(Duration.ofDays(7), Duration.ofDays(90)),
                 Clock.fixed(NOW, ZoneOffset.UTC));
         return new SlaBreachSweeper(
-                cases, outbox, notifications, sla, ORG, Clock.fixed(NOW, ZoneOffset.UTC));
+                cases, outbox, notifications, sla, Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     private EthicsCase caseCreatedAt(Instant createdAt, Instant acknowledgedAt) {
@@ -184,6 +185,51 @@ class SlaBreachSweeperTest {
                     .as("%s Java tarafinda var ama veritabani kisitinda yok", event)
                     .contains("'" + event + "'");
         }
+    }
+
+    /**
+     * The gap the first version shipped with. It swept the single organisation named by
+     * {@code ethics.public-org-id} — 139 cases on the live cell — and never looked at the 28
+     * belonging to a second tenant, whose deadlines are exactly as legal.
+     */
+    @Test
+    @DisplayName("her kiracı taranır, yapılandırmada adı geçen değil")
+    void everyTenantWithCasesIsSwept() {
+        UUID second = UUID.fromString("00000000-0000-0000-0000-000000000003");
+        var overdueA = caseCreatedAt(NOW.minus(Duration.ofDays(9)), null);
+        var overdueB = caseCreatedAt(NOW.minus(Duration.ofDays(20)), null);
+        when(cases.findDistinctOrgIds()).thenReturn(List.of(ORG, second));
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(overdueA));
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(second)).thenReturn(List.of(overdueB));
+
+        sweeper().sweep();
+
+        verify(notifications).enqueue(eq(ORG), eq(NotificationOutboxPublisher.SLA_BREACH), any());
+        verify(notifications).enqueue(eq(second), eq(NotificationOutboxPublisher.SLA_BREACH), any());
+    }
+
+    /**
+     * Suppression is per organisation. One tenant having already been told today must not
+     * silence another tenant's first breach — that is the shape in which a multi-tenant
+     * notifier quietly stops working for everyone but the loudest customer.
+     */
+    @Test
+    @DisplayName("bir kiracının bastırılması diğerini susturmaz")
+    void oneTenantsSuppressionDoesNotSilenceAnother() {
+        UUID second = UUID.fromString("00000000-0000-0000-0000-000000000003");
+        var overdueA = caseCreatedAt(NOW.minus(Duration.ofDays(9)), null);
+        var overdueB = caseCreatedAt(NOW.minus(Duration.ofDays(20)), null);
+        when(cases.findDistinctOrgIds()).thenReturn(List.of(ORG, second));
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(overdueA));
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(second)).thenReturn(List.of(overdueB));
+        when(outbox.existsByOrgIdAndEventTypeAndCreatedAtAfter(
+                eq(ORG), eq(NotificationOutboxPublisher.SLA_BREACH), any())).thenReturn(true);
+
+        sweeper().sweep();
+
+        verify(notifications, never())
+                .enqueue(eq(ORG), eq(NotificationOutboxPublisher.SLA_BREACH), any());
+        verify(notifications).enqueue(eq(second), eq(NotificationOutboxPublisher.SLA_BREACH), any());
     }
 
     /**
