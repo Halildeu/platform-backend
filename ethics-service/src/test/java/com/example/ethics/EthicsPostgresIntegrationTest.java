@@ -55,6 +55,7 @@ class EthicsPostgresIntegrationTest {
     @Autowired ObjectMapper objectMapper;
     @Autowired JdbcTemplate jdbc;
     @Autowired ReporterAccessGrantRepository reporterGrants;
+    @Autowired org.springframework.transaction.support.TransactionTemplate tx;
 
     @Test
     void outboxDeliversOnceToHashChainedAppendOnlyLedgerAndCheckpoints() {
@@ -337,5 +338,106 @@ class EthicsPostgresIntegrationTest {
                 .as("kurum kapsamli satir kok vaka tasiyor")
                 .isNull();
         assertThat(auditScope.countUnclassifiedLedgerRows()).isZero();
+    }
+
+    /**
+     * Faz 35 ES-302 — the classification repairs itself (#884).
+     *
+     * <p>Classifying at append time fixed the future and left a window open: during a rolling
+     * update the old pod keeps delivering audit events while the new one migrates, so rows are
+     * written by code that does not classify — after any one-shot backfill would already have
+     * run. The window reopens on every deploy, which is why the repair has to be continuous.
+     *
+     * <p>Not hypothetical: granting a subscription on the test cell while the pre-fix image was
+     * serving put exactly one such row into the ledger, and nothing would ever have gone back
+     * for it.
+     */
+    @Test
+    void aLedgerRowWrittenWithoutItsClassificationIsRepairedLater() {
+        UUID orgId = UUID.fromString("00000000-0000-0000-0000-0000000007e1");
+        UUID caseId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_cases
+                    (id, org_id, product_id, status, version, created_at, updated_at)
+                VALUES (?, ?, 'etik-speak', 'NEW', 0, now(), now())
+                """, caseId, orgId);
+
+        UUID outboxId = UUID.randomUUID();
+        UUID ledgerRow = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_audit_outbox
+                    (id, org_id, aggregate_id, event_type, payload, status, created_at, attempt_count)
+                VALUES (?, ?, ?, 'ethics.case.updated', '{}', 'DELIVERED', now(), 1)
+                """, outboxId, orgId, caseId);
+        // Written the way the pre-fix code wrote them: ledger row, no classification.
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_worm_audit
+                    (id, source_outbox_id, org_id, aggregate_id, event_type, payload,
+                     event_timestamp, ingested_at, prev_hash, entry_hash, entry_hash_alg,
+                     entry_hash_version)
+                VALUES (?, ?, ?, ?, 'ethics.case.updated', '{}', now(), now(), NULL, ?, 'SHA-256', 1)
+                """, ledgerRow, outboxId, orgId, caseId, "e".repeat(64));
+        assertThat(auditScope.countUnclassifiedLedgerRows()).isPositive();
+
+        // The worker runs this inside its own transaction; a modifying query needs one.
+        Integer healed = tx.execute(status -> auditScope.classifyWhateverIsMissing(
+                Instant.now(), AuditScopeRepository.LATE_WRITER));
+
+        assertThat(healed).as("onarilacak satir bulunamadi").isGreaterThanOrEqualTo(1);
+        var repaired = jdbc.queryForMap("""
+                SELECT aggregate_type, root_case_id, classified_by
+                  FROM ethics_service.ethics_audit_scope WHERE worm_audit_id = ?
+                """, ledgerRow);
+        assertThat(repaired.get("aggregate_type")).isEqualTo("CASE");
+        assertThat(repaired.get("root_case_id")).hasToString(caseId.toString());
+        assertThat(repaired.get("classified_by"))
+                .as("gec siniflandirma zamaninda yapilandan ayirt edilebilmeli")
+                .isEqualTo(AuditScopeRepository.LATE_WRITER);
+
+        // Idempotent: a second pass finds nothing and the table stays append-only.
+        int secondPass = tx.execute(status -> auditScope.classifyWhateverIsMissing(
+                Instant.now(), AuditScopeRepository.LATE_WRITER));
+        assertThat(secondPass).isZero();
+        assertThat(auditScope.countUnclassifiedLedgerRows()).isZero();
+
+        // And it never reaches back into an answer taken while the parents were alive. Asserted
+        // on a different row — re-reading the one just healed would only restate that it was
+        // healed. This one is classified early, then its case is deleted, then the repair runs:
+        // a repair that overwrote would downgrade it to UNRESOLVED and lose the root case.
+        UUID earlyCase = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_cases
+                    (id, org_id, product_id, status, version, created_at, updated_at)
+                VALUES (?, ?, 'etik-speak', 'NEW', 0, now(), now())
+                """, earlyCase, orgId);
+        UUID earlyOutbox = UUID.randomUUID();
+        UUID earlyLedgerRow = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_audit_outbox
+                    (id, org_id, aggregate_id, event_type, payload, status, created_at, attempt_count)
+                VALUES (?, ?, ?, 'ethics.case.updated', '{}', 'DELIVERED', now(), 1)
+                """, earlyOutbox, orgId, earlyCase);
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_worm_audit
+                    (id, source_outbox_id, org_id, aggregate_id, event_type, payload,
+                     event_timestamp, ingested_at, prev_hash, entry_hash, entry_hash_alg,
+                     entry_hash_version)
+                VALUES (?, ?, ?, ?, 'ethics.case.updated', '{}', now(), now(), NULL, ?, 'SHA-256', 1)
+                """, earlyLedgerRow, earlyOutbox, orgId, earlyCase, "f".repeat(64));
+        tx.execute(status -> auditScope.classify(
+                earlyLedgerRow, Instant.now(), AuditScopeRepository.WRITER));
+
+        jdbc.update("DELETE FROM ethics_service.ethics_cases WHERE id = ?", earlyCase);
+        tx.execute(status -> auditScope.classifyWhateverIsMissing(
+                Instant.now(), AuditScopeRepository.LATE_WRITER));
+
+        var untouched = jdbc.queryForMap("""
+                SELECT classified_by, root_case_id
+                  FROM ethics_service.ethics_audit_scope WHERE worm_audit_id = ?
+                """, earlyLedgerRow);
+        assertThat(untouched.get("classified_by")).isEqualTo(AuditScopeRepository.WRITER);
+        assertThat(untouched.get("root_case_id"))
+                .as("ebeveyni silinmis satirin kok vakasi onarim sirasinda kayboldu")
+                .hasToString(earlyCase.toString());
     }
 }

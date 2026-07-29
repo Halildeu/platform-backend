@@ -3,6 +3,7 @@ package com.example.ethics.audit;
 import com.example.ethics.config.AuditDeliveryProperties;
 import com.example.ethics.model.AuditOutbox;
 import com.example.ethics.repository.AuditOutboxRepository;
+import com.example.ethics.repository.AuditScopeRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -27,6 +28,7 @@ public class AuditOutboxWorker {
     private static final List<String> BACKLOG_STATUSES = List.of("PENDING", "PROCESSING");
 
     private final AuditOutboxRepository outbox;
+    private final AuditScopeRepository scope;
     private final AuditDeliveryService delivery;
     private final AuditRetryService retry;
     private final AuditDeliveryProperties properties;
@@ -34,15 +36,18 @@ public class AuditOutboxWorker {
     private final Counter deliveredCounter;
     private final Counter retryCounter;
     private final Counter deadLetterCounter;
+    private final Counter healedCounter;
 
     public AuditOutboxWorker(
             AuditOutboxRepository outbox,
+            AuditScopeRepository scope,
             AuditDeliveryService delivery,
             AuditRetryService retry,
             AuditDeliveryProperties properties,
             TransactionTemplate transactions,
             MeterRegistry metrics) {
         this.outbox = outbox;
+        this.scope = scope;
         this.delivery = delivery;
         this.retry = retry;
         this.properties = properties;
@@ -55,6 +60,11 @@ public class AuditOutboxWorker {
                 .register(metrics);
         this.deadLetterCounter = Counter.builder("ethics.audit.outbox.dead.letter")
                 .description("Etik Speak audit rows exhausted into the durable DLQ state")
+                .register(metrics);
+        // Steady state is zero. A number that keeps climbing means something is writing to the
+        // ledger without classifying, which is worth an alert rather than a silent repair.
+        this.healedCounter = Counter.builder("ethics.audit.scope.healed")
+                .description("Etik Speak ledger rows classified after the fact")
                 .register(metrics);
         Gauge.builder("ethics.audit.outbox.pending.entries", outbox,
                         repository -> repository.countByStatusIn(BACKLOG_STATUSES))
@@ -78,6 +88,20 @@ public class AuditOutboxWorker {
         Instant now = EthicsAuditChain.normalizeTimestamp(Instant.now());
         Instant lockedUntil = EthicsAuditChain.normalizeTimestamp(now.plus(properties.leaseDuration()));
         UUID claimToken = UUID.randomUUID();
+
+        // Anything the ledger holds without a classification is repaired before the cycle's
+        // own work. Usually nothing: the delivery path classifies as it appends. What lands
+        // here are the rows written in the gap a rolling update opens — the old pod keeps
+        // delivering while the new one migrates — plus anything a restore reloaded out of
+        // order. Left alone those rows stay unclassified forever, and the erasure receipt
+        // they belong to becomes uncheckable.
+        int healed = transactions.execute(status ->
+                scope.classifyWhateverIsMissing(now, AuditScopeRepository.LATE_WRITER));
+        if (healed > 0) {
+            log.warn("Etik Speak audit classification healed rows={} - defter satirlari "
+                    + "siniflandirilmadan yazilmis", healed);
+            healedCounter.increment(healed);
+        }
 
         int recovered = transactions.execute(status -> outbox.recoverExpiredLeases(now));
         int claimed = transactions.execute(status ->

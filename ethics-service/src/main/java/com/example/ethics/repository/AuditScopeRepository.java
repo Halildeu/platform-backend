@@ -39,6 +39,9 @@ public interface AuditScopeRepository extends Repository<WormAuditEntry, Long> {
     /** Recorded in {@code classified_by}, so a row's provenance stays readable next to the backfill's. */
     String WRITER = "AuditDeliveryService";
 
+    /** Distinguishes a row healed after the fact from one classified while its parents lived. */
+    String LATE_WRITER = "AuditOutboxWorker.selfHeal";
+
     /**
      * Classifies one ledger row by the same derivation the V10 backfill used — deliberately the
      * same shape, so the two writers cannot disagree about what a CASE row is.
@@ -52,8 +55,13 @@ public interface AuditScopeRepository extends Repository<WormAuditEntry, Long> {
      * a collision has to resolve somewhere deterministic rather than to whichever join
      * happened to match.
      */
-    @Modifying
-    @Query(value = """
+    /**
+     * The derivation, held once. Two copies of a CASE expression are two things that can
+     * disagree about what a CASE row is, and the disagreement would surface only in an erasure
+     * receipt months later. Annotation values are constant expressions, so both queries below
+     * are built from this single text.
+     */
+    String CLASSIFY_PREFIX = """
             INSERT INTO {h-schema}ethics_audit_scope
                 (worm_audit_id, aggregate_id, aggregate_type, root_case_id, classified_at, classified_by)
             SELECT w.id,
@@ -71,11 +79,42 @@ public interface AuditScopeRepository extends Repository<WormAuditEntry, Long> {
               LEFT JOIN {h-schema}ethics_cases c ON c.id = w.aggregate_id
               LEFT JOIN {h-schema}ethics_evidence_attachments e ON e.id = w.aggregate_id
               LEFT JOIN {h-schema}ethics_org_subscription s ON s.id = w.aggregate_id
-             WHERE w.id = :wormAuditId
-            ON CONFLICT (worm_audit_id) DO NOTHING
-            """, nativeQuery = true)
+            """;
+
+    String ON_CONFLICT_DO_NOTHING = "\nON CONFLICT (worm_audit_id) DO NOTHING";
+
+    @Modifying
+    @Query(value = CLASSIFY_PREFIX + " WHERE w.id = :wormAuditId" + ON_CONFLICT_DO_NOTHING,
+            nativeQuery = true)
     int classify(
             @Param("wormAuditId") UUID wormAuditId,
+            @Param("classifiedAt") Instant classifiedAt,
+            @Param("classifiedBy") String classifiedBy);
+
+    /**
+     * Classifies whatever was left behind, so the invariant repairs itself instead of needing
+     * someone to notice.
+     *
+     * <p>A one-shot backfill cannot close this. During a rolling update the old pod keeps
+     * delivering audit events while the new one migrates, so rows appear after the backfill
+     * has run and before the fixed code is serving — a window that reopens on every deploy.
+     * Measured on the test cell: a subscription event delivered by the pre-fix image landed in
+     * the ledger unclassified, exactly in that window.
+     *
+     * <p>The late answer can be poorer than the one taken at append time: if the parents are
+     * already erased the row is recorded UNRESOLVED. That is still strictly better than no row
+     * at all, and the primary path continues to classify while the parents are alive.
+     */
+    @Modifying
+    @Query(value = CLASSIFY_PREFIX
+            // Alias deliberately not "s": the prefix already joins the subscription table as
+            // s, and an inner alias that shadows an outer one is a question the next reader
+            // has to stop and answer.
+            + " WHERE NOT EXISTS (SELECT 1 FROM {h-schema}ethics_audit_scope covered"
+            + " WHERE covered.worm_audit_id = w.id)"
+            + ON_CONFLICT_DO_NOTHING,
+            nativeQuery = true)
+    int classifyWhateverIsMissing(
             @Param("classifiedAt") Instant classifiedAt,
             @Param("classifiedBy") String classifiedBy);
 
@@ -84,7 +123,8 @@ public interface AuditScopeRepository extends Repository<WormAuditEntry, Long> {
             SELECT count(*)
               FROM {h-schema}ethics_worm_audit w
              WHERE NOT EXISTS (
-                   SELECT 1 FROM {h-schema}ethics_audit_scope s WHERE s.worm_audit_id = w.id)
+                   SELECT 1 FROM {h-schema}ethics_audit_scope covered
+                    WHERE covered.worm_audit_id = w.id)
             """, nativeQuery = true)
     long countUnclassifiedLedgerRows();
 }
