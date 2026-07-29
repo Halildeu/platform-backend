@@ -72,29 +72,57 @@ public class EthicsEntitlements {
 
     public boolean has(UUID orgId, EthicsCapability capability) {
         if (orgId == null || capability == null) return false;
-        return catalog.carries(productsFor(orgId), capability);
+        return catalog.carries(holding(orgId).productIds(), capability);
     }
 
-    private Set<String> productsFor(UUID orgId) {
+    /**
+     * What the organisation holds, and whether that answer could actually be established.
+     *
+     * <p>The enforcement path ({@link #has}) treats an unreadable store as "no" and says
+     * nothing further — that is the safe direction when deciding whether to open a feature.
+     * A screen that shows the customer their own subscription needs the other distinction:
+     * rendering "you hold nothing" during an outage is not fail-closed, it is wrong, and it
+     * invites someone to buy what they already own or to report a capability as revoked.
+     *
+     * <p>So the enforcement answer stays closed while the informational answer can say
+     * "unknown". The flag names only the confidence, never the dependency or its health.
+     */
+    public Holding holding(UUID orgId) {
+        if (orgId == null) return new Holding(Set.of(), Set.of(), true);
         Instant now = clock.instant();
         Entry cached = cache.get(orgId);
         if (cached != null && cached.expiresAt().isAfter(now)) {
-            return cached.productIds();
+            return resolved(cached.productIds(), true);
         }
         try {
             Set<String> products = subscriptions.findAllByOrgIdAndActiveTrue(orgId).stream()
                     .map(OrgSubscription::getProductId)
                     .collect(Collectors.toUnmodifiableSet());
             cache.put(orgId, new Entry(products, now.plus(TTL)));
-            return products;
+            return resolved(products, true);
         } catch (RuntimeException e) {
             // Deliberately no cache write, not even to extend what is already there. A failed
             // read must not buy the entry more time; otherwise a store that stays down keeps
             // every capability alive forever.
             log.warn("Etik Speak: entitlement store unreadable, answering closed", e);
-            return Set.of();
+            return new Holding(Set.of(), Set.of(), false);
         }
     }
+
+    private Holding resolved(Set<String> productIds, boolean authoritative) {
+        Set<EthicsCapability> capabilities = java.util.Arrays.stream(EthicsCapability.values())
+                .filter(c -> catalog.carries(productIds, c))
+                .collect(Collectors.toCollection(() -> java.util.EnumSet.noneOf(EthicsCapability.class)));
+        return new Holding(productIds, Set.copyOf(capabilities), authoritative);
+    }
+
+    /**
+     * @param authoritative false only when the store could not be read and no unexpired
+     *     cached answer existed — the products and capabilities are then empty because
+     *     nothing could be established, not because nothing was bought.
+     */
+    public record Holding(
+            Set<String> productIds, Set<EthicsCapability> capabilities, boolean authoritative) {}
 
     /** Drops the cached answer for one organisation. For use after a subscription change. */
     public void invalidate(UUID orgId) {

@@ -46,6 +46,11 @@ public interface AuditScopeRepository extends Repository<WormAuditEntry, Long> {
      * <p>Here the parents are alive by construction: the classification happens in the
      * transaction that appends the row, which is the earliest moment it can be asked and the
      * only one where the answer is guaranteed.
+     *
+     * <p>The case is checked before the attachment and both before the subscription, matching
+     * the backfill's order. The id spaces are disjoint in practice and nothing enforces it, so
+     * a collision has to resolve somewhere deterministic rather than to whichever join
+     * happened to match.
      */
     @Modifying
     @Query(value = """
@@ -56,6 +61,7 @@ public interface AuditScopeRepository extends Repository<WormAuditEntry, Long> {
                    CASE
                        WHEN c.id IS NOT NULL THEN 'CASE'
                        WHEN e.id IS NOT NULL THEN 'ATTACHMENT'
+                       WHEN s.id IS NOT NULL THEN 'ORG'
                        ELSE 'UNRESOLVED'
                    END,
                    COALESCE(c.id, e.case_id),
@@ -64,6 +70,7 @@ public interface AuditScopeRepository extends Repository<WormAuditEntry, Long> {
               FROM {h-schema}ethics_worm_audit w
               LEFT JOIN {h-schema}ethics_cases c ON c.id = w.aggregate_id
               LEFT JOIN {h-schema}ethics_evidence_attachments e ON e.id = w.aggregate_id
+              LEFT JOIN {h-schema}ethics_org_subscription s ON s.id = w.aggregate_id
              WHERE w.id = :wormAuditId
             ON CONFLICT (worm_audit_id) DO NOTHING
             """, nativeQuery = true)
