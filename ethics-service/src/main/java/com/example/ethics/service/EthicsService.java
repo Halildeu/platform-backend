@@ -446,7 +446,9 @@ public class EthicsService {
     @Transactional(readOnly=true)
     public List<CaseTimelineEntry> caseTimeline(StaffContext staff,UUID caseId) {
         requireCase(staff,caseId,"case_viewer");
-        var rows=audit.findAllByOrgIdAndAggregateIdOrderByCreatedAtAsc(staff.orgId(),caseId);
+        // Case events and evidence events both belong to this case's history, but they are
+        // filed under different aggregate ids — see AuditOutboxRepository#findCaseHistory.
+        var rows=audit.findCaseHistory(staff.orgId(),caseId);
         if(rows.isEmpty()) return List.of();
 
         // hash -> subject for this org's members only. Building it costs one hash apiece and
