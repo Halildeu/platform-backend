@@ -61,7 +61,8 @@ class EthicsServiceMailboxTimingTest {
                 notifications,
                 participants,
                 new com.example.ethics.security.ParticipantHandles(props),
-                directory);
+                directory,
+                new CaseSlaClock(new com.example.ethics.config.EthicsSlaProperties(null, null)));
     }
 
     @Test
