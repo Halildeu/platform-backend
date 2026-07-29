@@ -2,6 +2,7 @@ package com.example.ethics.service;
 
 import com.example.ethics.config.EthicsSlaProperties;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -13,6 +14,19 @@ import org.springframework.stereotype.Component;
  * real only while a case was open on screen: it could not be queried, alerted on, or
  * counted, and two clients could disagree. On the test cell 49 of 167 cases were already
  * past the seven-day acknowledgement mark and no surface said so.
+ *
+ * <p><strong>A pause must never move a deadline.</strong> EU 2019/1937 sets the seven days
+ * from receipt and the three months from acknowledgement, and provides no suspension: there
+ * is no clause an organisation can invoke to stop either clock. A "case paused, awaiting the
+ * reporter" feature that subtracted its own duration would therefore not be measuring the
+ * obligation — it would be a way to make a breach disappear administratively, in the one
+ * product where that is least acceptable.
+ *
+ * <p>So when pause/resume arrives (platform-backend#882) it records <em>why</em> a case is
+ * waiting and nothing else. The deadline stays where the law put it. This class takes only
+ * the case's own timestamps for exactly that reason: there is no parameter through which a
+ * pause could reach the arithmetic, in the same spirit as the recusal endpoint whose body is
+ * empty so that no one can recuse another person.
  *
  * <p>The states are deliberately three, not two. "Not acknowledged" collapses two
  * different situations — still inside the window, and past it — and only the second is a
@@ -52,7 +66,9 @@ public class CaseSlaClock {
         UNKNOWN
     }
 
-    public record Acknowledgement(AcknowledgementState state, Instant dueAt, boolean wasLate) {}
+    /** @param overdueBy how far past the deadline, or null when nothing is overdue. */
+    public record Acknowledgement(
+            AcknowledgementState state, Instant dueAt, boolean wasLate, Duration overdueBy) {}
 
     /**
      * Where a case stands against the obligation to give the reporter feedback.
@@ -69,35 +85,43 @@ public class CaseSlaClock {
      */
     public Feedback feedback(Instant createdAt, Instant closedAt) {
         if (createdAt == null) {
-            return new Feedback(FeedbackState.UNKNOWN, null, false);
+            return new Feedback(FeedbackState.UNKNOWN, null, false, null);
         }
         Instant dueAt = createdAt.plus(properties.feedbackWithin());
         if (closedAt != null) {
-            return new Feedback(FeedbackState.MET, dueAt, closedAt.isAfter(dueAt));
+            return new Feedback(FeedbackState.MET, dueAt, closedAt.isAfter(dueAt), null);
         }
-        return clock.instant().isAfter(dueAt)
-                ? new Feedback(FeedbackState.BREACHED, dueAt, false)
-                : new Feedback(FeedbackState.PENDING, dueAt, false);
+        Instant now = clock.instant();
+        return now.isAfter(dueAt)
+                ? new Feedback(FeedbackState.BREACHED, dueAt, false, Duration.between(dueAt, now))
+                : new Feedback(FeedbackState.PENDING, dueAt, false, null);
     }
 
     /** Mirrors {@link AcknowledgementState}; the two obligations are separate and can differ. */
     public enum FeedbackState { MET, PENDING, BREACHED, UNKNOWN }
 
-    public record Feedback(FeedbackState state, Instant dueAt, boolean wasLate) {}
+    /**
+     * @param overdueBy how far past the deadline, or null when nothing is overdue. Present
+     *     because BREACHED on its own is binary: a case one day late and one thirty days
+     *     late look identical in a list, and a handler holding forty-nine of them has no
+     *     way to know which to answer first.
+     */
+    public record Feedback(FeedbackState state, Instant dueAt, boolean wasLate, Duration overdueBy) {}
 
     public Acknowledgement acknowledgement(Instant createdAt, Instant acknowledgedAt) {
         if (createdAt == null) {
-            return new Acknowledgement(AcknowledgementState.UNKNOWN, null, false);
+            return new Acknowledgement(AcknowledgementState.UNKNOWN, null, false, null);
         }
         Instant dueAt = createdAt.plus(properties.acknowledgementWithin());
         if (acknowledgedAt != null) {
             // A late acknowledgement still satisfies the obligation to acknowledge; it does
             // not un-happen. Recording that it was late keeps the two facts separable
             // instead of hiding the delay behind a green state.
-            return new Acknowledgement(AcknowledgementState.MET, dueAt, acknowledgedAt.isAfter(dueAt));
+            return new Acknowledgement(AcknowledgementState.MET, dueAt, acknowledgedAt.isAfter(dueAt), null);
         }
-        return clock.instant().isAfter(dueAt)
-                ? new Acknowledgement(AcknowledgementState.BREACHED, dueAt, false)
-                : new Acknowledgement(AcknowledgementState.PENDING, dueAt, false);
+        Instant now = clock.instant();
+        return now.isAfter(dueAt)
+                ? new Acknowledgement(AcknowledgementState.BREACHED, dueAt, false, Duration.between(dueAt, now))
+                : new Acknowledgement(AcknowledgementState.PENDING, dueAt, false, null);
     }
 }

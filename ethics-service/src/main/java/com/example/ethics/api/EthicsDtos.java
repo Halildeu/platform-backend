@@ -76,8 +76,9 @@ public final class EthicsDtos {
                               Instant acknowledgedAt, String outcome, Instant closedAt,
                               String subject, String category, String mode, int participantCount,
                               Instant acknowledgementDueAt, String acknowledgementState,
-                              boolean acknowledgedLate,
-                              Instant feedbackDueAt, String feedbackState, boolean feedbackLate) {}
+                              boolean acknowledgedLate, Long acknowledgementOverdueSeconds,
+                              Instant feedbackDueAt, String feedbackState, boolean feedbackLate,
+                              Long feedbackOverdueSeconds) {}
     /**
      * One case, opened.
      *
@@ -95,8 +96,9 @@ public final class EthicsDtos {
                              Instant acknowledgedAt, String outcome, Instant closedAt,
                              Instant createdAt, Instant updatedAt, int participantCount,
                              Instant acknowledgementDueAt, String acknowledgementState,
-                             boolean acknowledgedLate,
-                             Instant feedbackDueAt, String feedbackState, boolean feedbackLate) {}
+                             boolean acknowledgedLate, Long acknowledgementOverdueSeconds,
+                             Instant feedbackDueAt, String feedbackState, boolean feedbackLate,
+                             Long feedbackOverdueSeconds) {}
     /**
      * ES-301A / ES-301B. {@code outcome} is required when closing and refused otherwise;
      * {@code reason} is required only when reopening a closed case. Neither is a free-form

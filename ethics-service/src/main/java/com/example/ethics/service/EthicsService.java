@@ -198,9 +198,11 @@ public class EthicsService {
                 sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).dueAt(),
                 sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).state().name(),
                 sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).wasLate(),
+                secs(sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).overdueBy()),
                 sla.feedback(item.getCreatedAt(),item.getClosedAt()).dueAt(),
                 sla.feedback(item.getCreatedAt(),item.getClosedAt()).state().name(),
-                sla.feedback(item.getCreatedAt(),item.getClosedAt()).wasLate());
+                sla.feedback(item.getCreatedAt(),item.getClosedAt()).wasLate(),
+                secs(sla.feedback(item.getCreatedAt(),item.getClosedAt()).overdueBy()));
     }
 
     /**
@@ -601,6 +603,8 @@ public class EthicsService {
      * while there is nothing better, and never turned into a principal.
      */
     /** One case on its own — the caller already has just this row, so a lookup apiece is honest. */
+    private static Long secs(java.time.Duration d){ return d==null?null:d.toSeconds(); }
+
     private CaseSummary summary(EthicsCase c){
         return summary(c, reports.findByCaseId(c.getId()).orElse(null),
             participants.findAllByCaseIdOrderByCreatedAtAsc(c.getId()).size());}
@@ -620,9 +624,11 @@ public class EthicsService {
             sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).dueAt(),
             sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).state().name(),
             sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).wasLate(),
+            secs(sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).overdueBy()),
             sla.feedback(c.getCreatedAt(),c.getClosedAt()).dueAt(),
             sla.feedback(c.getCreatedAt(),c.getClosedAt()).state().name(),
-            sla.feedback(c.getCreatedAt(),c.getClosedAt()).wasLate());}
+            sla.feedback(c.getCreatedAt(),c.getClosedAt()).wasLate(),
+            secs(sla.feedback(c.getCreatedAt(),c.getClosedAt()).overdueBy()));}
     private static MessageResponse messageResponse(EthicsMessage m){return new MessageResponse(m.getId(),m.getAuthorType(),m.getVisibility(),m.getBody(),m.getCreatedAt());}
     /** @see CaseLifecycle#reporterVisibleStatus — one implementation, so the two cannot drift. */
     private static String reporterVisibleStatus(String status){ return CaseLifecycle.reporterVisibleStatus(status); }

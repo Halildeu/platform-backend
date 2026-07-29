@@ -91,6 +91,36 @@ class CaseSlaClockTest {
         assertThat(result.dueAt()).isNull();
     }
 
+    /**
+     * BREACHED alone is binary, and a handler holding forty-nine breached cases cannot act
+     * on that. Distance past the deadline is what makes the list orderable.
+     */
+    @Test
+    @DisplayName("ihlalin ne kadar aşıldığı ölçülür, ikili değil")
+    void anOverdueCaseReportsHowFarPastItIs() {
+        var clock = clockAt(NOW);
+        var oneDay = clock.acknowledgement(NOW.minus(Duration.ofDays(8)), null);
+        var threeWeeks = clock.acknowledgement(NOW.minus(Duration.ofDays(28)), null);
+
+        assertThat(oneDay.overdueBy()).isEqualTo(Duration.ofDays(1));
+        assertThat(threeWeeks.overdueBy()).isEqualTo(Duration.ofDays(21));
+        assertThat(threeWeeks.overdueBy()).isGreaterThan(oneDay.overdueBy());
+    }
+
+    /**
+     * Null, not zero. "Not overdue" and "overdue by nothing" are different claims, and a
+     * zero would sort alongside genuinely-just-breached cases.
+     */
+    @Test
+    @DisplayName("ihlal yoksa aşım süresi yok — sıfır değil")
+    void nothingOverdueReportsNoDistanceRatherThanZero() {
+        var clock = clockAt(NOW);
+        assertThat(clock.acknowledgement(NOW.minus(Duration.ofDays(3)), null).overdueBy()).isNull();
+        assertThat(clock.acknowledgement(NOW.minus(Duration.ofDays(30)),
+                NOW.minus(Duration.ofDays(29))).overdueBy()).isNull();
+        assertThat(clock.acknowledgement(null, null).overdueBy()).isNull();
+    }
+
     @Test
     @DisplayName("son tarih açılış anından hesaplanır")
     void theDeadlineIsDerivedFromWhenTheCaseWasOpened() {
