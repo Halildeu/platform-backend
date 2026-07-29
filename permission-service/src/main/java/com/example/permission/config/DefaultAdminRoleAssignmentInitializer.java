@@ -39,7 +39,22 @@ public class DefaultAdminRoleAssignmentInitializer implements CommandLineRunner 
     private final List<String> adminEmails;
     private final int maxAttempts;
     private final long retryDelayMs;
+    /**
+     * The only declaration that permits granting. Deliberately a literal a human has to
+     * type into deployment config after checking which id space the table actually holds.
+     */
+    static final String CANONICAL_ID_SPACE = "canonical";
+
     private final String userTable;
+    /**
+     * Whether the configured table is the same id space authorization is resolved in.
+     *
+     * <p>Only the literal {@code canonical} lets this bootstrap grant anything. The default
+     * is {@code unverified} and refuses, because the mistake this guards against does not
+     * look like a failure: the lookup succeeds, returns a number, and the number belongs to
+     * somebody else.
+     */
+    private final String userTableIdSpace;
     private final OpenFgaAuthzService openFgaAuthzService;
 
     public DefaultAdminRoleAssignmentInitializer(
@@ -51,6 +66,7 @@ public class DefaultAdminRoleAssignmentInitializer implements CommandLineRunner 
             @Value("${permission.bootstrap.default-admin-assignments.max-attempts:10}") int maxAttempts,
             @Value("${permission.bootstrap.default-admin-assignments.retry-delay-ms:2000}") long retryDelayMs,
             @Value("${permission.bootstrap.default-admin-assignments.user-table:users}") String userTable,
+            @Value("${permission.bootstrap.default-admin-assignments.user-table-id-space:unverified}") String userTableIdSpace,
             @Nullable OpenFgaAuthzService openFgaAuthzService
     ) {
         this.jdbcTemplate = jdbcTemplate;
@@ -61,6 +77,7 @@ public class DefaultAdminRoleAssignmentInitializer implements CommandLineRunner 
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retryDelayMs = Math.max(0L, retryDelayMs);
         this.userTable = normalizeTableName(userTable);
+        this.userTableIdSpace = userTableIdSpace == null ? "" : userTableIdSpace.trim().toLowerCase(Locale.ROOT);
         this.openFgaAuthzService = openFgaAuthzService;
     }
 
@@ -71,6 +88,24 @@ public class DefaultAdminRoleAssignmentInitializer implements CommandLineRunner 
         }
         if (adminEmails.isEmpty()) {
             log.info("Default admin role assignment bootstrap atlandi: email listesi bos.");
+            return;
+        }
+        // This bootstrap turns an email into a number and grants ADMIN to that number. The
+        // number only means anything if the table it came from is the same id space
+        // authorization is resolved in — and on this cell it was not: the lookup ran against
+        // `permission_db.users` while every authorization decision resolves ids through the
+        // user directory. `admin@example.com` was id 1 in one and a different person was id 1
+        // in the other, so the grant (plus `organization:default#admin`) landed on somebody
+        // nobody had chosen, and rewrote itself on every restart.
+        //
+        // Refusing by default is the point. The failure it guards against does not look like
+        // a failure: the query succeeds, returns a row, and the row is the wrong human.
+        if (!CANONICAL_ID_SPACE.equals(userTableIdSpace)) {
+            log.error("Default admin role assignment bootstrap REDDEDILDI: '{}' tablosunun id uzayi "
+                    + "dogrulanmadi (user-table-id-space='{}'). Bu bootstrap e-postayi sayiya cevirip o "
+                    + "sayiya ADMIN veriyor; sayinin anlami tablonun yetki cozumleriyle ayni id uzayinda "
+                    + "olmasina bagli. Dogrulanana kadar hicbir atama yapilmaz. Beklenen deger: '{}'.",
+                    userTable, userTableIdSpace.isEmpty() ? "<bos>" : userTableIdSpace, CANONICAL_ID_SPACE);
             return;
         }
 

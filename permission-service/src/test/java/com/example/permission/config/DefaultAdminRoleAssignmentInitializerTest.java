@@ -47,6 +47,7 @@ class DefaultAdminRoleAssignmentInitializerTest {
                 1,
                 0,
                 "users",
+                DefaultAdminRoleAssignmentInitializer.CANONICAL_ID_SPACE,
                 null
         );
 
@@ -83,6 +84,7 @@ class DefaultAdminRoleAssignmentInitializerTest {
                 1,
                 0,
                 "users",
+                DefaultAdminRoleAssignmentInitializer.CANONICAL_ID_SPACE,
                 null
         );
 
@@ -114,6 +116,7 @@ class DefaultAdminRoleAssignmentInitializerTest {
                 1,
                 0,
                 "user_service.users",
+                DefaultAdminRoleAssignmentInitializer.CANONICAL_ID_SPACE,
                 null
         );
 
@@ -149,6 +152,7 @@ class DefaultAdminRoleAssignmentInitializerTest {
                 1,
                 0,
                 "users",
+                DefaultAdminRoleAssignmentInitializer.CANONICAL_ID_SPACE,
                 authzService
         );
 
@@ -187,6 +191,7 @@ class DefaultAdminRoleAssignmentInitializerTest {
                 1,
                 0,
                 "users",
+                DefaultAdminRoleAssignmentInitializer.CANONICAL_ID_SPACE,
                 authzService
         );
 
