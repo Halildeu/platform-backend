@@ -218,6 +218,7 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         fields.put("byteLength", Integer.toString(e.byteLength()));
         fields.put("correlationId", nullSafe(e.correlationId()));
         fields.put("forwardedAtMs", Long.toString(e.forwardedAtMs()));
+        fields.put("timestampMs", Long.toString(e.forwardedAtMs()));
         fields.put("computePlane", nullSafe(e.computePlane()));
 
         try {
@@ -243,6 +244,7 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         fields.put("requestedLimit", Integer.toString(e.requestedLimit()));
         fields.put("correlationId", nullSafe(e.correlationId()));
         fields.put("accessedAtMs", Long.toString(e.accessedAtMs()));
+        fields.put("timestampMs", Long.toString(e.accessedAtMs()));
 
         try {
             final MapRecord<String, String, String> record =

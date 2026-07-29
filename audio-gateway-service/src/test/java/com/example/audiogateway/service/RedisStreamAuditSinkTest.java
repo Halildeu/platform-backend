@@ -310,6 +310,7 @@ class RedisStreamAuditSinkTest {
                 .containsEntry("byteLength", "320")
                 .containsEntry("correlationId", "corr-forward")
                 .containsEntry("forwardedAtMs", "4000")
+                .containsEntry("timestampMs", "4000")
                 .containsEntry("computePlane", "live-stt");
     }
 
@@ -352,7 +353,8 @@ class RedisStreamAuditSinkTest {
                 .containsEntry("afterCursor", "1680000000000-0")
                 .containsEntry("requestedLimit", "50")
                 .containsEntry("correlationId", "corr-transcript")
-                .containsEntry("accessedAtMs", "5000");
+                .containsEntry("accessedAtMs", "5000")
+                .containsEntry("timestampMs", "5000");
     }
 
     @SuppressWarnings("unchecked")
