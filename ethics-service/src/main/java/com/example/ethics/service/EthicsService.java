@@ -197,7 +197,10 @@ public class EthicsService {
                 item.getCreatedAt(),item.getUpdatedAt(),onCase.size(),
                 sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).dueAt(),
                 sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).state().name(),
-                sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).wasLate());
+                sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).wasLate(),
+                sla.feedback(item.getCreatedAt(),item.getClosedAt()).dueAt(),
+                sla.feedback(item.getCreatedAt(),item.getClosedAt()).state().name(),
+                sla.feedback(item.getCreatedAt(),item.getClosedAt()).wasLate());
     }
 
     /**
@@ -616,7 +619,10 @@ public class EthicsService {
             participantCount,
             sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).dueAt(),
             sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).state().name(),
-            sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).wasLate());}
+            sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).wasLate(),
+            sla.feedback(c.getCreatedAt(),c.getClosedAt()).dueAt(),
+            sla.feedback(c.getCreatedAt(),c.getClosedAt()).state().name(),
+            sla.feedback(c.getCreatedAt(),c.getClosedAt()).wasLate());}
     private static MessageResponse messageResponse(EthicsMessage m){return new MessageResponse(m.getId(),m.getAuthorType(),m.getVisibility(),m.getBody(),m.getCreatedAt());}
     /** @see CaseLifecycle#reporterVisibleStatus — one implementation, so the two cannot drift. */
     private static String reporterVisibleStatus(String status){ return CaseLifecycle.reporterVisibleStatus(status); }

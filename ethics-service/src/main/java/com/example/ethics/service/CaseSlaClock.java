@@ -54,6 +54,37 @@ public class CaseSlaClock {
 
     public record Acknowledgement(AcknowledgementState state, Instant dueAt, boolean wasLate) {}
 
+    /**
+     * Where a case stands against the obligation to give the reporter feedback.
+     *
+     * <p>Modelled on closure rather than on any staff message, and the distinction matters.
+     * Closing a case requires a reporter-facing closing message — staff-authored prose about
+     * what was found — so a closed case is a case where the reporter was told the outcome.
+     * A mid-investigation note is contact, not feedback on action taken.
+     *
+     * <p>This is the conservative reading: it can report a breach for a case whose reporter
+     * has in fact been kept informed, but it cannot report compliance for one who has heard
+     * nothing. Between over- and under-reporting a legal obligation, only one direction is
+     * safe.
+     */
+    public Feedback feedback(Instant createdAt, Instant closedAt) {
+        if (createdAt == null) {
+            return new Feedback(FeedbackState.UNKNOWN, null, false);
+        }
+        Instant dueAt = createdAt.plus(properties.feedbackWithin());
+        if (closedAt != null) {
+            return new Feedback(FeedbackState.MET, dueAt, closedAt.isAfter(dueAt));
+        }
+        return clock.instant().isAfter(dueAt)
+                ? new Feedback(FeedbackState.BREACHED, dueAt, false)
+                : new Feedback(FeedbackState.PENDING, dueAt, false);
+    }
+
+    /** Mirrors {@link AcknowledgementState}; the two obligations are separate and can differ. */
+    public enum FeedbackState { MET, PENDING, BREACHED, UNKNOWN }
+
+    public record Feedback(FeedbackState state, Instant dueAt, boolean wasLate) {}
+
     public Acknowledgement acknowledgement(Instant createdAt, Instant acknowledgedAt) {
         if (createdAt == null) {
             return new Acknowledgement(AcknowledgementState.UNKNOWN, null, false);
