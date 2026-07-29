@@ -10,6 +10,7 @@ import com.example.ethics.audit.AuditOutboxWorker;
 import com.example.ethics.audit.EthicsAuditIntegrityVerifier;
 import com.example.ethics.model.AuditOutbox;
 import com.example.ethics.repository.AuditOutboxRepository;
+import com.example.ethics.repository.AuditScopeRepository;
 import com.example.ethics.repository.WormAuditRepository;
 import com.example.ethics.repository.ReporterAccessGrantRepository;
 import com.example.ethics.service.EthicsService;
@@ -47,6 +48,7 @@ class EthicsPostgresIntegrationTest {
     @Autowired EthicsService service;
     @Autowired AuditOutboxRepository auditOutbox;
     @Autowired WormAuditRepository wormAudit;
+    @Autowired AuditScopeRepository auditScope;
     @Autowired AuditOutboxWorker auditWorker;
     @Autowired EthicsAuditIntegrityVerifier integrityVerifier;
     @Autowired ObjectMapper objectMapper;
@@ -92,15 +94,80 @@ class EthicsPostgresIntegrationTest {
         assertThat(replayCycle.claimed()).isZero();
         assertThat(wormAudit.count()).isEqualTo(afterFirstDelivery);
 
+        // Schema-qualified, and asserted on the reason. Unqualified these two statements failed
+        // with "relation does not exist" — raw JDBC does not carry Hibernate's default schema —
+        // so the immutability proof was passing on a typo rather than on the trigger. Everything
+        // else in this file was already qualified; these two were not.
         assertThatThrownBy(() -> jdbc.update(
-                "UPDATE ethics_worm_audit SET payload = payload WHERE seq = ?",
+                "UPDATE ethics_service.ethics_worm_audit SET payload = payload WHERE seq = ?",
                 ledger.getSeq()))
-                .isInstanceOf(DataAccessException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("append-only");
         assertThatThrownBy(() -> jdbc.update(
-                "DELETE FROM ethics_worm_audit WHERE seq = ?",
+                "DELETE FROM ethics_service.ethics_worm_audit WHERE seq = ?",
                 ledger.getSeq()))
-                .isInstanceOf(DataAccessException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("append-only");
         assertThat(wormAudit.findBySourceOutboxId(created.getId())).isPresent();
+    }
+
+    /**
+     * Faz 35 ES-302 — every ledger row is classified as it is written (#884).
+     *
+     * <p>V10 classified the ledger by backfill and V11 asserted the result was complete. Both
+     * ran once. Nothing classified the rows written afterwards, so coverage was true at the
+     * instant of the migration and would have decayed from the next case event onward —
+     * invisibly, because the only assertion lives in a migration that never runs again.
+     * Measured on the test cell before this change: 430 ledger rows, 430 classified, zero
+     * written since. The hole was empty only because nothing had happened yet.
+     *
+     * <p>That decay is not repairable later. The classification is derived from the ledger
+     * row's parents and erasure destroys them, so an unclassified row permanently cannot
+     * answer "was every record of this case erased?" — the one question it exists for.
+     *
+     * <p>Asserted on the production engine because the whole delivery path is Postgres-only:
+     * the claim uses {@code FOR UPDATE SKIP LOCKED} and the append takes an advisory lock.
+     */
+    @Test
+    void everyLedgerRowIsClassifiedAsItIsAppended() {
+        var request = new CreateReportRequest(
+                ReportMode.ANONYMOUS,
+                ReportCategory.OTHER,
+                "Sinif landirma kapsami",
+                "Defter satiri yazildigi anda siniflandirilmali",
+                "tr",
+                "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_scope1",
+                "tr-test-pilot-v1");
+        var known = new HashSet<>(auditOutbox.findAll().stream().map(AuditOutbox::getId).toList());
+        service.createReport(
+                "etik.acik.com",
+                "audit-scope-" + UUID.randomUUID(),
+                request);
+        AuditOutbox enqueued = auditOutbox.findAll().stream()
+                .filter(row -> !known.contains(row.getId()))
+                .findFirst()
+                .orElseThrow();
+        UUID caseId = enqueued.getAggregateId();
+
+        auditWorker.runCycle();
+
+        var classification = jdbc.queryForMap("""
+                SELECT s.aggregate_type, s.root_case_id, s.classified_by
+                  FROM ethics_service.ethics_audit_scope s
+                  JOIN ethics_service.ethics_worm_audit w ON w.id = s.worm_audit_id
+                 WHERE w.aggregate_id = ?
+                   AND w.event_type = 'ethics.report.created'
+                """, caseId);
+        assertThat(classification.get("aggregate_type")).isEqualTo("CASE");
+        assertThat(classification.get("root_case_id")).hasToString(caseId.toString());
+        assertThat(classification.get("classified_by")).isEqualTo(AuditScopeRepository.WRITER);
+
+        // The invariant itself, asserted after new rows exist — the case V11 structurally
+        // cannot cover, since it reports on the ledger as it stood during the migration.
+        assertThat(auditScope.countUnclassifiedLedgerRows())
+                .as("siniflandirilmamis defter satiri var - silme makbuzu bu satirlar icin "
+                        + "artik dogrulanamaz")
+                .isZero();
     }
 
     @Test
