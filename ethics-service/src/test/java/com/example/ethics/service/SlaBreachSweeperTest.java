@@ -1,0 +1,167 @@
+package com.example.ethics.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.example.ethics.config.EthicsSlaProperties;
+import com.example.ethics.model.EthicsCase;
+import com.example.ethics.notification.NotificationOutboxPublisher;
+import com.example.ethics.repository.EthicsCaseRepository;
+import com.example.ethics.repository.NotificationOutboxRepository;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Faz 35 ES-301 — the organisation is told when it has missed a legal deadline (#882).
+ *
+ * <p>Both existing notification events fire when a reporter acts. Nothing fired when the
+ * organisation failed to act, which on the live cell meant fifty-one breached
+ * acknowledgements and no message anywhere.
+ */
+class SlaBreachSweeperTest {
+
+    private static final Instant NOW = Instant.parse("2026-07-29T12:00:00Z");
+    private static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000001");
+
+    private EthicsCaseRepository cases;
+    private NotificationOutboxRepository outbox;
+    private NotificationOutboxPublisher notifications;
+
+    @BeforeEach
+    void setUp() {
+        cases = mock(EthicsCaseRepository.class);
+        outbox = mock(NotificationOutboxRepository.class);
+        notifications = mock(NotificationOutboxPublisher.class);
+        when(outbox.existsByOrgIdAndEventTypeAndCreatedAtAfter(any(), anyString(), any()))
+                .thenReturn(false);
+    }
+
+    private SlaBreachSweeper sweeper() {
+        var sla = new CaseSlaClock(
+                new EthicsSlaProperties(Duration.ofDays(7), Duration.ofDays(90)),
+                Clock.fixed(NOW, ZoneOffset.UTC));
+        return new SlaBreachSweeper(
+                cases, outbox, notifications, sla, ORG, Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
+    private EthicsCase caseCreatedAt(Instant createdAt, Instant acknowledgedAt) {
+        var item = mock(EthicsCase.class);
+        when(item.getCreatedAt()).thenReturn(createdAt);
+        when(item.getAcknowledgedAt()).thenReturn(acknowledgedAt);
+        when(item.getClosedAt()).thenReturn(null);
+        return item;
+    }
+
+    @Test
+    @DisplayName("süresi geçmiş yükümlülük varsa sinyal üretilir")
+    void anOverdueObligationProducesASignal() {
+        var overdue = caseCreatedAt(NOW.minus(Duration.ofDays(9)), null);
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(overdue));
+
+        sweeper().sweep();
+
+        verify(notifications).enqueue(eq(ORG), eq(NotificationOutboxPublisher.SLA_BREACH), any());
+    }
+
+    @Test
+    @DisplayName("süre içindeyken sinyal üretilmez")
+    void nothingOverdueProducesNoSignal() {
+        var inWindow = caseCreatedAt(NOW.minus(Duration.ofDays(3)), null);
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(inWindow));
+
+        sweeper().sweep();
+
+        verify(notifications, never()).enqueue(any(), anyString(), any());
+    }
+
+    /**
+     * The property the whole design rests on. Fifty-one breaches must not become fifty-one
+     * notifications: a channel that floods on the first bad day is a channel people mute,
+     * after which the fifty-second breach is no louder than silence.
+     */
+    @Test
+    @DisplayName("elli bir ihlal elli bir bildirim üretmez")
+    void manyBreachesProduceOneSignal() {
+        var many = new java.util.ArrayList<EthicsCase>();
+        for (int i = 0; i < 51; i++) {
+            many.add(caseCreatedAt(NOW.minus(Duration.ofDays(9 + i)), null));
+        }
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(many);
+
+        sweeper().sweep();
+
+        verify(notifications, org.mockito.Mockito.times(1))
+                .enqueue(eq(ORG), eq(NotificationOutboxPublisher.SLA_BREACH), any());
+    }
+
+    @Test
+    @DisplayName("aynı gün ikinci sinyal gönderilmez")
+    void aSecondSignalIsSuppressedWithinTheDay() {
+        var overdue = caseCreatedAt(NOW.minus(Duration.ofDays(9)), null);
+        when(outbox.existsByOrgIdAndEventTypeAndCreatedAtAfter(
+                eq(ORG), eq(NotificationOutboxPublisher.SLA_BREACH), any()))
+                .thenReturn(true);
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(overdue));
+
+        sweeper().sweep();
+
+        verify(notifications, never()).enqueue(any(), anyString(), any());
+    }
+
+    /**
+     * Suppression must not cost a scan. Checking the outbox first is what keeps a
+     * fifteen-minute sweep from reading every case in the organisation ninety-six times a
+     * day for a signal it will not send.
+     */
+    @Test
+    @DisplayName("bastırılmış turda vakalar hiç okunmaz")
+    void aSuppressedSweepDoesNotReadTheCases() {
+        when(outbox.existsByOrgIdAndEventTypeAndCreatedAtAfter(any(), anyString(), any()))
+                .thenReturn(true);
+
+        sweeper().sweep();
+
+        verify(cases, never()).findAllByOrgIdOrderByUpdatedAtDesc(any());
+    }
+
+    /** Geri bildirim yükümlülüğü de tetikler; iki borç ayrı ama sinyal ortak. */
+    @Test
+    @DisplayName("geri bildirim süresi geçmişse de sinyal üretilir")
+    void anOverdueFeedbackObligationAlsoSignals() {
+        var item = mock(EthicsCase.class);
+        when(item.getCreatedAt()).thenReturn(NOW.minus(Duration.ofDays(120)));
+        when(item.getAcknowledgedAt()).thenReturn(NOW.minus(Duration.ofDays(119)));
+        when(item.getClosedAt()).thenReturn(null);
+        when(cases.findAllByOrgIdOrderByUpdatedAtDesc(ORG)).thenReturn(List.of(item));
+
+        sweeper().sweep();
+
+        verify(notifications).enqueue(eq(ORG), eq(NotificationOutboxPublisher.SLA_BREACH), any());
+    }
+
+    /**
+     * The outbox contract: the signal names the organisation and the event type, and nothing
+     * else. A case id here would put case-level facts into a transport deliberately kept
+     * free of them.
+     */
+    @Test
+    @DisplayName("sinyal vaka kimliği taşımaz")
+    void theSignalCarriesNoCaseIdentifier() {
+        assertThat(NotificationOutboxPublisher.class.getDeclaredMethods())
+                .filteredOn(m -> m.getName().equals("enqueue"))
+                .allSatisfy(m -> assertThat(m.getParameterTypes()).hasSize(3));
+    }
+}

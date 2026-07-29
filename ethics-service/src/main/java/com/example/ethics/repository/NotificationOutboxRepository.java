@@ -168,4 +168,7 @@ public interface NotificationOutboxRepository extends JpaRepository<Notification
             @Param("claimToken") UUID claimToken,
             @Param("lockedUntil") Instant lockedUntil,
             @Param("errorCode") String errorCode);
+
+    /** Whether a signal of this type already exists for the org since the given instant. */
+    boolean existsByOrgIdAndEventTypeAndCreatedAtAfter(UUID orgId, String eventType, Instant since);
 }
