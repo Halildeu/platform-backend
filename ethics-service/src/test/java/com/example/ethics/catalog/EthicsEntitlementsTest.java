@@ -179,4 +179,60 @@ class EthicsEntitlementsTest {
         assertThat(entitlements.has(ORG, null)).isFalse();
         verify(subscriptions, never()).findAllByOrgIdAndActiveTrue(any());
     }
+
+    /**
+     * The distinction the informational view exists for: an unreadable store must not be
+     * reported to the customer as "you hold nothing".
+     *
+     * <p>Enforcement stays closed either way — {@link EthicsEntitlements#has} answers false —
+     * but a screen that renders "no subscription" during an outage is not being careful, it is
+     * being wrong, and it invites someone to re-buy what they already own or to report a
+     * capability as revoked.
+     */
+    @Test
+    @DisplayName("depo okunamazken cevap boş DEĞİL, belirsiz olarak işaretlenir")
+    void anUnreadableStoreIsReportedAsUnknownRatherThanEmpty() {
+        when(subscriptions.findAllByOrgIdAndActiveTrue(ORG))
+                .thenThrow(new RuntimeException("entitlement store unreachable"));
+        var entitlements = at(NOW);
+
+        var holding = entitlements.holding(ORG);
+
+        assertThat(holding.authoritative()).as("kesinlik iddiası kaldı").isFalse();
+        assertThat(holding.productIds()).isEmpty();
+        assertThat(holding.capabilities()).isEmpty();
+        // The enforcement path is unaffected: still closed.
+        assertThat(entitlements.has(ORG, EthicsCapability.EVIDENCE_ATTACHMENTS)).isFalse();
+    }
+
+    /** Within the TTL a cached answer is still an answer, outage or not. */
+    @Test
+    @DisplayName("TTL içinde önbellekli cevap kesin sayılır")
+    void aCachedAnswerStaysAuthoritativeDuringAnOutage() {
+        var movable = new MovableClock(NOW);
+        var entitlements = new EthicsEntitlements(subscriptions, catalog, movable);
+        when(subscriptions.findAllByOrgIdAndActiveTrue(ORG))
+                .thenReturn(List.of(held("etik-speak-plus")));
+        assertThat(entitlements.holding(ORG).authoritative()).isTrue();
+
+        when(subscriptions.findAllByOrgIdAndActiveTrue(ORG))
+                .thenThrow(new RuntimeException("entitlement store unreachable"));
+        movable.advance(Duration.ofMinutes(5));
+
+        var holding = entitlements.holding(ORG);
+        assertThat(holding.authoritative()).isTrue();
+        assertThat(holding.productIds()).containsExactly("etik-speak-plus");
+    }
+
+    /** What the customer is shown is derived from the catalog, not stored per organisation. */
+    @Test
+    @DisplayName("yetenekler üründen türetilir")
+    void capabilitiesAreDerivedFromTheProduct() {
+        when(subscriptions.findAllByOrgIdAndActiveTrue(ORG))
+                .thenReturn(List.of(held("etik-speak-core")));
+
+        assertThat(at(NOW).holding(ORG).capabilities())
+                .containsExactlyInAnyOrder(
+                        EthicsCapability.EVIDENCE_ATTACHMENTS, EthicsCapability.SLA_NOTIFICATIONS);
+    }
 }

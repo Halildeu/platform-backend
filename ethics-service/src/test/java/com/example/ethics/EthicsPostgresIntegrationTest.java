@@ -49,6 +49,7 @@ class EthicsPostgresIntegrationTest {
     @Autowired AuditOutboxRepository auditOutbox;
     @Autowired WormAuditRepository wormAudit;
     @Autowired AuditScopeRepository auditScope;
+    @Autowired com.example.ethics.audit.AuditDeliveryService auditDelivery;
     @Autowired AuditOutboxWorker auditWorker;
     @Autowired EthicsAuditIntegrityVerifier integrityVerifier;
     @Autowired ObjectMapper objectMapper;
@@ -287,5 +288,54 @@ class EthicsPostgresIntegrationTest {
         assertThat(jdbc.queryForObject(
                 "SELECT COUNT(*) FROM ethics_service.ethics_evidence_derivations WHERE attachment_id = ?",
                 Long.class, attachmentId)).isEqualTo(1L);
+    }
+
+    /**
+     * ES-403 (#885) — a subscription event is classified ORG on the production engine.
+     *
+     * <p>The derivation lives in one SQL statement shared by every writer, so the only way to
+     * know it resolves a subscription aggregate correctly is to append one and look. Left
+     * unhandled it would fall through to UNRESOLVED — the label reserved for a parent that was
+     * already gone — and an erasure receipt could not tell the two apart.
+     */
+    @Test
+    void anOrgScopedLedgerRowIsClassifiedAsOrg() {
+        UUID orgId = UUID.fromString("00000000-0000-0000-0000-0000000008a5");
+        UUID subscriptionId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_org_subscription
+                    (id, org_id, product_id, active, granted_at)
+                VALUES (?, ?, 'etik-speak-core', true, now())
+                """, subscriptionId, orgId);
+
+        UUID outboxId = UUID.randomUUID();
+        UUID claim = UUID.randomUUID();
+        // Truncated to microseconds like every other timestamp on this path. Postgres stores
+        // microseconds; Instant.now() carries nanoseconds on Linux and usually not on macOS,
+        // so an untruncated value round-trips unequal and the claim fence rejects the caller —
+        // green locally, red on CI. EthicsAuditChain.normalizeTimestamp exists for this.
+        Instant now = com.example.ethics.audit.EthicsAuditChain.normalizeTimestamp(Instant.now());
+        Instant lockedUntil = com.example.ethics.audit.EthicsAuditChain
+                .normalizeTimestamp(now.plusSeconds(60));
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_audit_outbox
+                    (id, org_id, aggregate_id, event_type, payload, status, created_at,
+                     attempt_count, claim_token, locked_until)
+                VALUES (?, ?, ?, 'ethics.subscription.granted', '{}', 'PROCESSING', now(), 1, ?, ?)
+                """, outboxId, orgId, subscriptionId, claim, Timestamp.from(lockedUntil));
+
+        auditDelivery.deliver(outboxId, claim, lockedUntil, now);
+
+        var classification = jdbc.queryForMap("""
+                SELECT s.aggregate_type, s.root_case_id
+                  FROM ethics_service.ethics_audit_scope s
+                  JOIN ethics_service.ethics_worm_audit w ON w.id = s.worm_audit_id
+                 WHERE w.aggregate_id = ?
+                """, subscriptionId);
+        assertThat(classification.get("aggregate_type")).isEqualTo("ORG");
+        assertThat(classification.get("root_case_id"))
+                .as("kurum kapsamli satir kok vaka tasiyor")
+                .isNull();
+        assertThat(auditScope.countUnclassifiedLedgerRows()).isZero();
     }
 }

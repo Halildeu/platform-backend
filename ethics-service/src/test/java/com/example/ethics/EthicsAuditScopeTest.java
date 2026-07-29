@@ -142,4 +142,42 @@ class EthicsAuditScopeTest {
                 .as("defterde karşılığı olmayan satır sınıflandırılabildi")
                 .isInstanceOf(Exception.class);
     }
+
+    /**
+     * ES-403 (#885) — an org-scoped row is recorded as ORG, not as "could not be determined".
+     *
+     * <p>Before V16 a subscription event would have landed as UNRESOLVED, which is the label
+     * for a parent that was already gone. An erasure receipt reading that word cannot tell the
+     * two apart, and would report a gap for rows that were never case-scoped at all.
+     */
+    @Test
+    @DisplayName("kurum kapsamlı olay ORG olarak kaydedilir, kök vaka taşımaz")
+    void anOrgScopedRowIsRecordedAsOrgWithoutARootCase() {
+        UUID worm = seedWormRow();
+        classify(worm, "ORG", null);
+
+        assertThat(jdbc.queryForObject(
+                "select aggregate_type from ethics_audit_scope where worm_audit_id = ?",
+                String.class, worm))
+                .isEqualTo("ORG");
+    }
+
+    /** The rule stayed an equivalence, so ORG cannot smuggle in a case either. */
+    @Test
+    @DisplayName("ORG satırı kök vaka ile kaydedilemez")
+    void anOrgRowCannotCarryARootCase() {
+        UUID worm = seedWormRow();
+        assertThatThrownBy(() -> classify(worm, "ORG", UUID.randomUUID()))
+                .as("ORG satırına kök vaka iliştirilebildi")
+                .isInstanceOf(Exception.class);
+    }
+
+    /** A type nobody handles is still refused; widening the vocabulary did not open it. */
+    @Test
+    @DisplayName("bilinmeyen tür hâlâ reddedilir")
+    void anUnknownAggregateTypeIsStillRefused() {
+        UUID worm = seedWormRow();
+        assertThatThrownBy(() -> classify(worm, "SUBSCRIPTION", null))
+                .isInstanceOf(Exception.class);
+    }
 }
