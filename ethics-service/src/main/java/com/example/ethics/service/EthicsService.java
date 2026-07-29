@@ -24,6 +24,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class EthicsService {
     private final EthicsProperties properties;
+    private final CaseSlaClock sla;
     private final SecretHasher secrets;
     private final EthicsCaseRepository cases;
     private final EthicsReportRepository reports;
@@ -53,7 +54,9 @@ public class EthicsService {
             NotificationOutboxPublisher notifications,
             CaseParticipantRepository participants,
             ParticipantHandles handles,
-            UserDirectoryClient directory) {
+            UserDirectoryClient directory,
+            CaseSlaClock sla) {
+        this.sla=sla;
         this.handles=handles;
         this.directory=directory;
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
@@ -191,7 +194,10 @@ public class EthicsService {
         boolean named=!onCase.isEmpty();
         return new CaseDetail(item.getId(),item.getStatus(),named?null:item.getAssignedTo(),item.getVersion(),report.getMode(),report.getCategory(),report.getSubject(),report.getNarrative(),all,
                 item.getAcknowledgedAt(),item.getOutcome(),item.getClosedAt(),
-                item.getCreatedAt(),item.getUpdatedAt(),onCase.size());
+                item.getCreatedAt(),item.getUpdatedAt(),onCase.size(),
+                sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).dueAt(),
+                sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).state().name(),
+                sla.acknowledgement(item.getCreatedAt(),item.getAcknowledgedAt()).wasLate());
     }
 
     /**
@@ -607,7 +613,10 @@ public class EthicsService {
             report==null?null:report.getSubject(),
             report==null?null:report.getCategory(),
             report==null?null:report.getMode(),
-            participantCount);}
+            participantCount,
+            sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).dueAt(),
+            sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).state().name(),
+            sla.acknowledgement(c.getCreatedAt(),c.getAcknowledgedAt()).wasLate());}
     private static MessageResponse messageResponse(EthicsMessage m){return new MessageResponse(m.getId(),m.getAuthorType(),m.getVisibility(),m.getBody(),m.getCreatedAt());}
     /** @see CaseLifecycle#reporterVisibleStatus — one implementation, so the two cannot drift. */
     private static String reporterVisibleStatus(String status){ return CaseLifecycle.reporterVisibleStatus(status); }
