@@ -78,6 +78,31 @@ class DirectSttTranscriptResultStreamConsumerTest {
 
     @SuppressWarnings("unchecked")
     @Test
+    void ignoredUtteranceProjectionIsAcknowledgedWithoutDlq() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        StreamOperations<String, Object, Object> streamOps = mock(StreamOperations.class);
+        when(redis.opsForStream()).thenReturn(streamOps);
+        DirectSttTranscriptResultHandler handler = mock(DirectSttTranscriptResultHandler.class);
+        when(handler.handle(any(), any()))
+                .thenReturn(DirectSttTranscriptResultHandler.HandleOutcome
+                        .ignored("NON_CANONICAL_UTTERANCE"));
+        DirectSttTranscriptResultStreamConsumer consumer = new DirectSttTranscriptResultStreamConsumer(
+                redis, handler, new DirectSttTranscriptResultConsumerProperties());
+        Map<String, Object> fields = new LinkedHashMap<>(DirectSttTranscriptResultEventTest.validFields());
+        fields.put("status", DirectSttTranscriptResultEvent.STATUS_UTTERANCE);
+        MapRecord<String, String, Object> record = StreamRecords
+                .mapBacked(fields)
+                .withStreamKey("transcript:direct-stt-results");
+
+        consumer.handleRecord(record);
+
+        verify(streamOps, never()).add(any(MapRecord.class));
+        verify(streamOps).acknowledge(
+                "transcript:direct-stt-results", "transcript-service-v1", record.getId());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
     void exhaustedMappingWritesMetadataOnlyDlqThenAcknowledges() {
         StringRedisTemplate redis = mock(StringRedisTemplate.class);
         StreamOperations<String, Object, Object> streamOps = mock(StreamOperations.class);

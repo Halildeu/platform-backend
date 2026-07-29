@@ -28,6 +28,9 @@ public class DirectSttTranscriptResultHandler {
 
     public HandleOutcome handle(Map<String, String> fields, String entryId) {
         try {
+            if (DirectSttTranscriptResultEvent.isNonCanonicalUtterance(fields)) {
+                return HandleOutcome.ignored("NON_CANONICAL_UTTERANCE");
+            }
             DirectSttTranscriptResultEvent event = DirectSttTranscriptResultEvent.parse(fields, entryId);
             var association = associationService.resolve(event);
             return switch (association.result()) {
@@ -64,10 +67,15 @@ public class DirectSttTranscriptResultHandler {
         public static HandleOutcome dead(String reason) {
             return new HandleOutcome(Result.DEAD, reason);
         }
+
+        public static HandleOutcome ignored(String reason) {
+            return new HandleOutcome(Result.IGNORED, reason);
+        }
     }
 
     public enum Result {
         PROCESSED,
+        IGNORED,
         INVALID,
         PENDING,
         DEAD

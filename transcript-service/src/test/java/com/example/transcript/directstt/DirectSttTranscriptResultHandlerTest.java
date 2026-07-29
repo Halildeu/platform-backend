@@ -67,6 +67,60 @@ class DirectSttTranscriptResultHandlerTest {
     }
 
     @Test
+    void handleUtteranceProjectionSkipsCanonicalAssociationAndPersistence() {
+        Map<String, String> fields = DirectSttTranscriptResultEventTest.validFields();
+        fields.put("status", DirectSttTranscriptResultEvent.STATUS_UTTERANCE);
+
+        DirectSttTranscriptResultHandler.HandleOutcome outcome = handler.handle(fields, "1-0");
+
+        assertThat(outcome.result()).isEqualTo(DirectSttTranscriptResultHandler.Result.IGNORED);
+        assertThat(outcome.reason()).isEqualTo("NON_CANONICAL_UTTERANCE");
+        verify(associationService, never()).resolve(any(DirectSttTranscriptResultEvent.class));
+        verify(ingestionService, never()).upsert(any(), any());
+    }
+
+    @Test
+    void handleUnknownStatusRemainsInvalid() {
+        Map<String, String> fields = DirectSttTranscriptResultEventTest.validFields();
+        fields.put("status", "UNKNOWN");
+
+        DirectSttTranscriptResultHandler.HandleOutcome outcome = handler.handle(fields, "1-0");
+
+        assertThat(outcome.result()).isEqualTo(DirectSttTranscriptResultHandler.Result.INVALID);
+        assertThat(outcome.reason()).isEqualTo("status must be DRAFT");
+        verify(associationService, never()).resolve(any(DirectSttTranscriptResultEvent.class));
+        verify(ingestionService, never()).upsert(any(), any());
+    }
+
+    @Test
+    void handleUtteranceWithUnsupportedSchemaRemainsInvalid() {
+        Map<String, String> fields = DirectSttTranscriptResultEventTest.validFields();
+        fields.put("status", DirectSttTranscriptResultEvent.STATUS_UTTERANCE);
+        fields.put("schemaVersion", "unsupported.v2");
+
+        DirectSttTranscriptResultHandler.HandleOutcome outcome = handler.handle(fields, "1-0");
+
+        assertThat(outcome.result()).isEqualTo(DirectSttTranscriptResultHandler.Result.INVALID);
+        assertThat(outcome.reason()).isEqualTo("schemaVersion is not supported");
+        verify(associationService, never()).resolve(any(DirectSttTranscriptResultEvent.class));
+        verify(ingestionService, never()).upsert(any(), any());
+    }
+
+    @Test
+    void handleUtteranceWithUnsupportedEventTypeRemainsInvalid() {
+        Map<String, String> fields = DirectSttTranscriptResultEventTest.validFields();
+        fields.put("status", DirectSttTranscriptResultEvent.STATUS_UTTERANCE);
+        fields.put("eventType", "UNSUPPORTED");
+
+        DirectSttTranscriptResultHandler.HandleOutcome outcome = handler.handle(fields, "1-0");
+
+        assertThat(outcome.result()).isEqualTo(DirectSttTranscriptResultHandler.Result.INVALID);
+        assertThat(outcome.reason()).isEqualTo("eventType is not supported");
+        verify(associationService, never()).resolve(any(DirectSttTranscriptResultEvent.class));
+        verify(ingestionService, never()).upsert(any(), any());
+    }
+
+    @Test
     void retainedReplayIsTerminalSoConsumerCanDlqAndAck() {
         UUID canonicalSessionId = UUID.randomUUID();
         when(associationService.resolve(any(DirectSttTranscriptResultEvent.class)))

@@ -31,12 +31,32 @@ public record DirectSttTranscriptResultEvent(
     public static final String SCHEMA_VERSION = "audioGateway.directSttTranscriptResult.v1";
     public static final String EVENT_TYPE = "DIRECT_STT_TRANSCRIPT_RESULT";
     public static final String SOURCE_SYSTEM = "DIRECT_STT";
+    public static final String STATUS_DRAFT = "DRAFT";
+    public static final String STATUS_UTTERANCE = "UTTERANCE";
 
     private static final int MAX_SOURCE_ID_LEN = 128;
     private static final int MAX_CORRELATION_ID_LEN = 128;
     private static final int MAX_SHA256_LEN = 128;
     private static final Pattern DIRECT_STT_SESSION_ID =
             Pattern.compile("^SES-[A-Za-z0-9._:-]{1,124}$");
+
+    /**
+     * Returns whether this is a supported sentence-assembly projection.
+     *
+     * <p>UTTERANCE records are additive display projections of committed DRAFT
+     * fragments. They must be acknowledged by the canonical consumer without
+     * entering association or persistence, while unsupported envelopes still
+     * fail closed through the normal invalid-event path.
+     */
+    public static boolean isNonCanonicalUtterance(Map<String, String> fields) {
+        String status = optional(fields, "status", 32);
+        if (!STATUS_UTTERANCE.equals(status)) {
+            return false;
+        }
+        requireEquals(fields, "schemaVersion", SCHEMA_VERSION);
+        requireEquals(fields, "eventType", EVENT_TYPE);
+        return true;
+    }
 
     public static DirectSttTranscriptResultEvent parse(Map<String, String> fields, String entryId) {
         requireEquals(fields, "schemaVersion", SCHEMA_VERSION);
@@ -63,7 +83,7 @@ public record DirectSttTranscriptResultEvent(
             throw invalid("durationSeconds must be finite and >= 0");
         }
         String status = optional(fields, "status", 32);
-        if (status != null && !status.isBlank() && !"DRAFT".equals(status)) {
+        if (status != null && !status.isBlank() && !STATUS_DRAFT.equals(status)) {
             throw invalid("status must be DRAFT");
         }
         return new DirectSttTranscriptResultEvent(

@@ -125,6 +125,27 @@ class DirectSttTranscriptResultEventTest {
                 .hasMessageNotContaining("secret transcript phrase");
     }
 
+    @Test
+    void identifiesSupportedUtteranceProjectionWithoutParsingCanonicalFields() {
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("schemaVersion", DirectSttTranscriptResultEvent.SCHEMA_VERSION);
+        fields.put("eventType", DirectSttTranscriptResultEvent.EVENT_TYPE);
+        fields.put("status", DirectSttTranscriptResultEvent.STATUS_UTTERANCE);
+
+        assertThat(DirectSttTranscriptResultEvent.isNonCanonicalUtterance(fields)).isTrue();
+    }
+
+    @Test
+    void rejectsUtteranceProjectionWithUnsupportedEnvelope() {
+        Map<String, String> fields = validFields();
+        fields.put("status", DirectSttTranscriptResultEvent.STATUS_UTTERANCE);
+        fields.put("schemaVersion", "unsupported.v2");
+
+        assertThatThrownBy(() -> DirectSttTranscriptResultEvent.isNonCanonicalUtterance(fields))
+                .isInstanceOf(DirectSttTranscriptResultEvent.InvalidDirectSttTranscriptResultException.class)
+                .hasMessageContaining("schemaVersion");
+    }
+
     static Map<String, String> validFields() {
         Map<String, String> fields = new LinkedHashMap<>();
         fields.put("schemaVersion", "audioGateway.directSttTranscriptResult.v1");
@@ -143,7 +164,7 @@ class DirectSttTranscriptResultEventTest {
         fields.put("textDraft", "merhaba dunya");
         fields.put("textLength", "13");
         fields.put("durationSeconds", "1.2");
-        fields.put("status", "DRAFT");
+        fields.put("status", DirectSttTranscriptResultEvent.STATUS_DRAFT);
         return fields;
     }
 }

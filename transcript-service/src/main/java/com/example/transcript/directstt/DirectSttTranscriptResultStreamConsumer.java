@@ -207,6 +207,14 @@ public class DirectSttTranscriptResultStreamConsumer {
                 log.debug("Direct-STT transcript routed entryId={} sessionId={} chunkSeq={}",
                         entryId, fields.get("sessionId"), fields.get("chunkSeq"));
             }
+            case IGNORED -> {
+                ack(record);
+                meters.counter("transcript_direct_stt_ignored_total",
+                                "reason", safeReason(outcome.reason()))
+                        .increment();
+                log.debug("Direct-STT non-canonical projection ignored entryId={} sessionId={} status={}",
+                        entryId, fields.get("sessionId"), fields.get("status"));
+            }
             case PENDING -> {
                 meters.counter("transcript_direct_stt_pending_total", "reason", safeReason(outcome.reason()))
                         .increment();
