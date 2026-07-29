@@ -3,6 +3,7 @@ package com.example.ethics.service;
 import com.example.ethics.config.EthicsSlaProperties;
 import java.time.Clock;
 import java.time.Instant;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
@@ -24,6 +25,7 @@ public class CaseSlaClock {
     private final EthicsSlaProperties properties;
     private final Clock clock;
 
+    @Autowired
     public CaseSlaClock(EthicsSlaProperties properties) {
         this(properties, Clock.systemUTC());
     }
