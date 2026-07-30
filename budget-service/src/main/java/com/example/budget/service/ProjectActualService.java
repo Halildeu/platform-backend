@@ -41,6 +41,18 @@ public class ProjectActualService {
     private static final int PROVIDER_PAGE_SIZE = 1000;
     private static final int MAX_PROVIDER_PAGES = 1000;
     private static final BigDecimal RECONCILIATION_TOLERANCE = new BigDecimal("0.01");
+    private static final Set<String> SOURCE_DOCUMENT_KINDS = Set.of(
+            "PURCHASE_INVOICE",
+            "PURCHASE_RETURN",
+            "SALES_INVOICE",
+            "SALES_RETURN",
+            "OTHER_INVOICE",
+            "EXPENSE",
+            "STOCK_CONSUMPTION",
+            "DEPRECIATION",
+            "PAYROLL",
+            "TRANSFER",
+            "OTHER_SOURCE");
 
     private final JdbcTemplate jdbc;
     private final TenantDatabaseScope tenantScope;
@@ -1557,13 +1569,10 @@ public class ProjectActualService {
                 || line.sourceDocumentId() < 1
                 || line.sourceLineId() < 1
                 || line.lineOrdinal() < 1
-                || !"INVOICE".equals(line.documentType())
-                || !Set.of(
-                        "PURCHASE_INVOICE",
-                        "PURCHASE_RETURN",
-                        "SALES_INVOICE",
-                        "SALES_RETURN",
-                        "OTHER_INVOICE").contains(line.documentKind())
+                || line.documentType() == null
+                || line.documentType().isBlank()
+                || line.documentType().length() > 40
+                || !SOURCE_DOCUMENT_KINDS.contains(line.documentKind())
                 || line.netAmount() == null
                 || line.taxAmount() == null
                 || line.grossAmount() == null
