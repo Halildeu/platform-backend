@@ -349,7 +349,7 @@ class ProjectActualServicePostgresIntegrationTest {
                 operationalSourceLine(
                         7200L,
                         721L,
-                        "FIXED_ASSET",
+                        "DEPRECIATION",
                         "DEPRECIATION",
                         "Monthly depreciation",
                         "50.00")));
