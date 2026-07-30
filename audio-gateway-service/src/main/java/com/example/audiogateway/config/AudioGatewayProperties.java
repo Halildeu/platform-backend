@@ -717,6 +717,7 @@ public class AudioGatewayProperties {
             private String streamUrl = "";
             private int maxFrameBytes = 65_535;
             private int maxTerminalControlBytes = 64;
+            private int maxClientControlBytes = 4_096;
             private long readyTimeoutMs = 240_000L;
             private long terminalDrainTimeoutMs = 90_000L;
             private int sourceHistoryMaxBytes = 4_194_304;
@@ -753,6 +754,10 @@ public class AudioGatewayProperties {
                 if (maxTerminalControlBytes < 14 || maxTerminalControlBytes > 1_024) {
                     throw new IllegalStateException(
                             "audio.gateway.direct-stt.streaming.max-terminal-control-bytes must be in [14,1024]");
+                }
+                if (maxClientControlBytes < 64 || maxClientControlBytes > 4_096) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.max-client-control-bytes must be in [64,4096]");
                 }
                 if (readyTimeoutMs <= 0L || readyTimeoutMs > 600_000L) {
                     throw new IllegalStateException(
@@ -800,6 +805,14 @@ public class AudioGatewayProperties {
 
             public void setMaxTerminalControlBytes(final int maxTerminalControlBytes) {
                 this.maxTerminalControlBytes = maxTerminalControlBytes;
+            }
+
+            public int getMaxClientControlBytes() {
+                return maxClientControlBytes;
+            }
+
+            public void setMaxClientControlBytes(final int maxClientControlBytes) {
+                this.maxClientControlBytes = maxClientControlBytes;
             }
 
             public long getReadyTimeoutMs() {

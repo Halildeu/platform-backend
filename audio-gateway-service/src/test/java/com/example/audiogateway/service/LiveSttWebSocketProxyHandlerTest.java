@@ -34,7 +34,8 @@ class LiveSttWebSocketProxyHandlerTest {
     private static final String READY_EVENT = "{\"type\":\"ready\",\"sample_rate\":16000,"
             + "\"live_model\":\"fixture-live\",\"final_model\":\"fixture-final\","
             + "\"partial_mode\":\"stable-v1\",\"protocol\":\"source-ranges-v1\","
-            + "\"capabilities\":[\"eof\",\"source-ranges-v1\"],\"supports_eof\":true,"
+            + "\"capabilities\":[\"eof\",\"source-ranges-v1\",\"context-v1\"],"
+            + "\"supports_eof\":true,"
             + "\"terminal_timeout_ms\":60000}";
 
     private AudioSessionRegistry sessions;

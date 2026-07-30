@@ -91,7 +91,8 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     private static final String READY_EVENT = "{\"type\":\"ready\",\"sample_rate\":16000,"
             + "\"live_model\":\"fixture-live\",\"final_model\":\"fixture-final\","
             + "\"partial_mode\":\"stable-v1\",\"protocol\":\"source-ranges-v1\","
-            + "\"capabilities\":[\"eof\",\"source-ranges-v1\"],\"supports_eof\":true,"
+            + "\"capabilities\":[\"eof\",\"source-ranges-v1\",\"context-v1\"],"
+            + "\"supports_eof\":true,"
             + "\"terminal_timeout_ms\":60000}";
 
     private static String readyEvent(final long terminalTimeoutMs) {
@@ -171,6 +172,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         // upstream.receive() -> the exact framework-owned inbound frame lifecycle that
         // the old release-ful bridge double-releases.
         final AtomicInteger upstreamReceived = new AtomicInteger();
+        final List<String> upstreamControls = new CopyOnWriteArrayList<>();
         upstreamServer = HttpServer.create()
                 .host("127.0.0.1")
                 .port(0)
@@ -178,9 +180,17 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                         out.sendString(Flux.concat(
                                 Flux.just(READY_EVENT),
                                 in.receiveFrames()
-                                        .ofType(BinaryWebSocketFrame.class)
-                                        .doOnNext(frame -> upstreamReceived.incrementAndGet())
-                                        .map(frame -> partialEvent(upstreamReceived.get() - 1L))))))
+                                        .<String>handle((frame, sink) -> {
+                                            if (frame instanceof TextWebSocketFrame text) {
+                                                upstreamControls.add(text.text());
+                                                return;
+                                            }
+                                            if (frame instanceof BinaryWebSocketFrame) {
+                                                final int sequence =
+                                                        upstreamReceived.getAndIncrement();
+                                                sink.next(partialEvent(sequence));
+                                            }
+                                        })))))
                 .bindNow();
 
         final AudioGatewayProperties properties = new AudioGatewayProperties();
@@ -232,6 +242,11 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         handleSubscription = handler.handle(client)
                 .subscribe(ignored -> { }, error -> { }, () -> { });
 
+        clientInbound.emitNext(
+                client.textMessage(
+                        "{\"type\":\"context\",\"terms\":[\"  Çağrı   Öztürk \","
+                                + "\"Proje-24\"]}"),
+                Sinks.EmitFailureHandler.FAIL_FAST);
         for (int seq = 0; seq < frameCount; seq++) {
             clientInbound.emitNext(binaryFrame(clientFactory, seq), Sinks.EmitFailureHandler.FAIL_FAST);
         }
@@ -267,6 +282,9 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         assertThat(upstreamReceived.get())
                 .as("frames received by the loopback upstream server")
                 .isEqualTo(frameCount);
+        assertThat(upstreamControls)
+                .containsExactly(
+                        "{\"type\":\"context\",\"terms\":[\"Çağrı Öztürk\",\"Proje-24\"]}");
         // (d) Every upstream event was relayed back to the client.
         assertThat(relayedToClient)
                 .as("events relayed to the client (bridge warns: %s)", warnMessages())
