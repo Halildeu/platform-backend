@@ -280,7 +280,7 @@ class ProjectActualServicePostgresIntegrationTest {
         ProjectActualSummary summary = inTransaction(() ->
                 service.summary(actor, binding.id(), FROM, TO));
         assertThat(summary.sourceLineActual()).isEqualByComparingTo("210.00");
-        assertThat(summary.nonInvoiceActual()).isZero();
+        assertThat(summary.unlinkedAccountingActual()).isZero();
         assertThat(summary.actualCost()).isEqualByComparingTo("210.00");
         assertThat(summary.sourceDocumentCount()).isEqualTo(1);
         assertThat(summary.sourceLineCount()).isEqualTo(6);

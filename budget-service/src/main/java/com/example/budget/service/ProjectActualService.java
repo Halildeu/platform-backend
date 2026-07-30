@@ -648,8 +648,7 @@ public class ProjectActualService {
         SourceLineSummary sourceLineSummary = jdbc.queryForObject("""
                 SELECT
                   COALESCE(SUM(l.cost_basis_amount) FILTER (
-                    WHERE l.is_cancelled=FALSE
-                      AND d.document_kind IN ('PURCHASE_INVOICE','PURCHASE_RETURN')),0)
+                    WHERE l.is_cancelled=FALSE),0)
                     AS source_line_actual,
                   COUNT(DISTINCT d.id) FILTER (WHERE d.is_cancelled=FALSE)
                     AS source_document_count,
@@ -671,7 +670,7 @@ public class ProjectActualService {
                         rs.getLong("unresolved_source_line_count")),
                 actor.tenantId(), actor.companyId(), binding.id(),
                 Date.valueOf(from), Date.valueOf(to));
-        BigDecimal nonInvoiceActual = amount("""
+        BigDecimal unlinkedAccountingActual = amount("""
                 SELECT COALESCE(SUM(a.normalized_amount),0)
                   FROM actual_snapshots a
                  WHERE a.tenant_id=? AND a.company_id=? AND a.project_binding_id=?
@@ -679,8 +678,8 @@ public class ProjectActualService {
                    AND a.is_cancelled=FALSE
                    AND a.cost_treatment IN ('INCLUDE_COST','INCLUDE_NEGATIVE_COST')
                    AND (
-                     a.document_type <> 'INVOICE'
-                     OR a.source_document_external_id IS NULL
+                     a.source_document_external_id IS NULL
+                     OR a.document_type IS NULL
                      OR NOT EXISTS (
                        SELECT 1
                          FROM actual_source_documents d
@@ -691,6 +690,14 @@ public class ProjectActualService {
                           AND d.document_type=a.document_type
                           AND d.external_document_id=a.source_document_external_id
                           AND d.is_cancelled=FALSE
+                          AND d.document_kind IN (
+                            'PURCHASE_INVOICE',
+                            'PURCHASE_RETURN',
+                            'EXPENSE',
+                            'STOCK_CONSUMPTION',
+                            'DEPRECIATION',
+                            'PAYROLL'
+                          )
                      )
                    )
                 """, actor.tenantId(), actor.companyId(), binding.id(),
@@ -715,8 +722,8 @@ public class ProjectActualService {
                 latest == null ? null : latest.difference(),
                 lastSuccessfulSync,
                 sourceLineActual,
-                nonInvoiceActual,
-                sourceLineActual.add(nonInvoiceActual),
+                unlinkedAccountingActual,
+                sourceLineActual.add(unlinkedAccountingActual),
                 sourceLineSummary == null ? 0 : sourceLineSummary.sourceDocumentCount(),
                 sourceLineSummary == null ? 0 : sourceLineSummary.sourceLineCount(),
                 sourceLineSummary == null ? 0 : sourceLineSummary.unresolvedSourceLineCount());
@@ -1896,7 +1903,11 @@ public class ProjectActualService {
 
     private static BigDecimal sourceLineCostBasis(ProviderSourceLineRow line) {
         return switch (line.documentKind()) {
-            case "PURCHASE_INVOICE" -> line.netAmount().abs();
+            case "PURCHASE_INVOICE",
+                    "EXPENSE",
+                    "STOCK_CONSUMPTION",
+                    "DEPRECIATION",
+                    "PAYROLL" -> line.netAmount().abs();
             case "PURCHASE_RETURN" -> line.netAmount().abs().negate();
             default -> BigDecimal.ZERO;
         };
@@ -1904,7 +1915,11 @@ public class ProjectActualService {
 
     private static boolean isCostDocument(String documentKind) {
         return "PURCHASE_INVOICE".equals(documentKind)
-                || "PURCHASE_RETURN".equals(documentKind);
+                || "PURCHASE_RETURN".equals(documentKind)
+                || "EXPENSE".equals(documentKind)
+                || "STOCK_CONSUMPTION".equals(documentKind)
+                || "DEPRECIATION".equals(documentKind)
+                || "PAYROLL".equals(documentKind);
     }
 
     private static int sourceLedgerYear(String sourcePartition) {

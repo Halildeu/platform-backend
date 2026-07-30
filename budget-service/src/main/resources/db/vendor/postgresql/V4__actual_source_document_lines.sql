@@ -56,7 +56,13 @@ CREATE TABLE actual_source_documents (
             'PURCHASE_RETURN',
             'SALES_INVOICE',
             'SALES_RETURN',
-            'OTHER_INVOICE'
+            'OTHER_INVOICE',
+            'EXPENSE',
+            'STOCK_CONSUMPTION',
+            'DEPRECIATION',
+            'PAYROLL',
+            'TRANSFER',
+            'OTHER_SOURCE'
         )
     ),
     CONSTRAINT ck_actual_source_document_reconciliation CHECK (

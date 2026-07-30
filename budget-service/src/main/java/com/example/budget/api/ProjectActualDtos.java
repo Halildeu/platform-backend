@@ -104,7 +104,7 @@ public final class ProjectActualDtos {
             BigDecimal reconciliationDifference,
             OffsetDateTime lastSyncAt,
             BigDecimal sourceLineActual,
-            BigDecimal nonInvoiceActual,
+            BigDecimal unlinkedAccountingActual,
             BigDecimal actualCost,
             long sourceDocumentCount,
             long sourceLineCount,
