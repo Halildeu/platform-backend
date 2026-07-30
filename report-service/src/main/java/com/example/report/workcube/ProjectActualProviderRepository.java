@@ -255,6 +255,9 @@ public class ProjectActualProviderRepository {
                        ) AS LINE_ORDINAL,
                        INV.INVOICE_DATE,
                        INV.INVOICE_CAT,
+                       INV.PURCHASE_SALES,
+                       INV.IS_RETURN,
+                       INV.IS_SUCCESS_CANCEL,
                        INV.INVOICE_NUMBER,
                        IR.NAME_PRODUCT,
                        IR.DESCRIPTION,
@@ -281,6 +284,8 @@ public class ProjectActualProviderRepository {
                 sql,
                 (rs, rowNum) -> {
                     int invoiceCategory = rs.getInt("INVOICE_CAT");
+                    Boolean purchase = nullableBoolean(rs, "PURCHASE_SALES");
+                    Boolean returned = nullableBoolean(rs, "IS_RETURN");
                     return new ProjectSourceLineRow(
                             "WORKCUBE",
                             schemaYear(schema),
@@ -291,7 +296,7 @@ public class ProjectActualProviderRepository {
                             rs.getInt("LINE_ORDINAL"),
                             rs.getDate("INVOICE_DATE").toLocalDate(),
                             "INVOICE",
-                            invoiceKind(invoiceCategory),
+                            invoiceKind(invoiceCategory, purchase, returned),
                             rs.getString("INVOICE_NUMBER"),
                             rs.getString("NAME_PRODUCT"),
                             rs.getString("DESCRIPTION"),
@@ -304,7 +309,8 @@ public class ProjectActualProviderRepository {
                             zeroIfNull(rs.getBigDecimal("GROSS_AMOUNT")),
                             normalizeInvoiceCurrency(rs.getString("CURRENCY_CODE")),
                             rs.getString("ACCOUNT_CODE"),
-                            false,
+                            Boolean.TRUE.equals(
+                                    nullableBoolean(rs, "IS_SUCCESS_CANCEL")),
                             null);
                 },
                 projectId,
@@ -330,6 +336,12 @@ public class ProjectActualProviderRepository {
     private static Long nullableLong(java.sql.ResultSet rs, String column)
             throws java.sql.SQLException {
         long value = rs.getLong(column);
+        return rs.wasNull() ? null : value;
+    }
+
+    private static Boolean nullableBoolean(java.sql.ResultSet rs, String column)
+            throws java.sql.SQLException {
+        boolean value = rs.getBoolean(column);
         return rs.wasNull() ? null : value;
     }
 
@@ -361,7 +373,24 @@ public class ProjectActualProviderRepository {
         return normalizeCurrency(raw);
     }
 
-    private static String invoiceKind(int category) {
+    static String invoiceKind(
+            int category,
+            Boolean purchase,
+            Boolean returned) {
+        if (purchase != null) {
+            boolean returnDocument =
+                    Boolean.TRUE.equals(returned)
+                            || category == 57
+                            || category == 60;
+            if (purchase) {
+                return returnDocument
+                        ? "PURCHASE_RETURN"
+                        : "PURCHASE_INVOICE";
+            }
+            return returnDocument
+                    ? "SALES_RETURN"
+                    : "SALES_INVOICE";
+        }
         return switch (category) {
             case 56 -> "PURCHASE_INVOICE";
             case 57 -> "PURCHASE_RETURN";

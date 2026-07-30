@@ -44,6 +44,7 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
             createAccountingTables(jdbc, schema);
         }
         insertRows(jdbc, "workcube_mikrolink_2026_35", 44200);
+        insertDirectionRows(jdbc, "workcube_mikrolink_2026_35", 44201);
         insertRows(jdbc, "workcube_mikrolink_2026_350", 99999);
         repository = new ProjectActualProviderRepository(jdbc);
     }
@@ -121,6 +122,30 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
                 });
     }
 
+    @Test
+    void derivesInvoiceKindFromDirectionAndReturnFlagsBeforeLegacyCategoryFallback() {
+        var rows = repository.findSourceLines(
+                35L,
+                44201L,
+                LocalDate.of(2026, 6, 1),
+                LocalDate.of(2026, 6, 30),
+                null,
+                20);
+
+        assertThat(rows)
+                .extracting(
+                        ProjectActualProviderDtos.ProjectSourceLineRow::sourceLineId,
+                        ProjectActualProviderDtos.ProjectSourceLineRow::documentKind,
+                        ProjectActualProviderDtos.ProjectSourceLineRow::cancelled)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(110L, "PURCHASE_INVOICE", false),
+                        org.assertj.core.groups.Tuple.tuple(120L, "SALES_INVOICE", false),
+                        org.assertj.core.groups.Tuple.tuple(130L, "PURCHASE_RETURN", false),
+                        org.assertj.core.groups.Tuple.tuple(140L, "SALES_RETURN", false),
+                        org.assertj.core.groups.Tuple.tuple(150L, "PURCHASE_INVOICE", true),
+                        org.assertj.core.groups.Tuple.tuple(160L, "PURCHASE_INVOICE", false));
+    }
+
     private static void createAccountingTables(JdbcTemplate jdbc, String schema) {
         jdbc.execute("""
                 CREATE TABLE [%s].[ACCOUNT_CARD_ROWS] (
@@ -157,6 +182,9 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
                     INVOICE_NUMBER NVARCHAR(160) NULL,
                     INVOICE_DATE DATETIME NOT NULL,
                     INVOICE_CAT INT NOT NULL,
+                    PURCHASE_SALES BIT NULL,
+                    IS_RETURN BIT NULL,
+                    IS_SUCCESS_CANCEL BIT NULL,
                     OTHER_MONEY NVARCHAR(8) NULL
                 )
                 """.formatted(schema));
@@ -226,8 +254,9 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
                 """.formatted(schema), projectId, projectId);
         jdbc.update("""
                 INSERT INTO [%s].[INVOICE]
-                    (INVOICE_ID, INVOICE_NUMBER, INVOICE_DATE, INVOICE_CAT, OTHER_MONEY)
-                VALUES (10, N'INV-10', '2026-06-10', 56, N'TL')
+                    (INVOICE_ID, INVOICE_NUMBER, INVOICE_DATE, INVOICE_CAT,
+                     PURCHASE_SALES, IS_RETURN, IS_SUCCESS_CANCEL, OTHER_MONEY)
+                VALUES (10, N'INV-10', '2026-06-10', 56, 1, 0, NULL, N'TL')
                 """.formatted(schema));
         jdbc.update("""
                 INSERT INTO [%s].[INVOICE_ROW]
@@ -245,5 +274,48 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
                     (ACTION_ID, PAPER_NO, GENEL_VIRMAN_ID)
                 VALUES (20, N'BNK-20', 900)
                 """.formatted(schema));
+    }
+
+    private static void insertDirectionRows(
+            JdbcTemplate jdbc,
+            String schema,
+            long projectId) {
+        jdbc.update("""
+                INSERT INTO [%s].[INVOICE]
+                    (INVOICE_ID, INVOICE_NUMBER, INVOICE_DATE, INVOICE_CAT,
+                     PURCHASE_SALES, IS_RETURN, IS_SUCCESS_CANCEL, OTHER_MONEY)
+                VALUES
+                    (11, N'INV-11', '2026-06-12', 561, 1, 0, NULL, N'TL'),
+                    (12, N'INV-12', '2026-06-13', 601, 0, 0, NULL, N'TL'),
+                    (13, N'INV-13', '2026-06-14', 999, 1, 1, NULL, N'TL'),
+                    (14, N'INV-14', '2026-06-15', 998, 0, 1, NULL, N'TL'),
+                    (15, N'INV-15', '2026-06-16', 53, 1, 0, 1, N'TL'),
+                    (16, N'INV-16', '2026-06-17', 56, NULL, NULL, NULL, N'TL')
+                """.formatted(schema));
+        jdbc.update("""
+                INSERT INTO [%s].[INVOICE_ROW]
+                    (INVOICE_ROW_ID, INVOICE_ID, NAME_PRODUCT, DESCRIPTION,
+                     AMOUNT, UNIT, PRICE, NETTOTAL, TAX, TAXTOTAL, GROSSTOTAL,
+                     OTHER_MONEY, ROW_ACC_CODE, ROW_PROJECT_ID)
+                VALUES
+                    (110, 11, N'Purchase special', NULL, 1, N'EA',
+                     10, 10, 20, 2, 12, NULL, N'740.01', ?),
+                    (120, 12, N'Sales special', NULL, 1, N'EA',
+                     20, 20, 20, 4, 24, NULL, N'600.01', ?),
+                    (130, 13, N'Purchase return', NULL, 1, N'EA',
+                     30, 30, 20, 6, 36, NULL, N'740.01', ?),
+                    (140, 14, N'Sales return', NULL, 1, N'EA',
+                     40, 40, 20, 8, 48, NULL, N'600.01', ?),
+                    (150, 15, N'Cancelled purchase', NULL, 1, N'EA',
+                     50, 50, 20, 10, 60, NULL, N'740.01', ?),
+                    (160, 16, N'Legacy category fallback', NULL, 1, N'EA',
+                     60, 60, 20, 12, 72, NULL, N'740.01', ?)
+                """.formatted(schema),
+                projectId,
+                projectId,
+                projectId,
+                projectId,
+                projectId,
+                projectId);
     }
 }
