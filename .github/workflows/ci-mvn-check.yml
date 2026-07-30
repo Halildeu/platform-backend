@@ -416,7 +416,8 @@ jobs:
     # so Testcontainers picks the daemon up without overrides. The
     # `integration-tests` Maven profile flips Surefire's group filter
     # to include only @Tag("integration") classes — currently just
-    # SqlBuilderMssqlIntegrationTest, WorkcubeQueryAdapterIT in this module.
+    # SqlBuilderMssqlIntegrationTest, WorkcubeQueryAdapterIT and
+    # ProjectActualProviderRepositoryMssqlIntegrationTest in this module.
 
     steps:
       - name: Checkout
@@ -455,7 +456,9 @@ jobs:
           exit 1
 
       - name: Run report-service MSSQL Testcontainers integration tests
-        run: ./mvnw -q -pl report-service test -Pintegration-tests -Dtest='SqlBuilderMssqlIntegrationTest,WorkcubeQueryAdapterIT'
+        run: >-
+          ./mvnw -q -pl report-service test -Pintegration-tests
+          -Dtest='SqlBuilderMssqlIntegrationTest,WorkcubeQueryAdapterIT,ProjectActualProviderRepositoryMssqlIntegrationTest'
 
   budget-service-postgres-actuals-integration-test:
     name: budget-service PostgreSQL Testcontainers project actuals
