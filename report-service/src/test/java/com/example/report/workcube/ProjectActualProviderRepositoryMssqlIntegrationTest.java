@@ -87,7 +87,7 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
     }
 
     @Test
-    void returnsInvoiceLinesIndependentlyFromAccountingRowLinkage() {
+    void returnsInvoiceLinesWithDocumentCurrencyWhenRowPricingCurrenciesDiffer() {
         var rows = repository.findSourceLines(
                 35L,
                 44200L,
@@ -156,7 +156,8 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
                     INVOICE_ID BIGINT NOT NULL PRIMARY KEY,
                     INVOICE_NUMBER NVARCHAR(160) NULL,
                     INVOICE_DATE DATETIME NOT NULL,
-                    INVOICE_CAT INT NOT NULL
+                    INVOICE_CAT INT NOT NULL,
+                    OTHER_MONEY NVARCHAR(8) NULL
                 )
                 """.formatted(schema));
         jdbc.execute("""
@@ -225,8 +226,8 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
                 """.formatted(schema), projectId, projectId);
         jdbc.update("""
                 INSERT INTO [%s].[INVOICE]
-                    (INVOICE_ID, INVOICE_NUMBER, INVOICE_DATE, INVOICE_CAT)
-                VALUES (10, N'INV-10', '2026-06-10', 56)
+                    (INVOICE_ID, INVOICE_NUMBER, INVOICE_DATE, INVOICE_CAT, OTHER_MONEY)
+                VALUES (10, N'INV-10', '2026-06-10', 56, N'TL')
                 """.formatted(schema));
         jdbc.update("""
                 INSERT INTO [%s].[INVOICE_ROW]
@@ -235,7 +236,7 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
                      OTHER_MONEY, ROW_ACC_CODE, ROW_PROJECT_ID)
                 VALUES
                     (100, 10, N'Electricity', N'June electricity', 1, N'EA',
-                     100, 100, 20, 20, 120, N'TL', N'740.01', ?),
+                     100, 100, 20, 20, 120, N'USD', N'740.01', ?),
                     (101, 10, N'Cleaning', N'June cleaning', 1, N'EA',
                      25, 25, 20, 5, 30, NULL, NULL, ?)
                 """.formatted(schema), projectId, projectId);

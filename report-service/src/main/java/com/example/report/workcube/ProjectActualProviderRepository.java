@@ -265,7 +265,7 @@ public class ProjectActualProviderRepository {
                        IR.TAX AS TAX_RATE,
                        IR.TAXTOTAL AS TAX_AMOUNT,
                        IR.GROSSTOTAL AS GROSS_AMOUNT,
-                       IR.OTHER_MONEY AS CURRENCY_CODE,
+                       INV.OTHER_MONEY AS CURRENCY_CODE,
                        IR.ROW_ACC_CODE AS ACCOUNT_CODE
                   FROM [%s].[INVOICE_ROW] IR
                   JOIN [%s].[INVOICE] INV
