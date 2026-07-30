@@ -186,13 +186,17 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             final SessionRecord record,
             final String correlationId) {
         final int maxFrameBytes = properties.getDirectStt().getStreaming().getMaxFrameBytes();
-        final int maxControlBytes = properties.getDirectStt().getStreaming()
+        final int maxTerminalControlBytes = properties.getDirectStt().getStreaming()
                 .getMaxTerminalControlBytes();
+        final int maxControlBytes = properties.getDirectStt().getStreaming()
+                .getMaxClientControlBytes();
         final Duration readyTimeout = Duration.ofMillis(properties.getDirectStt().getStreaming()
                 .getReadyTimeoutMs());
         final Duration drainTimeout = Duration.ofMillis(properties.getDirectStt().getStreaming()
                 .getTerminalDrainTimeoutMs());
         final AtomicBoolean readyObserved = new AtomicBoolean();
+        final AtomicBoolean contextSent = new AtomicBoolean();
+        final AtomicBoolean audioSent = new AtomicBoolean();
         final AtomicBoolean eofSent = new AtomicBoolean();
         final AtomicBoolean eofAckObserved = new AtomicBoolean();
         final AtomicBoolean drainedObserved = new AtomicBoolean();
@@ -218,10 +222,10 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     // the bytes below outlive the frame, the buffer does not.
                     if (message.getType() == WebSocketMessage.Type.TEXT) {
                         final int readable = message.getPayload().readableByteCount();
-                        if (readable > maxControlBytes || !eofSent.compareAndSet(false, true)) {
+                        if (readable > maxControlBytes || eofSent.get()) {
                             rejectedFrames.increment();
                             sink.error(new ClientFrameException(
-                                    "live stream terminal control is invalid"));
+                                    "live stream control is invalid"));
                             return;
                         }
                         final LiveStreamControlFrame control;
@@ -229,12 +233,25 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             control = LiveStreamControlFrame.decode(
                                     message.getPayloadAsText(), maxControlBytes, objectMapper);
                         } catch (IllegalArgumentException error) {
-                            eofSent.set(false);
                             rejectedFrames.increment();
                             sink.error(new ClientFrameException(error.getMessage()));
                             return;
                         }
-                        sink.next(upstream.textMessage(control.upstreamPayload()));
+                        if (control.type() == LiveStreamControlFrame.Type.CONTEXT) {
+                            if (audioSent.get() || !contextSent.compareAndSet(false, true)) {
+                                rejectedFrames.increment();
+                                sink.error(new ClientFrameException(
+                                        "live stream context order is invalid"));
+                                return;
+                            }
+                        } else if (readable > maxTerminalControlBytes
+                                || !eofSent.compareAndSet(false, true)) {
+                            rejectedFrames.increment();
+                            sink.error(new ClientFrameException(
+                                    "live stream terminal control is invalid"));
+                            return;
+                        }
+                        sink.next(upstream.textMessage(control.upstreamPayload(objectMapper)));
                         return;
                     }
                     if (message.getType() != WebSocketMessage.Type.BINARY || eofSent.get()) {
@@ -277,6 +294,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         return;
                     }
                     acceptedFrames.increment();
+                    audioSent.set(true);
                     transcriptWindow.append(frame, record.sampleRateHz(), record.channels());
                     sink.next(upstream.binaryMessage(factory ->
                             factory.wrap(frame.toFloat32LittleEndian())));
@@ -284,7 +302,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 })
                 // EOF is terminal for the upload leg even when the client keeps its
                 // inbound socket open while waiting for final/drained events.
-                .takeUntil(message -> message.getType() == WebSocketMessage.Type.TEXT)
+                .takeUntil(message -> eofSent.get())
                 .doFinally(signal -> clientControlEvents.tryEmitComplete())
                 // The AI endpoint can spend minutes loading pinned models. Do not admit,
                 // account or forward any desktop audio until it proves the exact source
@@ -587,10 +605,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     || root.path("live_model").textValue().isBlank()
                     || !root.path("final_model").isTextual()
                     || root.path("final_model").textValue().isBlank()
-                    || !capabilities.isArray()
-                    || capabilities.size() != 2
-                    || !"eof".equals(capabilities.path(0).asText())
-                    || !UPSTREAM_PROTOCOL.equals(capabilities.path(1).asText())
+                    || !hasSupportedCapabilities(capabilities)
                     || !terminalTimeout.isIntegralNumber()
                     || !terminalTimeout.canConvertToLong()
                     || terminalTimeout.longValue() < 1_000L
@@ -686,6 +701,17 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         return new UpstreamEvent.Final(
                 sequence.longValue(), text.textValue(), reason, elapsed.doubleValue(),
                 sourceStart.longValue(), sourceEnd.longValue());
+    }
+
+    private static boolean hasSupportedCapabilities(final JsonNode capabilities) {
+        if (!capabilities.isArray()
+                || (capabilities.size() != 2 && capabilities.size() != 3)
+                || !"eof".equals(capabilities.path(0).asText())
+                || !UPSTREAM_PROTOCOL.equals(capabilities.path(1).asText())) {
+            return false;
+        }
+        return capabilities.size() == 2
+                || "context-v1".equals(capabilities.path(2).asText());
     }
 
     private static void requireExactFields(final JsonNode root, final Set<String> expected) {
