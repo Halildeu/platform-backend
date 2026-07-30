@@ -15,6 +15,8 @@ class ProjectActualAuthorizationContractTest {
         assertGuard("findBinding", "SCOPE_budget:read", "ROLE_BUDGET_PLANNER");
         assertGuard("sync", "SCOPE_budget:write", "ROLE_BUDGET_PLANNER");
         assertGuard("rows", "SCOPE_budget:read", "ROLE_BUDGET_PLANNER");
+        assertGuard("sourceLines", "SCOPE_budget:read", "ROLE_BUDGET_PLANNER");
+        assertGuard("sourceDocument", "SCOPE_budget:read", "ROLE_BUDGET_PLANNER");
         assertGuard("summary", "SCOPE_budget:read", "ROLE_BUDGET_PLANNER");
         assertGuard("replaceCostRules", "SCOPE_budget:approve", "ROLE_BUDGET_APPROVER");
     }

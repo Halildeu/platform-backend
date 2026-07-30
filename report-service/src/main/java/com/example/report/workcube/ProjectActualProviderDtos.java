@@ -22,6 +22,7 @@ public final class ProjectActualProviderDtos {
             String currency,
             Integer actionType,
             Long actionId,
+            Long actionRowId,
             String documentType,
             String documentNo,
             String resolutionStatus,
@@ -31,6 +32,39 @@ public final class ProjectActualProviderDtos {
 
     public record ProjectActualPage(
             List<ProjectActualRow> rows,
+            String nextCursor,
+            boolean hasMore) {
+    }
+
+    public record ProjectSourceLineRow(
+            String sourceSystem,
+            int sourceLedgerYear,
+            long sourceCompanyId,
+            long sourceProjectId,
+            long sourceDocumentId,
+            long sourceLineId,
+            int lineOrdinal,
+            LocalDate documentDate,
+            String documentType,
+            String documentKind,
+            String documentNo,
+            String productName,
+            String description,
+            BigDecimal quantity,
+            String unit,
+            BigDecimal unitPrice,
+            BigDecimal netAmount,
+            BigDecimal taxRate,
+            BigDecimal taxAmount,
+            BigDecimal grossAmount,
+            String currency,
+            String accountCode,
+            boolean cancelled,
+            String sourceHash) {
+    }
+
+    public record ProjectSourceLinePage(
+            List<ProjectSourceLineRow> rows,
             String nextCursor,
             boolean hasMore) {
     }

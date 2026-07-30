@@ -89,6 +89,7 @@ class ProjectActualServicePostgresIntegrationTest {
     @BeforeEach
     void resetProvider() {
         provider.rows.set(List.of());
+        provider.sourceLines.set(List.of());
         provider.failure.set(null);
     }
 
@@ -222,6 +223,166 @@ class ProjectActualServicePostgresIntegrationTest {
     }
 
     @Test
+    void invoiceWithSixLinesIsPrimaryActualCostAndReconcilesAtDocumentLevel() {
+        BudgetActor actor = new BudgetActor(
+                "tenant-idc1-invoice-lines",
+                35L,
+                "cost-controller",
+                Set.of(44200L),
+                false);
+        ProjectBindingView binding = inTransaction(() -> service.createBinding(
+                actor,
+                new CreateProjectBindingRequest(
+                        "platform-project-idc1-lines",
+                        "WORKCUBE",
+                        35L,
+                        44200L,
+                        "44200")));
+        inTransaction(() -> service.replaceAndActivateRules(
+                actor,
+                new ReplaceCostRulesRequest(List.of(
+                        new CostRuleInput(
+                                10, "740", "INCLUDE_COST", "INCLUDE_NEGATIVE_COST", "INVOICE"),
+                        new CostRuleInput(
+                                20, "191", "EXCLUDE_COUNTERPART", "EXCLUDE_COUNTERPART", "INVOICE"),
+                        new CostRuleInput(
+                                30, "320", "EXCLUDE_COUNTERPART", "EXCLUDE_COUNTERPART", "INVOICE")))));
+
+        provider.rows.set(List.of(
+                invoiceAccountingRow(11, "740.01", "10.00", 7000L, null),
+                invoiceAccountingRow(12, "740.01", "20.00", 7000L, null),
+                invoiceAccountingRow(13, "740.01", "30.00", 7000L, null),
+                invoiceAccountingRow(14, "740.01", "40.00", 7000L, null),
+                invoiceAccountingRow(15, "740.01", "50.00", 7000L, null),
+                invoiceAccountingRow(16, "740.01", "60.00", 7000L, null),
+                invoiceAccountingRow(17, "191.01", "42.00", 7000L, null),
+                invoiceAccountingRow(18, "320.01", "252.00", 7000L, null)));
+        provider.sourceLines.set(List.of(
+                sourceLine(701, 1, "Electricity", "10.00", "2.00", "12.00"),
+                sourceLine(702, 2, "Water", "20.00", "4.00", "24.00"),
+                sourceLine(703, 3, "Cleaning", "30.00", "6.00", "36.00"),
+                sourceLine(704, 4, "Hardware", "40.00", "8.00", "48.00"),
+                sourceLine(705, 5, "Natural gas", "50.00", "10.00", "60.00"),
+                sourceLine(706, 6, "Dues", "60.00", "12.00", "72.00")));
+
+        ProjectActualSyncResult first = service.sync(
+                actor,
+                binding.id(),
+                new ProjectActualSyncRequest(FROM, TO),
+                "Bearer synthetic-test-token");
+
+        assertThat(first.status()).isEqualTo("MATCHED");
+        assertThat(first.sourceDocumentCount()).isEqualTo(1);
+        assertThat(first.sourceLineCount()).isEqualTo(6);
+        assertThat(first.changedSourceLineCount()).isEqualTo(6);
+        assertThat(first.tombstoneSourceLineCount()).isZero();
+
+        ProjectActualSummary summary = inTransaction(() ->
+                service.summary(actor, binding.id(), FROM, TO));
+        assertThat(summary.sourceLineActual()).isEqualByComparingTo("210.00");
+        assertThat(summary.unlinkedAccountingActual()).isZero();
+        assertThat(summary.actualCost()).isEqualByComparingTo("210.00");
+        assertThat(summary.sourceDocumentCount()).isEqualTo(1);
+        assertThat(summary.sourceLineCount()).isEqualTo(6);
+        assertThat(summary.unresolvedSourceLineCount()).isZero();
+
+        List<ProjectActualSourceLineRow> sourceLines = inTransaction(() ->
+                service.sourceLines(actor, binding.id(), FROM, TO, 100));
+        assertThat(sourceLines).hasSize(6);
+        assertThat(sourceLines)
+                .allSatisfy(line -> {
+                    assertThat(line.lineMatchStatus()).isEqualTo("RECONCILED");
+                    assertThat(line.documentReconciliationStatus()).isEqualTo("RECONCILED");
+                    assertThat(line.accountingCostTotal()).isEqualByComparingTo("210.00");
+                    assertThat(line.reconciliationDifference()).isZero();
+                    assertThat(line.accountingRowCount()).isEqualTo(8);
+                });
+
+        ProjectActualSourceDocumentDetail detail = inTransaction(() ->
+                service.sourceDocument(
+                        actor, binding.id(), sourceLines.getFirst().sourceDocumentId()));
+        assertThat(detail.lines()).hasSize(6);
+        assertThat(detail.accountingRows()).hasSize(8);
+        assertThat(detail.sourceLineTotal()).isEqualByComparingTo("210.00");
+        assertThat(detail.accountingCostTotal()).isEqualByComparingTo("210.00");
+        assertThat(detail.reconciliationStatus()).isEqualTo("RECONCILED");
+
+        ProjectActualSyncResult unchanged = service.sync(
+                actor,
+                binding.id(),
+                new ProjectActualSyncRequest(FROM, TO),
+                "Bearer synthetic-test-token");
+        assertThat(unchanged.changedSourceLineCount()).isZero();
+        assertThat(unchanged.tombstoneSourceLineCount()).isZero();
+        assertThat(inTransaction(() -> service.sourceLines(
+                actor, binding.id(), FROM, TO, 100))).hasSize(6);
+    }
+
+    @Test
+    void preAccountingExpenseAndDepreciationSourcesReplaceAccountingFallback() {
+        BudgetActor actor = new BudgetActor(
+                "tenant-operational-sources",
+                35L,
+                "cost-controller",
+                Set.of(44200L),
+                false);
+        ProjectBindingView binding = inTransaction(() -> service.createBinding(
+                actor,
+                new CreateProjectBindingRequest(
+                        "platform-project-idc1-operational-sources",
+                        "WORKCUBE",
+                        35L,
+                        44200L,
+                        "44200")));
+        inTransaction(() -> service.replaceAndActivateRules(
+                actor,
+                new ReplaceCostRulesRequest(List.of(
+                        new CostRuleInput(
+                                10, "740", "INCLUDE_COST", "INCLUDE_NEGATIVE_COST", null)))));
+
+        provider.rows.set(List.of(
+                sourceAccountingRow(21, "740.01", "75.00", 7100L, "EXPENSE"),
+                sourceAccountingRow(22, "740.02", "50.00", 7200L, "DEPRECIATION")));
+        provider.sourceLines.set(List.of(
+                operationalSourceLine(
+                        7100L, 711L, "EXPENSE", "EXPENSE", "Site expense", "75.00"),
+                operationalSourceLine(
+                        7200L,
+                        721L,
+                        "DEPRECIATION",
+                        "DEPRECIATION",
+                        "Monthly depreciation",
+                        "50.00")));
+
+        ProjectActualSyncResult first = service.sync(
+                actor,
+                binding.id(),
+                new ProjectActualSyncRequest(FROM, TO),
+                "Bearer synthetic-test-token");
+
+        assertThat(first.status()).isEqualTo("MATCHED");
+        assertThat(first.sourceDocumentCount()).isEqualTo(2);
+        assertThat(first.sourceLineCount()).isEqualTo(2);
+
+        ProjectActualSummary summary = inTransaction(() ->
+                service.summary(actor, binding.id(), FROM, TO));
+        assertThat(summary.sourceLineActual()).isEqualByComparingTo("125.00");
+        assertThat(summary.unlinkedAccountingActual()).isZero();
+        assertThat(summary.actualCost()).isEqualByComparingTo("125.00");
+
+        List<ProjectActualSourceLineRow> lines = inTransaction(() ->
+                service.sourceLines(actor, binding.id(), FROM, TO, 100));
+        assertThat(lines)
+                .extracting(ProjectActualSourceLineRow::documentKind)
+                .containsExactlyInAnyOrder("EXPENSE", "DEPRECIATION");
+        assertThat(lines)
+                .allSatisfy(line -> {
+                    assertThat(line.lineMatchStatus()).isEqualTo("RECONCILED");
+                    assertThat(line.documentReconciliationStatus()).isEqualTo("RECONCILED");
+                });
+    }
+
+    @Test
     void projectOutsideAuthoritativeScopeFailsBeforeBindingWrite() {
         BudgetActor actor = new BudgetActor(
                 "tenant-denied", 35L, "reader", Set.of(99L), false);
@@ -300,6 +461,7 @@ class ProjectActualServicePostgresIntegrationTest {
                 valid.currency(),
                 valid.actionType(),
                 valid.actionId(),
+                valid.actionRowId(),
                 valid.documentType(),
                 valid.documentNo(),
                 valid.resolutionStatus(),
@@ -422,12 +584,137 @@ class ProjectActualServicePostgresIntegrationTest {
                 "TRY",
                 "TRANSFER".equals(documentType) ? 23 : 56,
                 8000L + rowId,
+                null,
                 documentType,
                 "SYNTH-" + rowId,
                 "HEADER_ONLY",
                 cancelled,
                 null);
         return withHash(unhashed);
+    }
+
+    private static ProviderActualRow invoiceAccountingRow(
+            long rowId,
+            String accountCode,
+            String amount,
+            long documentId,
+            Long documentLineId) {
+        return withHash(new ProviderActualRow(
+                "WORKCUBE",
+                2026,
+                35L,
+                44200L,
+                9000L,
+                rowId,
+                LocalDate.of(2026, 6, 10),
+                accountCode,
+                "DEBIT",
+                new BigDecimal(amount),
+                "TRY",
+                56,
+                documentId,
+                documentLineId,
+                "INVOICE",
+                "SYNTH-INVOICE",
+                documentLineId == null ? "HEADER_ONLY" : "EXACT_LINE",
+                false,
+                null));
+    }
+
+    private static ProviderActualRow sourceAccountingRow(
+            long rowId,
+            String accountCode,
+            String amount,
+            long documentId,
+            String documentType) {
+        return withHash(new ProviderActualRow(
+                "WORKCUBE",
+                2026,
+                35L,
+                44200L,
+                9000L,
+                rowId,
+                LocalDate.of(2026, 6, 10),
+                accountCode,
+                "DEBIT",
+                new BigDecimal(amount),
+                "TRY",
+                99,
+                documentId,
+                null,
+                documentType,
+                "SYNTH-" + documentType,
+                "HEADER_ONLY",
+                false,
+                null));
+    }
+
+    private static ProviderSourceLineRow sourceLine(
+            long sourceLineId,
+            int ordinal,
+            String productName,
+            String netAmount,
+            String taxAmount,
+            String grossAmount) {
+        return withSourceLineHash(new ProviderSourceLineRow(
+                "WORKCUBE",
+                2026,
+                35L,
+                44200L,
+                7000L,
+                sourceLineId,
+                ordinal,
+                LocalDate.of(2026, 6, 10),
+                "INVOICE",
+                "PURCHASE_INVOICE",
+                "SYNTH-INVOICE",
+                productName,
+                "Synthetic project cost",
+                BigDecimal.ONE,
+                "EA",
+                new BigDecimal(netAmount),
+                new BigDecimal(netAmount),
+                new BigDecimal("20.00"),
+                new BigDecimal(taxAmount),
+                new BigDecimal(grossAmount),
+                "TRY",
+                null,
+                false,
+                null));
+    }
+
+    private static ProviderSourceLineRow operationalSourceLine(
+            long sourceDocumentId,
+            long sourceLineId,
+            String documentType,
+            String documentKind,
+            String description,
+            String amount) {
+        return withSourceLineHash(new ProviderSourceLineRow(
+                "WORKCUBE",
+                2026,
+                35L,
+                44200L,
+                sourceDocumentId,
+                sourceLineId,
+                1,
+                LocalDate.of(2026, 6, 10),
+                documentType,
+                documentKind,
+                "SYNTH-" + documentType,
+                description,
+                "Synthetic operational source",
+                BigDecimal.ONE,
+                "EA",
+                new BigDecimal(amount),
+                new BigDecimal(amount),
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                new BigDecimal(amount),
+                "TRY",
+                null,
+                false,
+                null));
     }
 
     private static ProviderActualRow rowForProject(
@@ -454,6 +741,7 @@ class ProjectActualServicePostgresIntegrationTest {
                 base.currency(),
                 base.actionType(),
                 base.actionId(),
+                base.actionRowId(),
                 base.documentType(),
                 base.documentNo(),
                 base.resolutionStatus(),
@@ -476,6 +764,7 @@ class ProjectActualServicePostgresIntegrationTest {
                 row.currency(),
                 String.valueOf(row.actionType()),
                 String.valueOf(row.actionId()),
+                String.valueOf(row.actionRowId()),
                 row.documentType(),
                 String.valueOf(row.documentNo()),
                 row.resolutionStatus(),
@@ -484,8 +773,61 @@ class ProjectActualServicePostgresIntegrationTest {
                 row.sourceSystem(), row.sourceLedgerYear(), row.sourceCompanyId(),
                 row.sourceProjectId(), row.journalCardId(), row.journalRowId(),
                 row.postingDate(), row.accountCode(), row.debitCredit(), row.signedAmount(),
-                row.currency(), row.actionType(), row.actionId(), row.documentType(),
+                row.currency(), row.actionType(), row.actionId(), row.actionRowId(),
+                row.documentType(),
                 row.documentNo(), row.resolutionStatus(), row.cancelled(), sha256(canonical));
+    }
+
+    private static ProviderSourceLineRow withSourceLineHash(ProviderSourceLineRow line) {
+        String canonical = String.join("|",
+                line.sourceSystem(),
+                Integer.toString(line.sourceLedgerYear()),
+                Long.toString(line.sourceCompanyId()),
+                Long.toString(line.sourceProjectId()),
+                Long.toString(line.sourceDocumentId()),
+                Long.toString(line.sourceLineId()),
+                Integer.toString(line.lineOrdinal()),
+                String.valueOf(line.documentDate()),
+                line.documentType(),
+                line.documentKind(),
+                String.valueOf(line.documentNo()),
+                String.valueOf(line.productName()),
+                String.valueOf(line.description()),
+                String.valueOf(line.quantity()),
+                String.valueOf(line.unit()),
+                String.valueOf(line.unitPrice()),
+                line.netAmount().toPlainString(),
+                String.valueOf(line.taxRate()),
+                line.taxAmount().toPlainString(),
+                line.grossAmount().toPlainString(),
+                line.currency(),
+                String.valueOf(line.accountCode()),
+                Boolean.toString(line.cancelled()));
+        return new ProviderSourceLineRow(
+                line.sourceSystem(),
+                line.sourceLedgerYear(),
+                line.sourceCompanyId(),
+                line.sourceProjectId(),
+                line.sourceDocumentId(),
+                line.sourceLineId(),
+                line.lineOrdinal(),
+                line.documentDate(),
+                line.documentType(),
+                line.documentKind(),
+                line.documentNo(),
+                line.productName(),
+                line.description(),
+                line.quantity(),
+                line.unit(),
+                line.unitPrice(),
+                line.netAmount(),
+                line.taxRate(),
+                line.taxAmount(),
+                line.grossAmount(),
+                line.currency(),
+                line.accountCode(),
+                line.cancelled(),
+                sha256(canonical));
     }
 
     private static String sha256(String value) {
@@ -521,6 +863,8 @@ class ProjectActualServicePostgresIntegrationTest {
     private static final class StubProvider implements ProjectActualProviderClient {
         private final AtomicReference<List<ProviderActualRow>> rows =
                 new AtomicReference<>(List.of());
+        private final AtomicReference<List<ProviderSourceLineRow>> sourceLines =
+                new AtomicReference<>(List.of());
         private final AtomicReference<RuntimeException> failure =
                 new AtomicReference<>();
 
@@ -538,6 +882,22 @@ class ProjectActualServicePostgresIntegrationTest {
                 throw configuredFailure;
             }
             return new ProviderActualPage(rows.get(), null, false);
+        }
+
+        @Override
+        public ProviderSourceLinePage fetchSourceLines(
+                String authorization,
+                long companyId,
+                long projectId,
+                LocalDate from,
+                LocalDate to,
+                String cursor,
+                int limit) {
+            RuntimeException configuredFailure = failure.get();
+            if (configuredFailure != null) {
+                throw configuredFailure;
+            }
+            return new ProviderSourceLinePage(sourceLines.get(), null, false);
         }
     }
 }

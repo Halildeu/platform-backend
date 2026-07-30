@@ -182,6 +182,12 @@ class BudgetForbiddenObservationFilterTest {
                         "/api/v1/budgets/projects/7c3b/actuals/summary"))
                 .isEqualTo("project_actuals_summary");
         assertThat(BudgetForbiddenObservationFilter.routeCategory(
+                        "/api/v1/budgets/projects/7c3b/actuals/source-lines"))
+                .isEqualTo("project_actuals_source_lines");
+        assertThat(BudgetForbiddenObservationFilter.routeCategory(
+                        "/api/v1/budgets/projects/7c3b/actuals/source-documents/9c2a"))
+                .isEqualTo("project_actuals_source_document");
+        assertThat(BudgetForbiddenObservationFilter.routeCategory(
                         "/api/v1/budgets/projects/7c3b/actuals"))
                 .isEqualTo("project_actuals_rows");
         assertThat(BudgetForbiddenObservationFilter.routeCategory(

@@ -457,6 +457,34 @@ jobs:
       - name: Run report-service MSSQL Testcontainers integration tests
         run: ./mvnw -q -pl report-service test -Pintegration-tests -Dtest='SqlBuilderMssqlIntegrationTest,WorkcubeQueryAdapterIT'
 
+  budget-service-postgres-actuals-integration-test:
+    name: budget-service PostgreSQL Testcontainers project actuals
+    runs-on: ubuntu-latest
+    needs: [full-reactor-build]
+    timeout-minutes: 15
+
+    # Project actuals materializes read-only ERP rows into tenant-scoped
+    # PostgreSQL snapshots. The full-reactor lane skips tests, so this
+    # dedicated lane must prove Flyway migrations, RLS, source-document
+    # reconciliation, no-double-counting, append-only versions and
+    # idempotent reload against a real PostgreSQL engine.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Run budget-service PostgreSQL project-actuals integration test
+        run: >-
+          ./mvnw -q -pl budget-service test
+          -Dtest='ProjectActualServicePostgresIntegrationTest'
+
   auth-service-impersonation-it:
     name: auth-service impersonation WireMock IT (Session 47 Faz 1)
     runs-on: ubuntu-latest

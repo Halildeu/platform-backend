@@ -53,6 +53,31 @@ public class ProjectActualProviderController {
         }
     }
 
+    @GetMapping(value = "/source-lines", produces = MediaType.APPLICATION_JSON_VALUE)
+    @PreAuthorize("hasAnyAuthority('SCOPE_budget:read','SCOPE_budget:write')")
+    public ResponseEntity<?> findSourceLines(
+            @RequestHeader(
+                    value = CompanyHeaderScopeNarrower.HEADER_NAME,
+                    required = false) String companyHeader,
+            @RequestParam long projectId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(defaultValue = "1000") int limit) {
+        long companyId = parseCompany(companyHeader);
+        try {
+            return ResponseEntity.ok(service.findAuthorizedSourceLines(
+                    ScopeContext.current(), companyId, projectId, from, to, cursor, limit));
+        } catch (DataAccessException unavailable) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of(
+                            "error", "mssql_unavailable",
+                            "op", "projectActualSourceLineProvider",
+                            "message", "Workcube source lines are temporarily unavailable.",
+                            "retryAfterSec", 30));
+        }
+    }
+
     private long parseCompany(String value) {
         if (value == null || value.isBlank()) {
             throw new ResponseStatusException(

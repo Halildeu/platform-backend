@@ -79,6 +79,32 @@ class ProjectActualProviderServiceTest {
                 anyLong(), anyLong(), any(), any(), any(), anyInt());
     }
 
+    @Test
+    void authorizedSourceLinePageIsHashedWithIndependentCursor() {
+        ScopeContext scope = new ScopeContext(
+                "reader", Set.of(35L), Set.of(44200L), Set.of(), false);
+        when(projectOptions.findAuthorized(scope, 35L)).thenReturn(List.of(
+                new ProjectOptionsRepository.ProjectOption(
+                        44200L, "44200", "IDC1", 35L, true)));
+        when(repository.findSourceLines(
+                eq(35L), eq(44200L), any(), any(), eq(null), eq(1)))
+                .thenReturn(List.of(sourceLine(100L, 1), sourceLine(101L, 2)));
+
+        var page = service.findAuthorizedSourceLines(
+                scope, 35L, 44200L,
+                LocalDate.of(2026, 1, 1), LocalDate.of(2026, 12, 31),
+                null, 1);
+
+        assertThat(page.rows()).hasSize(1);
+        assertThat(page.rows().getFirst().sourceHash()).matches("[0-9a-f]{64}");
+        assertThat(page.hasMore()).isTrue();
+        assertThat(new String(
+                java.util.Base64.getUrlDecoder().decode(page.nextCursor()),
+                java.nio.charset.StandardCharsets.UTF_8))
+                .isEqualTo("2026|100")
+                .doesNotContain("workcube_mikrolink");
+    }
+
     private ProjectActualProviderDtos.ProjectActualRow row(long journalRowId) {
         return new ProjectActualProviderDtos.ProjectActualRow(
                 "WORKCUBE",
@@ -94,9 +120,40 @@ class ProjectActualProviderServiceTest {
                 "TRY",
                 56,
                 8000L,
+                null,
                 "INVOICE",
                 "DOC-" + journalRowId,
                 "HEADER_ONLY",
+                false,
+                null);
+    }
+
+    private ProjectActualProviderDtos.ProjectSourceLineRow sourceLine(
+            long sourceLineId,
+            int ordinal) {
+        return new ProjectActualProviderDtos.ProjectSourceLineRow(
+                "WORKCUBE",
+                2026,
+                35L,
+                44200L,
+                8000L,
+                sourceLineId,
+                ordinal,
+                LocalDate.of(2026, 6, 1),
+                "INVOICE",
+                "PURCHASE_INVOICE",
+                "DOC-1",
+                "Service " + ordinal,
+                "Synthetic source line",
+                BigDecimal.ONE,
+                "EA",
+                new BigDecimal("100.00"),
+                new BigDecimal("100.00"),
+                new BigDecimal("20.00"),
+                new BigDecimal("20.00"),
+                new BigDecimal("120.00"),
+                "TRY",
+                "740.01",
                 false,
                 null);
     }

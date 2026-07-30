@@ -86,6 +86,41 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
                 });
     }
 
+    @Test
+    void returnsInvoiceLinesIndependentlyFromAccountingRowLinkage() {
+        var rows = repository.findSourceLines(
+                35L,
+                44200L,
+                LocalDate.of(2026, 6, 1),
+                LocalDate.of(2026, 6, 30),
+                null,
+                10);
+
+        assertThat(rows).hasSize(2);
+        assertThat(rows).allSatisfy(row -> {
+            assertThat(row.sourceCompanyId()).isEqualTo(35L);
+            assertThat(row.sourceProjectId()).isEqualTo(44200L);
+            assertThat(row.sourceDocumentId()).isEqualTo(10L);
+            assertThat(row.documentKind()).isEqualTo("PURCHASE_INVOICE");
+            assertThat(row.currency()).isEqualTo("TRY");
+        });
+        assertThat(rows.getFirst())
+                .satisfies(row -> {
+                    assertThat(row.sourceLineId()).isEqualTo(100L);
+                    assertThat(row.lineOrdinal()).isEqualTo(1);
+                    assertThat(row.productName()).isEqualTo("Electricity");
+                    assertThat(row.netAmount()).isEqualByComparingTo("100.00");
+                    assertThat(row.taxAmount()).isEqualByComparingTo("20.00");
+                    assertThat(row.grossAmount()).isEqualByComparingTo("120.00");
+                });
+        assertThat(rows.getLast())
+                .satisfies(row -> {
+                    assertThat(row.sourceLineId()).isEqualTo(101L);
+                    assertThat(row.lineOrdinal()).isEqualTo(2);
+                    assertThat(row.productName()).isEqualTo("Cleaning");
+                });
+    }
+
     private static void createAccountingTables(JdbcTemplate jdbc, String schema) {
         jdbc.execute("""
                 CREATE TABLE [%s].[ACCOUNT_CARD_ROWS] (
@@ -119,13 +154,27 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
         jdbc.execute("""
                 CREATE TABLE [%s].[INVOICE] (
                     INVOICE_ID BIGINT NOT NULL PRIMARY KEY,
-                    INVOICE_NUMBER NVARCHAR(160) NULL
+                    INVOICE_NUMBER NVARCHAR(160) NULL,
+                    INVOICE_DATE DATETIME NOT NULL,
+                    INVOICE_CAT INT NOT NULL
                 )
                 """.formatted(schema));
         jdbc.execute("""
                 CREATE TABLE [%s].[INVOICE_ROW] (
                     INVOICE_ROW_ID BIGINT NOT NULL PRIMARY KEY,
-                    INVOICE_ID BIGINT NOT NULL
+                    INVOICE_ID BIGINT NOT NULL,
+                    NAME_PRODUCT NVARCHAR(500) NULL,
+                    DESCRIPTION NVARCHAR(MAX) NULL,
+                    AMOUNT DECIMAL(19,6) NULL,
+                    UNIT NVARCHAR(40) NULL,
+                    PRICE DECIMAL(19,6) NULL,
+                    NETTOTAL DECIMAL(19,4) NULL,
+                    TAX DECIMAL(9,4) NULL,
+                    TAXTOTAL DECIMAL(19,4) NULL,
+                    GROSSTOTAL DECIMAL(19,4) NULL,
+                    OTHER_MONEY NVARCHAR(8) NULL,
+                    ROW_ACC_CODE NVARCHAR(80) NULL,
+                    ROW_PROJECT_ID BIGINT NULL
                 )
                 """.formatted(schema));
         jdbc.execute("""
@@ -176,14 +225,20 @@ class ProjectActualProviderRepositoryMssqlIntegrationTest {
                 """.formatted(schema), projectId, projectId);
         jdbc.update("""
                 INSERT INTO [%s].[INVOICE]
-                    (INVOICE_ID, INVOICE_NUMBER)
-                VALUES (10, N'INV-10')
+                    (INVOICE_ID, INVOICE_NUMBER, INVOICE_DATE, INVOICE_CAT)
+                VALUES (10, N'INV-10', '2026-06-10', 56)
                 """.formatted(schema));
         jdbc.update("""
                 INSERT INTO [%s].[INVOICE_ROW]
-                    (INVOICE_ROW_ID, INVOICE_ID)
-                VALUES (100, 10)
-                """.formatted(schema));
+                    (INVOICE_ROW_ID, INVOICE_ID, NAME_PRODUCT, DESCRIPTION,
+                     AMOUNT, UNIT, PRICE, NETTOTAL, TAX, TAXTOTAL, GROSSTOTAL,
+                     OTHER_MONEY, ROW_ACC_CODE, ROW_PROJECT_ID)
+                VALUES
+                    (100, 10, N'Electricity', N'June electricity', 1, N'EA',
+                     100, 100, 20, 20, 120, N'TL', N'740.01', ?),
+                    (101, 10, N'Cleaning', N'June cleaning', 1, N'EA',
+                     25, 25, 20, 5, 30, NULL, NULL, ?)
+                """.formatted(schema), projectId, projectId);
         jdbc.update("""
                 INSERT INTO [%s].[BANK_ACTIONS]
                     (ACTION_ID, PAPER_NO, GENEL_VIRMAN_ID)
