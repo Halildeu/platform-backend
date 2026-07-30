@@ -16,6 +16,10 @@ class ProjectActualProviderRepositoryTest {
                 .isEqualTo("PURCHASE_RETURN");
         assertThat(ProjectActualProviderRepository.invoiceKind(998, false, true))
                 .isEqualTo("SALES_RETURN");
+        assertThat(ProjectActualProviderRepository.invoiceKind(57, true, false))
+                .isEqualTo("PURCHASE_RETURN");
+        assertThat(ProjectActualProviderRepository.invoiceKind(60, false, false))
+                .isEqualTo("SALES_RETURN");
     }
 
     @Test

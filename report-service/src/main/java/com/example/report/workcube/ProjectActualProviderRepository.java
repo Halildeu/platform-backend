@@ -378,12 +378,16 @@ public class ProjectActualProviderRepository {
             Boolean purchase,
             Boolean returned) {
         if (purchase != null) {
+            boolean returnDocument =
+                    Boolean.TRUE.equals(returned)
+                            || category == 57
+                            || category == 60;
             if (purchase) {
-                return Boolean.TRUE.equals(returned)
+                return returnDocument
                         ? "PURCHASE_RETURN"
                         : "PURCHASE_INVOICE";
             }
-            return Boolean.TRUE.equals(returned)
+            return returnDocument
                     ? "SALES_RETURN"
                     : "SALES_INVOICE";
         }
