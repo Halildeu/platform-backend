@@ -96,6 +96,30 @@ public class ProjectActualController {
                 actors.resolve(authentication, companyId), bindingId, from, to, limit);
     }
 
+    @GetMapping("/{bindingId}/actuals/source-lines")
+    @PreAuthorize("hasAuthority('SCOPE_budget:read') and hasAuthority('ROLE_BUDGET_PLANNER')")
+    List<ProjectActualSourceLineRow> sourceLines(
+            @RequestHeader("X-Company-Id") long companyId,
+            @PathVariable UUID bindingId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(defaultValue = "1000") int limit,
+            Authentication authentication) {
+        return service.sourceLines(
+                actors.resolve(authentication, companyId), bindingId, from, to, limit);
+    }
+
+    @GetMapping("/{bindingId}/actuals/source-documents/{sourceDocumentId}")
+    @PreAuthorize("hasAuthority('SCOPE_budget:read') and hasAuthority('ROLE_BUDGET_PLANNER')")
+    ProjectActualSourceDocumentDetail sourceDocument(
+            @RequestHeader("X-Company-Id") long companyId,
+            @PathVariable UUID bindingId,
+            @PathVariable UUID sourceDocumentId,
+            Authentication authentication) {
+        return service.sourceDocument(
+                actors.resolve(authentication, companyId), bindingId, sourceDocumentId);
+    }
+
     @GetMapping("/{bindingId}/actuals/summary")
     @PreAuthorize("hasAuthority('SCOPE_budget:read') and hasAuthority('ROLE_BUDGET_PLANNER')")
     ProjectActualSummary summary(

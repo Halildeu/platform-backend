@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.report.workcube.ProjectActualProviderDtos.ProjectActualPage;
+import com.example.report.workcube.ProjectActualProviderDtos.ProjectSourceLinePage;
 import java.time.LocalDate;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
@@ -70,6 +71,25 @@ class ProjectActualProviderMethodSecurityTest {
         find();
 
         verify(service).findAuthorized(any(), anyLong(), anyLong(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void budgetReadScopeReachesSourceLineAuthorizationService() {
+        authenticate("SCOPE_budget:read");
+        when(service.findAuthorizedSourceLines(
+                any(), anyLong(), anyLong(), any(), any(), any(), anyInt()))
+                .thenReturn(new ProjectSourceLinePage(List.of(), null, false));
+
+        controller.findSourceLines(
+                "35",
+                44200L,
+                LocalDate.of(2026, 6, 1),
+                LocalDate.of(2026, 6, 30),
+                null,
+                100);
+
+        verify(service).findAuthorizedSourceLines(
+                any(), anyLong(), anyLong(), any(), any(), any(), anyInt());
     }
 
     private void find() {

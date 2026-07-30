@@ -102,7 +102,13 @@ public final class ProjectActualDtos {
             long requiresReviewCount,
             String reconciliationStatus,
             BigDecimal reconciliationDifference,
-            OffsetDateTime lastSyncAt) {
+            OffsetDateTime lastSyncAt,
+            BigDecimal sourceLineActual,
+            BigDecimal nonInvoiceActual,
+            BigDecimal actualCost,
+            long sourceDocumentCount,
+            long sourceLineCount,
+            long unresolvedSourceLineCount) {
     }
 
     public record ProjectActualSyncResult(
@@ -116,7 +122,11 @@ public final class ProjectActualDtos {
             BigDecimal snapshotAmount,
             BigDecimal differenceAmount,
             String sourceFingerprint,
-            OffsetDateTime finishedAt) {
+            OffsetDateTime finishedAt,
+            int sourceDocumentCount,
+            int sourceLineCount,
+            int changedSourceLineCount,
+            int tombstoneSourceLineCount) {
     }
 
     public record ProviderActualRow(
@@ -133,6 +143,7 @@ public final class ProjectActualDtos {
             String currency,
             Integer actionType,
             Long actionId,
+            Long actionRowId,
             String documentType,
             String documentNo,
             String resolutionStatus,
@@ -144,5 +155,88 @@ public final class ProjectActualDtos {
             List<ProviderActualRow> rows,
             String nextCursor,
             boolean hasMore) {
+    }
+
+    public record ProviderSourceLineRow(
+            String sourceSystem,
+            int sourceLedgerYear,
+            long sourceCompanyId,
+            long sourceProjectId,
+            long sourceDocumentId,
+            long sourceLineId,
+            int lineOrdinal,
+            LocalDate documentDate,
+            String documentType,
+            String documentKind,
+            String documentNo,
+            String productName,
+            String description,
+            BigDecimal quantity,
+            String unit,
+            BigDecimal unitPrice,
+            BigDecimal netAmount,
+            BigDecimal taxRate,
+            BigDecimal taxAmount,
+            BigDecimal grossAmount,
+            String currency,
+            String accountCode,
+            boolean cancelled,
+            String sourceHash) {
+    }
+
+    public record ProviderSourceLinePage(
+            List<ProviderSourceLineRow> rows,
+            String nextCursor,
+            boolean hasMore) {
+    }
+
+    public record ProjectActualSourceLineRow(
+            UUID id,
+            UUID sourceDocumentId,
+            LocalDate documentDate,
+            String documentType,
+            String documentKind,
+            String documentNo,
+            long externalDocumentId,
+            long externalLineId,
+            int lineOrdinal,
+            String productName,
+            String description,
+            BigDecimal quantity,
+            String unit,
+            BigDecimal unitPrice,
+            BigDecimal netAmount,
+            BigDecimal taxRate,
+            BigDecimal taxAmount,
+            BigDecimal grossAmount,
+            BigDecimal costBasisAmount,
+            String currency,
+            String accountCode,
+            String lineMatchStatus,
+            String documentReconciliationStatus,
+            BigDecimal accountingCostTotal,
+            BigDecimal reconciliationDifference,
+            int accountingRowCount,
+            boolean cancelled,
+            OffsetDateTime syncedAt) {
+    }
+
+    public record ProjectActualSourceDocumentDetail(
+            UUID id,
+            LocalDate documentDate,
+            String documentType,
+            String documentKind,
+            String documentNo,
+            long externalDocumentId,
+            String currency,
+            BigDecimal sourceLineTotal,
+            BigDecimal accountingCostTotal,
+            BigDecimal reconciliationDifference,
+            String reconciliationStatus,
+            int accountingRowCount,
+            boolean cancelled,
+            OffsetDateTime syncedAt,
+            List<ProjectActualSourceLineRow> lines,
+            List<ProjectActualRow> accountingRows) {
     }
 }

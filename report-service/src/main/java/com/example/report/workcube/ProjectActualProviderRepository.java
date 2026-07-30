@@ -1,6 +1,7 @@
 package com.example.report.workcube;
 
 import static com.example.report.workcube.ProjectActualProviderDtos.ProjectActualRow;
+import static com.example.report.workcube.ProjectActualProviderDtos.ProjectSourceLineRow;
 
 import java.math.BigDecimal;
 import java.sql.Date;
@@ -62,6 +63,32 @@ public class ProjectActualProviderRepository {
         return rows;
     }
 
+    public List<ProjectSourceLineRow> findSourceLines(
+            long companyId,
+            long projectId,
+            LocalDate from,
+            LocalDate to,
+            SourceLineCursor cursor,
+            int limit) {
+        int perSchemaLimit = Math.min(Math.max(limit + 1, 2), 2001);
+        List<ProjectSourceLineRow> rows = new ArrayList<>();
+        for (String schema : findSchemas(companyId, from.getYear(), to.getYear())) {
+            int ledgerYear = schemaYear(schema);
+            if (cursor != null && ledgerYear < cursor.ledgerYear()) {
+                continue;
+            }
+            long afterLineId =
+                    cursor != null && ledgerYear == cursor.ledgerYear()
+                            ? cursor.sourceLineId()
+                            : 0L;
+            rows.addAll(querySourceLines(
+                    schema, companyId, projectId, from, to, afterLineId, perSchemaLimit));
+        }
+        rows.sort(Comparator.comparingInt(ProjectSourceLineRow::sourceLedgerYear)
+                .thenComparingLong(ProjectSourceLineRow::sourceLineId));
+        return rows;
+    }
+
     List<String> findSchemas(long companyId, int fromYear, int toYear) {
         return jdbc.queryForList(
                         DISCOVER_SCHEMAS,
@@ -108,6 +135,7 @@ public class ProjectActualProviderRepository {
                        ACR.AMOUNT_CURRENCY AS REPORTING_CURRENCY,
                        AC.ACTION_TYPE,
                        AC.ACTION_ID,
+                       AC.ACTION_ROW_ID,
                        AC.IS_CANCEL,
                        CASE
                            WHEN BA.GENEL_VIRMAN_ID IS NOT NULL OR AC.ACTION_TYPE = 23
@@ -192,6 +220,7 @@ public class ProjectActualProviderRepository {
                         normalizeCurrency(rs.getString("REPORTING_CURRENCY")),
                         nullableInteger(rs, "ACTION_TYPE"),
                         nullableLong(rs, "ACTION_ID"),
+                        nullableLong(rs, "ACTION_ROW_ID"),
                         rs.getString("DOCUMENT_TYPE"),
                         rs.getString("DOCUMENT_NO"),
                         rs.getString("RESOLUTION_STATUS"),
@@ -201,6 +230,87 @@ public class ProjectActualProviderRepository {
                 Date.valueOf(from),
                 Date.valueOf(to.plusDays(1)),
                 afterRowId);
+    }
+
+    private List<ProjectSourceLineRow> querySourceLines(
+            String schema,
+            long companyId,
+            long projectId,
+            LocalDate from,
+            LocalDate to,
+            long afterLineId,
+            int limit) {
+        if (!YEARLY_SCHEMA.matcher(schema).matches()) {
+            throw new IllegalArgumentException("Unexpected yearly accounting schema");
+        }
+        String sql = """
+                SELECT TOP (%d)
+                       IR.INVOICE_ROW_ID,
+                       IR.INVOICE_ID,
+                       (
+                           SELECT COUNT(*)
+                             FROM [%s].[INVOICE_ROW] IR2
+                            WHERE IR2.INVOICE_ID = IR.INVOICE_ID
+                              AND IR2.INVOICE_ROW_ID <= IR.INVOICE_ROW_ID
+                       ) AS LINE_ORDINAL,
+                       INV.INVOICE_DATE,
+                       INV.INVOICE_CAT,
+                       INV.INVOICE_NUMBER,
+                       IR.NAME_PRODUCT,
+                       IR.DESCRIPTION,
+                       IR.AMOUNT AS QUANTITY,
+                       IR.UNIT,
+                       IR.PRICE AS UNIT_PRICE,
+                       IR.NETTOTAL AS NET_AMOUNT,
+                       IR.TAX AS TAX_RATE,
+                       IR.TAXTOTAL AS TAX_AMOUNT,
+                       IR.GROSSTOTAL AS GROSS_AMOUNT,
+                       IR.OTHER_MONEY AS CURRENCY_CODE,
+                       IR.ROW_ACC_CODE AS ACCOUNT_CODE
+                  FROM [%s].[INVOICE_ROW] IR
+                  JOIN [%s].[INVOICE] INV
+                    ON INV.INVOICE_ID = IR.INVOICE_ID
+                 WHERE IR.ROW_PROJECT_ID = ?
+                   AND INV.INVOICE_DATE >= ?
+                   AND INV.INVOICE_DATE < ?
+                   AND IR.INVOICE_ROW_ID > ?
+                 ORDER BY IR.INVOICE_ROW_ID
+                """.formatted(limit, schema, schema, schema);
+
+        return jdbc.query(
+                sql,
+                (rs, rowNum) -> {
+                    int invoiceCategory = rs.getInt("INVOICE_CAT");
+                    return new ProjectSourceLineRow(
+                            "WORKCUBE",
+                            schemaYear(schema),
+                            companyId,
+                            projectId,
+                            rs.getLong("INVOICE_ID"),
+                            rs.getLong("INVOICE_ROW_ID"),
+                            rs.getInt("LINE_ORDINAL"),
+                            rs.getDate("INVOICE_DATE").toLocalDate(),
+                            "INVOICE",
+                            invoiceKind(invoiceCategory),
+                            rs.getString("INVOICE_NUMBER"),
+                            rs.getString("NAME_PRODUCT"),
+                            rs.getString("DESCRIPTION"),
+                            rs.getBigDecimal("QUANTITY"),
+                            rs.getString("UNIT"),
+                            rs.getBigDecimal("UNIT_PRICE"),
+                            zeroIfNull(rs.getBigDecimal("NET_AMOUNT")),
+                            rs.getBigDecimal("TAX_RATE"),
+                            zeroIfNull(rs.getBigDecimal("TAX_AMOUNT")),
+                            zeroIfNull(rs.getBigDecimal("GROSS_AMOUNT")),
+                            normalizeInvoiceCurrency(rs.getString("CURRENCY_CODE")),
+                            rs.getString("ACCOUNT_CODE"),
+                            false,
+                            null);
+                },
+                projectId,
+                Date.valueOf(from),
+                Date.valueOf(to.plusDays(1)),
+                afterLineId);
     }
 
     private static int schemaYear(String schema) {
@@ -244,6 +354,30 @@ public class ProjectActualProviderRepository {
         return value.length() == 3 ? value : "XXX";
     }
 
+    private static String normalizeInvoiceCurrency(String raw) {
+        if (raw == null || raw.isBlank() || "0".equals(raw.trim())) {
+            return "TRY";
+        }
+        return normalizeCurrency(raw);
+    }
+
+    private static String invoiceKind(int category) {
+        return switch (category) {
+            case 56 -> "PURCHASE_INVOICE";
+            case 57 -> "PURCHASE_RETURN";
+            case 59 -> "SALES_INVOICE";
+            case 60 -> "SALES_RETURN";
+            default -> "OTHER_INVOICE";
+        };
+    }
+
+    private static BigDecimal zeroIfNull(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
     public record Cursor(int ledgerYear, long journalRowId) {
+    }
+
+    public record SourceLineCursor(int ledgerYear, long sourceLineId) {
     }
 }

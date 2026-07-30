@@ -81,6 +81,12 @@ public class BudgetForbiddenObservationFilter extends OncePerRequestFilter {
         if (requestUri.endsWith("/actuals/sync")) {
             return "project_actuals_sync";
         }
+        if (requestUri.endsWith("/actuals/source-lines")) {
+            return "project_actuals_source_lines";
+        }
+        if (requestUri.contains("/actuals/source-documents/")) {
+            return "project_actuals_source_document";
+        }
         if (requestUri.endsWith("/actuals/summary")) {
             return "project_actuals_summary";
         }
