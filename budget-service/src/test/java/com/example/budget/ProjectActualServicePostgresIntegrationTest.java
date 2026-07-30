@@ -319,6 +319,70 @@ class ProjectActualServicePostgresIntegrationTest {
     }
 
     @Test
+    void preAccountingExpenseAndDepreciationSourcesReplaceAccountingFallback() {
+        BudgetActor actor = new BudgetActor(
+                "tenant-operational-sources",
+                35L,
+                "cost-controller",
+                Set.of(44200L),
+                false);
+        ProjectBindingView binding = inTransaction(() -> service.createBinding(
+                actor,
+                new CreateProjectBindingRequest(
+                        "platform-project-idc1-operational-sources",
+                        "WORKCUBE",
+                        35L,
+                        44200L,
+                        "44200")));
+        inTransaction(() -> service.replaceAndActivateRules(
+                actor,
+                new ReplaceCostRulesRequest(List.of(
+                        new CostRuleInput(
+                                10, "740", "INCLUDE_COST", "INCLUDE_NEGATIVE_COST", null)))));
+
+        provider.rows.set(List.of(
+                sourceAccountingRow(21, "740.01", "75.00", 7100L, "EXPENSE"),
+                sourceAccountingRow(22, "740.02", "50.00", 7200L, "DEPRECIATION")));
+        provider.sourceLines.set(List.of(
+                operationalSourceLine(
+                        7100L, 711L, "EXPENSE", "EXPENSE", "Site expense", "75.00"),
+                operationalSourceLine(
+                        7200L,
+                        721L,
+                        "FIXED_ASSET",
+                        "DEPRECIATION",
+                        "Monthly depreciation",
+                        "50.00")));
+
+        ProjectActualSyncResult first = service.sync(
+                actor,
+                binding.id(),
+                new ProjectActualSyncRequest(FROM, TO),
+                "Bearer synthetic-test-token");
+
+        assertThat(first.status()).isEqualTo("MATCHED");
+        assertThat(first.sourceDocumentCount()).isEqualTo(2);
+        assertThat(first.sourceLineCount()).isEqualTo(2);
+
+        ProjectActualSummary summary = inTransaction(() ->
+                service.summary(actor, binding.id(), FROM, TO));
+        assertThat(summary.sourceLineActual()).isEqualByComparingTo("125.00");
+        assertThat(summary.unlinkedAccountingActual()).isZero();
+        assertThat(summary.actualCost()).isEqualByComparingTo("125.00");
+
+        List<ProjectActualSourceLineRow> lines = inTransaction(() ->
+                service.sourceLines(actor, binding.id(), FROM, TO, 100));
+        assertThat(lines)
+                .extracting(ProjectActualSourceLineRow::documentKind)
+                .containsExactlyInAnyOrder("EXPENSE", "DEPRECIATION");
+        assertThat(lines)
+                .allSatisfy(line -> {
+                    assertThat(line.lineMatchStatus()).isEqualTo("RECONCILED");
+                    assertThat(line.documentReconciliationStatus()).isEqualTo("RECONCILED");
+                });
+    }
+
+    @Test
     void projectOutsideAuthoritativeScopeFailsBeforeBindingWrite() {
         BudgetActor actor = new BudgetActor(
                 "tenant-denied", 35L, "reader", Set.of(99L), false);
@@ -557,6 +621,34 @@ class ProjectActualServicePostgresIntegrationTest {
                 null));
     }
 
+    private static ProviderActualRow sourceAccountingRow(
+            long rowId,
+            String accountCode,
+            String amount,
+            long documentId,
+            String documentType) {
+        return withHash(new ProviderActualRow(
+                "WORKCUBE",
+                2026,
+                35L,
+                44200L,
+                9000L,
+                rowId,
+                LocalDate.of(2026, 6, 10),
+                accountCode,
+                "DEBIT",
+                new BigDecimal(amount),
+                "TRY",
+                99,
+                documentId,
+                null,
+                documentType,
+                "SYNTH-" + documentType,
+                "HEADER_ONLY",
+                false,
+                null));
+    }
+
     private static ProviderSourceLineRow sourceLine(
             long sourceLineId,
             int ordinal,
@@ -585,6 +677,40 @@ class ProjectActualServicePostgresIntegrationTest {
                 new BigDecimal("20.00"),
                 new BigDecimal(taxAmount),
                 new BigDecimal(grossAmount),
+                "TRY",
+                null,
+                false,
+                null));
+    }
+
+    private static ProviderSourceLineRow operationalSourceLine(
+            long sourceDocumentId,
+            long sourceLineId,
+            String documentType,
+            String documentKind,
+            String description,
+            String amount) {
+        return withSourceLineHash(new ProviderSourceLineRow(
+                "WORKCUBE",
+                2026,
+                35L,
+                44200L,
+                sourceDocumentId,
+                sourceLineId,
+                1,
+                LocalDate.of(2026, 6, 10),
+                documentType,
+                documentKind,
+                "SYNTH-" + documentType,
+                description,
+                "Synthetic operational source",
+                BigDecimal.ONE,
+                "EA",
+                new BigDecimal(amount),
+                new BigDecimal(amount),
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                new BigDecimal(amount),
                 "TRY",
                 null,
                 false,
