@@ -9,6 +9,7 @@ import com.example.permission.model.UserPermissionScope;
 import com.example.permission.repository.UserPermissionScopeRepository;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
@@ -78,7 +79,7 @@ public class AuthorizationQueryService {
      * the {@code /authz/me} endpoint keeps working without OpenFGA
      * running locally.
      */
-    @Transactional(readOnly = true)
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public Map<String, Set<Long>> getUserScopeSummary(Long userId) {
         return getUserScopeSummary(userId, null);
     }
@@ -95,12 +96,16 @@ public class AuthorizationQueryService {
      * @param kcSub verified Keycloak subject for the SAME principal as {@code userId}, or
      *              {@code null} when the caller has no JWT in hand
      */
-    @Transactional(readOnly = true)
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public Map<String, Set<Long>> getUserScopeSummary(Long userId, String kcSub) {
         if (userId == null) {
             return Map.of();
         }
         if (openFgaScopeReader != null) {
+            // OpenFGA is a remote authority. Explicitly suspend any caller transaction so its
+            // latency never occupies a permission-service database connection. The DB fallback
+            // below remains safe: Spring Data opens a short read transaction for the fetch-join
+            // repository call and returns fully materialized permission/scope rows.
             // Reader returns scope-type keys upper-case (COMPANY,
             // PROJECT, WAREHOUSE, BRANCH) — same shape as the legacy
             // DB-based map (user_permission_scopes.scope_type column

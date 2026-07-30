@@ -97,8 +97,13 @@ public class AuthorizationControllerV1 {
     }
 
     @GetMapping("/me")
-    @Transactional(readOnly = true)
     public ResponseEntity<AuthzMeResponseDto> getMe(@AuthenticationPrincipal Jwt jwt) {
+        // Do not wrap the complete projection in one database transaction. This request performs
+        // identity-directory and OpenFGA network calls; holding a Hikari connection while those
+        // calls are in flight exhausted the five-connection TEST pool under concurrent /authz/me
+        // traffic. Repository/service methods below already own their short read transactions.
+        // Keeping this orchestration method non-transactional preserves the same fail-closed
+        // authorization result without turning remote-call latency into database-pool starvation.
         try {
             return doGetMe(jwt);
         } catch (ResponseStatusException ex) {
