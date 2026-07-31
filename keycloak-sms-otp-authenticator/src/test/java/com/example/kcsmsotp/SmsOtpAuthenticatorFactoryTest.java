@@ -15,12 +15,18 @@ import org.keycloak.provider.ProviderConfigProperty;
 class SmsOtpAuthenticatorFactoryTest {
 
     @Test
-    void servicesFile_registersExactlyThisFactory() throws Exception {
+    void servicesFile_registersExactlyTheTwoChannelFactories() throws Exception {
+        // Was "exactly this factory" until gitops#3230 added the e-mail
+        // channel. Still exact: an unregistered factory is invisible to
+        // Keycloak, and an unexpected one is a supply-chain question.
         try (InputStream in = getClass().getClassLoader().getResourceAsStream(
                 "META-INF/services/org.keycloak.authentication.AuthenticatorFactory")) {
             assertThat(in).isNotNull();
             String content = new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
-            assertThat(content).isEqualTo(SmsOtpAuthenticatorFactory.class.getName());
+            assertThat(content.lines().map(String::trim).filter(l -> !l.isEmpty()).toList())
+                    .containsExactlyInAnyOrder(
+                            SmsOtpAuthenticatorFactory.class.getName(),
+                            EmailOtpAuthenticatorFactory.class.getName());
         }
     }
 
@@ -33,8 +39,12 @@ class SmsOtpAuthenticatorFactoryTest {
                 .filter(f -> f instanceof SmsOtpAuthenticatorFactory)
                 .toList();
 
-        assertThat(loaded).hasSize(1);
-        assertThat(loaded.get(0).getId()).isEqualTo("sms-otp");
+        // Two providers now — the e-mail factory is a subclass, so it matches
+        // the same instanceof. What must stay true is that their ids differ:
+        // a duplicate id means one silently shadows the other in Keycloak.
+        assertThat(loaded).hasSize(2);
+        assertThat(loaded.stream().map(AuthenticatorFactory::getId).toList())
+                .containsExactlyInAnyOrder("sms-otp", "email-otp");
     }
 
     @Test
@@ -58,6 +68,7 @@ class SmsOtpAuthenticatorFactoryTest {
                 SmsOtpConfig.CFG_ORG_ID,
                 SmsOtpConfig.CFG_TOPIC_KEY,
                 SmsOtpConfig.CFG_TEMPLATE_ID,
+                SmsOtpConfig.CFG_CHANNEL,
                 SmsOtpConfig.CFG_TTL_SECONDS,
                 SmsOtpConfig.CFG_MAX_ATTEMPTS,
                 SmsOtpConfig.CFG_MAX_RESENDS,
@@ -83,5 +94,30 @@ class SmsOtpAuthenticatorFactoryTest {
         assertThat(SmsOtpAuthenticator.mask("+905321234567")).isEqualTo("+90********67");
         assertThat(SmsOtpAuthenticator.mask(null)).isEqualTo("***");
         assertThat(SmsOtpAuthenticator.mask("+90")).isEqualTo("***");
+    }
+
+    // ── channel parameterisation (gitops#3230) ──────────────────────────
+
+    @Test
+    void emailFactory_registersItsOwnIdAndDefaultsToTheEmailChannel() {
+        EmailOtpAuthenticatorFactory email = new EmailOtpAuthenticatorFactory();
+
+        assertThat(email.getId()).isEqualTo("email-otp");
+        assertThat(email.getId()).isNotEqualTo(new SmsOtpAuthenticatorFactory().getId());
+        assertThat(email.defaultConfig())
+                .containsEntry(SmsOtpConfig.CFG_CHANNEL, "email")
+                .containsEntry(SmsOtpConfig.CFG_TOPIC_KEY, "auth.mfa.email-otp")
+                .containsEntry(SmsOtpConfig.CFG_TEMPLATE_ID, "auth.email-otp");
+    }
+
+    @Test
+    void bothFactoriesExposeTheSameKnobs() {
+        // The e-mail factory must not quietly drop a control the SMS one has;
+        // that is how a fork starts.
+        var smsNames = new SmsOtpAuthenticatorFactory().getConfigProperties()
+                .stream().map(p -> p.getName()).sorted().toList();
+        var emailNames = new EmailOtpAuthenticatorFactory().getConfigProperties()
+                .stream().map(p -> p.getName()).sorted().toList();
+        assertThat(emailNames).isEqualTo(smsNames);
     }
 }

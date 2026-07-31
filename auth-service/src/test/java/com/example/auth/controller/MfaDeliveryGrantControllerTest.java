@@ -119,7 +119,27 @@ class MfaDeliveryGrantControllerTest {
 
     @Test
     void unlistedChannel_isRefused() throws Exception {
-        mockMvc.perform(grantRequest("keycloak-sms-otp", "kc-sms-secret", "+905321234567", "email", "auth.mfa.sms-otp", "auth.sms-otp"))
+        // Was "email" until gitops#3230 made e-mail a real second factor. The
+        // assertion is about an UNLISTED channel, so it needs one that
+        // genuinely is not on the list.
+        mockMvc.perform(grantRequest("keycloak-sms-otp", "kc-sms-secret", "+905321234567", "push", "auth.mfa.sms-otp", "auth.sms-otp"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void emailChannel_acceptsAnAddressAndRefusesAPhoneNumber() throws Exception {
+        // The recipient shape follows the channel. Pinning E.164 for every
+        // channel would refuse every e-mail grant before the lane started.
+        mockMvc.perform(grantRequest("keycloak-sms-otp", "kc-sms-secret", "ops@acik.com", "email", "auth.mfa.email-otp", "auth.email-otp"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(grantRequest("keycloak-sms-otp", "kc-sms-secret", "+905321234567", "email", "auth.mfa.email-otp", "auth.email-otp"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void smsChannel_stillRefusesAnAddress() throws Exception {
+        mockMvc.perform(grantRequest("keycloak-sms-otp", "kc-sms-secret", "ops@acik.com", "sms", "auth.mfa.sms-otp", "auth.sms-otp"))
                 .andExpect(status().isBadRequest());
     }
 

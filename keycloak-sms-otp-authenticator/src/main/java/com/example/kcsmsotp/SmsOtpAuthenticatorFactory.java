@@ -107,7 +107,11 @@ public class SmsOtpAuthenticatorFactory implements AuthenticatorFactory {
                 property(SmsOtpConfig.CFG_MAX_ATTEMPTS, "Max verify attempts", "default 3"),
                 property(SmsOtpConfig.CFG_MAX_RESENDS, "Max resends", "default 2"),
                 property(SmsOtpConfig.CFG_PHONE_ATTRIBUTE, "Phone attribute",
-                        "User attribute holding the E.164 number (default phoneNumber)"));
+                        "User attribute holding the E.164 number (default phoneNumber)"),
+                property(SmsOtpConfig.CFG_CHANNEL, "Delivery channel",
+                        "sms (default) or email. Also selects the default topic/template "
+                                + "(auth.mfa.<channel>-otp / auth.<channel>-otp) and the notify "
+                                + "recipient key, so naming the channel is enough."));
     }
 
     private static ProviderConfigProperty property(String name, String label, String help) {

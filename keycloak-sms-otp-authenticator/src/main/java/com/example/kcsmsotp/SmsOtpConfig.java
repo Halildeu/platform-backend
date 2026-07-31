@@ -29,6 +29,10 @@ final class SmsOtpConfig {
     static final String CFG_MAX_ATTEMPTS = "max-attempts";
     static final String CFG_MAX_RESENDS = "max-resends";
     static final String CFG_PHONE_ATTRIBUTE = "phone-attribute";
+    static final String CFG_CHANNEL = "delivery-channel";
+
+    static final String CHANNEL_SMS = "sms";
+    static final String CHANNEL_EMAIL = "email";
 
     final String tokenUrl;
     final String grantUrl;
@@ -42,6 +46,8 @@ final class SmsOtpConfig {
     final int maxAttempts;
     final int maxResends;
     final String phoneAttribute;
+    /** notify delivery channel: {@value #CHANNEL_SMS} or {@value #CHANNEL_EMAIL}. */
+    final String channel;
 
     private SmsOtpConfig(Map<String, String> cfg, Function<String, String> env) {
         this.tokenUrl = value(cfg, CFG_TOKEN_URL, "");
@@ -54,12 +60,33 @@ final class SmsOtpConfig {
         this.clientId = value(cfg, CFG_CLIENT_ID, "keycloak-sms-otp");
         this.secret = env.apply(SECRET_ENV) == null ? "" : env.apply(SECRET_ENV);
         this.orgId = value(cfg, CFG_ORG_ID, "platform-system");
-        this.topicKey = value(cfg, CFG_TOPIC_KEY, "auth.mfa.sms-otp");
-        this.templateId = value(cfg, CFG_TEMPLATE_ID, "auth.sms-otp");
+        // Read the channel first: the topic/template defaults follow it, so a
+        // deployment only has to name the channel to get a coherent set.
+        String channelForDefaults = CHANNEL_EMAIL.equalsIgnoreCase(
+                value(cfg, CFG_CHANNEL, CHANNEL_SMS)) ? CHANNEL_EMAIL : CHANNEL_SMS;
+        this.topicKey = value(cfg, CFG_TOPIC_KEY, "auth.mfa." + channelForDefaults + "-otp");
+        this.templateId = value(cfg, CFG_TEMPLATE_ID, "auth." + channelForDefaults + "-otp");
         this.ttlSeconds = intValue(cfg, CFG_TTL_SECONDS, 300);
         this.maxAttempts = intValue(cfg, CFG_MAX_ATTEMPTS, 3);
         this.maxResends = intValue(cfg, CFG_MAX_RESENDS, 2);
         this.phoneAttribute = value(cfg, CFG_PHONE_ATTRIBUTE, "phoneNumber");
+        // Defaults to SMS so an existing execution's config, written before
+        // this key existed, keeps behaving exactly as it did.
+        String ch = value(cfg, CFG_CHANNEL, CHANNEL_SMS);
+        this.channel = CHANNEL_EMAIL.equalsIgnoreCase(ch) ? CHANNEL_EMAIL : CHANNEL_SMS;
+    }
+
+    boolean isEmail() {
+        return CHANNEL_EMAIL.equals(channel);
+    }
+
+    /**
+     * The notify recipient key. notify's external recipient is
+     * {@code {type: external, phone|email: …}} — the key names the channel,
+     * so it moves with it.
+     */
+    String recipientKey() {
+        return isEmail() ? "email" : "phone";
     }
 
     static SmsOtpConfig from(AuthenticatorConfigModel model, Function<String, String> env) {
