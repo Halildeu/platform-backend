@@ -90,6 +90,8 @@ public class SmsOtpAuthenticatorFactory implements AuthenticatorFactory {
         return List.of(
                 property(SmsOtpConfig.CFG_TOKEN_URL, "Auth token URL",
                         "auth-service client-credentials endpoint, e.g. http://k3d-test-server-0:31088/oauth2/token"),
+                property(SmsOtpConfig.CFG_GRANT_URL, "Auth MFA delivery grant URL",
+                        "auth-service one-shot delivery grant endpoint; defaults to the token URL with /token replaced by /mfa-delivery-grant"),
                 property(SmsOtpConfig.CFG_INTENT_URL, "Notify intent URL",
                         "notification-orchestrator internal submit endpoint, e.g. "
                                 + "http://k3d-test-server-0:31089/api/v1/internal/notify/intents"),

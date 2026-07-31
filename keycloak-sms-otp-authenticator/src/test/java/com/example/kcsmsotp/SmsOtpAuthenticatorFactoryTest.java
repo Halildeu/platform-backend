@@ -52,6 +52,7 @@ class SmsOtpAuthenticatorFactoryTest {
 
         assertThat(names).containsExactlyInAnyOrder(
                 SmsOtpConfig.CFG_TOKEN_URL,
+                SmsOtpConfig.CFG_GRANT_URL,
                 SmsOtpConfig.CFG_INTENT_URL,
                 SmsOtpConfig.CFG_CLIENT_ID,
                 SmsOtpConfig.CFG_ORG_ID,

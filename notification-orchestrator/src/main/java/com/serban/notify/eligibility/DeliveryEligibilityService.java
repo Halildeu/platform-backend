@@ -182,7 +182,19 @@ public class DeliveryEligibilityService {
                 workerMetrics.authzBypass(target.channel());
             }
         }
-        if (authzEnabled && !isChannelRecipient(target)) {
+        if (authzEnabled && !isChannelRecipient(target) && isAuthorisedAuthenticationChallenge(intent, target)) {
+            // gitops#3212: auth-service already authorised THIS exact delivery
+            // at submit time (verified grant; evidence persisted server-side).
+            // A one-time MFA code goes to the account holder's own verified
+            // number mid-login — there is no durable can_receive relationship
+            // to model, and a tuple per phone would neither scale nor survive
+            // a number change. ONLY the recipient-tuple check is skipped:
+            // external policy, preference, template resolution, rate limits,
+            // idempotency and audit are untouched.
+            if (workerMetrics != null) {
+                workerMetrics.authzBypass(target.channel());
+            }
+        } else if (authzEnabled && !isChannelRecipient(target)) {
             String principalType = isSubscriberRecipient(target) ? "subscriber" : "external";
             String principalId = isSubscriberRecipient(target)
                 ? target.recipientId()
@@ -234,6 +246,30 @@ public class DeliveryEligibilityService {
         // Subscriber/external Layer-2 fully enforced as of this PR.
 
         return EligibilityDecision.allow();
+    }
+
+    /**
+     * True only when every server-written field of the authentication-challenge
+     * evidence still matches the delivery about to be made, and its window is
+     * open. Anything short of an exact match falls through to the ordinary
+     * authz check — a partially matching grant authorises nothing.
+     */
+    private static boolean isAuthorisedAuthenticationChallenge(NotificationIntent intent,
+                                                               DeliveryTarget target) {
+        if (!"AUTHENTICATION_CHALLENGE".equals(intent.getDeliveryClass())) {
+            return false;
+        }
+        if (intent.getGrantDeliverBefore() == null
+                || java.time.OffsetDateTime.now().isAfter(intent.getGrantDeliverBefore())) {
+            return false;
+        }
+        if (isSubscriberRecipient(target)) {
+            // The grant binds an external recipient; a subscriber target is a
+            // different delivery and takes the normal path.
+            return false;
+        }
+        return intent.getGrantRecipientHash() != null
+                && intent.getGrantRecipientHash().equals(target.recipientHash());
     }
 
     private static boolean isChannelRecipient(DeliveryTarget target) {

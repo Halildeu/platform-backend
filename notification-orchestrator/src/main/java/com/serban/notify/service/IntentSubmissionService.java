@@ -94,6 +94,20 @@ public class IntentSubmissionService {
 
     @Transactional
     public SubmitIntentResponse submit(SubmitIntentRequest request) {
+        return submit(request, null);
+    }
+
+    /**
+     * @param verifiedGrant evidence that auth-service authorised THIS exact
+     *        delivery as an authentication challenge (gitops#3212), already
+     *        verified against this request at the trust boundary, or null for
+     *        an ordinary notification. Callers cannot fabricate it: the only
+     *        producer is {@code MfaDeliveryGrantVerifier}, and the persisted
+     *        recipient hash is computed HERE, never taken from the caller.
+     */
+    @Transactional
+    public SubmitIntentResponse submit(SubmitIntentRequest request,
+            com.serban.notify.authz.MfaDeliveryGrant verifiedGrant) {
         // Step 0: Recipient + channel validation (Codex post-impl bulgu #3, #4)
         validateRecipientsAndChannels(request);
 
@@ -209,6 +223,19 @@ public class IntentSubmissionService {
 
         // Step 5: Persist intent
         NotificationIntent intent = mapToEntity(request, resolved);
+        if (verifiedGrant != null) {
+            intent.setDeliveryClass("AUTHENTICATION_CHALLENGE");
+            intent.setGrantJti(verifiedGrant.jti());
+            intent.setGrantSubject(verifiedGrant.subject());
+            // Computed here on purpose: the worker compares this against the
+            // hash it derives from the delivery target, so a caller-supplied
+            // value would let a grant point at one number and the delivery go
+            // to another.
+            intent.setGrantRecipientHash(
+                piiRedactor.hashRecipient(request.orgId(), "external", verifiedGrant.recipient()));
+            intent.setGrantDeliverBefore(
+                verifiedGrant.deliverBefore().atOffset(java.time.ZoneOffset.UTC));
+        }
         intentRepository.save(intent);
 
         // Step 6: Register idempotency key

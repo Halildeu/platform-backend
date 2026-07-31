@@ -116,7 +116,9 @@ public class SmsOtpAuthenticator implements Authenticator {
                 + context.getAuthenticationSession().getParentSession().getId()
                 + "-" + store.resendCount(notes);
         try {
-            new NotifySmsGateway(http, mapper, cfg).send(phone, localeTag, code, idempotencyKey);
+            new NotifySmsGateway(http, mapper, cfg).send(phone, localeTag, code, idempotencyKey,
+                    context.getUser().getId(),
+                    context.getAuthenticationSession().getParentSession().getId());
             challenge(context, phone, null);
         } catch (SmsSendException e) {
             LOG.warnf("sms-otp send failed (client-side detail withheld from user): %s", e.getMessage());
