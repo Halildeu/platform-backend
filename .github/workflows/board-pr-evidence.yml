@@ -19,7 +19,44 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # The PAT-missing fallback (#1085) only covers an EMPTY expansion. A PAT
+      # that exists but is expired or under-scoped fails one step earlier, in
+      # actions/checkout, with an opaque `Bad credentials` — before any of that
+      # graceful logic can run. Live on PR #1038 (2026-07-31): the secret was
+      # present, the checkout was rejected, and the only signal was a red check
+      # naming neither the secret nor the cause.
+      #
+      # So probe the token first and treat "rejected" exactly like "absent":
+      # skip the cross-repo checkout, keep the run green, and say plainly which
+      # secret needs rotating. A merge is not the moment to discover that a
+      # governance credential expired, and a red check that cannot be actioned
+      # from its own output teaches people to ignore red checks.
+      - name: Probe the board PAT
+        id: pat
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+        run: |
+          set -uo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+            echo "reason=absent" >> "$GITHUB_OUTPUT"
+            echo "::warning::ADD_TO_PROJECT_PAT is not set; board evidence skipped."
+            exit 0
+          fi
+          code="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Halildeu/platform-k8s-gitops || echo 000)"
+          if [ "$code" = "200" ]; then
+            echo "usable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+            echo "reason=rejected-$code" >> "$GITHUB_OUTPUT"
+            echo "::warning::ADD_TO_PROJECT_PAT was rejected (HTTP $code) reading Halildeu/platform-k8s-gitops - expired or missing the cross-repo grant; board evidence skipped. Rotate the secret (Org Projects R+W, per-repo Issues R+W, Metadata R, sibling repos)."
+          fi
+
       - name: Checkout platform-k8s-gitops (board-sync.sh)
+        if: steps.pat.outputs.usable == 'true'
         uses: actions/checkout@v6
         with:
           repository: Halildeu/platform-k8s-gitops
@@ -27,6 +64,7 @@ jobs:
           persist-credentials: false
 
       - name: board-sync verify for each Tracked-by ref
+        if: steps.pat.outputs.usable == 'true'
         env:
           GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
