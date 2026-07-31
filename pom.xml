@@ -37,5 +37,7 @@
         <module>gp-core-service</module>
         <!-- Faz 35 Etik Speak — isolated public intake and staff case service -->
         <module>ethics-service</module>
+        <!-- Faz 22 Sec (gitops#3212) — Keycloak providers/ JAR, not a Spring service -->
+        <module>keycloak-sms-otp-authenticator</module>
     </modules>
 </project>
