@@ -36,6 +36,18 @@ spring:
           issuer-uri: ${KEYCLOAK_ISSUER_URI:http://keycloak:8080/realms/serban}
           jwk-set-uri: ${KEYCLOAK_JWKS_URI:http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
 
+# gitops#3211 — panel MFA section proxy. Narrow KC admin surface via the
+# dedicated user-mfa-admin confidential client (realm-management view-users
+# + manage-users only). Blank secret keeps the surface disabled fail-closed
+# (503) — prod stays off until owner-gated provisioning.
+keycloak:
+  admin-api:
+    base-url: ${KEYCLOAK_ADMIN_API_BASE_URL:http://keycloak:8080}
+    realm: ${KEYCLOAK_ADMIN_API_REALM:platform-test}
+    client-id: ${KEYCLOAK_ADMIN_API_CLIENT_ID:user-mfa-admin}
+    client-secret: ${KEYCLOAK_ADMIN_API_CLIENT_SECRET:}
+    timeout-millis: ${KEYCLOAK_ADMIN_API_TIMEOUT_MILLIS:5000}
+
 server:
   port: ${SERVER_PORT:8089}
 
