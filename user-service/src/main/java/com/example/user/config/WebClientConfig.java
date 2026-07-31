@@ -22,7 +22,14 @@ import org.springframework.beans.factory.annotation.Value;
 @Configuration
 public class WebClientConfig {
 
-    @Value("${user.webclient.response-timeout-seconds:30}")
+    // 30s was an emergency ceiling raised while the by-email lookup was
+    // taking 14.3s client-side against a 49ms server-side handler. That was a
+    // single-carrier virtual-thread stall (gitops#3210), now fixed: the same
+    // call measures 54ms and /api/v1/users answers in 258ms. Holding a
+    // connection for 30s in a chain that answers in milliseconds turns one
+    // slow downstream into six held resources, so the ceiling comes back down
+    // to a value that is still ~150x the measured peak.
+    @Value("${user.webclient.response-timeout-seconds:8}")
     private long responseTimeoutSeconds;
 
     @Value("${user.webclient.connect-timeout-millis:3000}")
