@@ -17,13 +17,15 @@
 -- 2 paid segments per OTP instead of 1.
 --
 -- Payload contract: {code}, rendered through the Thymeleaf vars namespace.
--- The dollar sign is concatenated in (never adjacent to '{' in this file)
--- because Flyway scans raw migration text for its OWN ${...} placeholder
--- syntax and fails the script otherwise; script-scoped
--- placeholderReplacement=false is not honoured by OSS Flyway (measured: CI
--- runs 30604489528 and 30604960812, identical failure with the .conf
--- present). The stored value is the literal inline expression the renderer
--- expects.
+-- The dollar sign is concatenated in, and NOWHERE in this file — comments
+-- included — may a dollar sign sit directly before an opening brace:
+-- Flyway scans the raw migration text (comments too) for its own
+-- dollar-brace placeholder syntax and fails the whole script on sight.
+-- Script-scoped placeholderReplacement=false is not honoured by OSS Flyway
+-- (measured: CI runs 30604489528 / 30604960812 identical with the .conf
+-- present; run 30605734117 then failed on this very comment when it
+-- spelled the syntax out literally). The stored value is the literal
+-- inline expression the renderer expects.
 
 INSERT INTO notify.notification_template
     (template_id, version, locale, subject, body_html, body_text,
