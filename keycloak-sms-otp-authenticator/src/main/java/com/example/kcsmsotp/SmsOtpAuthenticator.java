@@ -58,9 +58,19 @@ public class SmsOtpAuthenticator implements Authenticator {
         if (phone == null || !cfg.isSendable()) {
             // Not usable for this user/deployment — let the sibling ALTERNATIVE
             // (TOTP form) carry the subflow instead of failing the login.
+            // Logged because silence here is indistinguishable from "never
+            // invoked", and the two have completely different fixes: a missing
+            // phone is a user/user-profile problem, a non-sendable config is a
+            // deployment problem. No phone number is logged.
+            LOG.warnf("sms-otp not usable: phone=%s tokenUrl=%s intentUrl=%s secret=%s",
+                    phone == null ? "absent" : "present",
+                    cfg.tokenUrl.isBlank() ? "blank" : "set",
+                    cfg.intentUrl.isBlank() ? "blank" : "set",
+                    cfg.secret.isBlank() ? "blank" : "set");
             context.attempted();
             return;
         }
+        LOG.infof("sms-otp selected for user; delivering code via notify");
 
         SmsOtpCodeStore store = store(cfg);
         Notes notes = new Notes(context.getAuthenticationSession());
@@ -172,10 +182,21 @@ public class SmsOtpAuthenticator implements Authenticator {
 
     @Override
     public boolean configuredFor(KeycloakSession session, RealmModel realm, UserModel user) {
-        // Drives "Try another way" listing: only offer SMS when the deployment
-        // can actually send (URLs + secret) AND the user has a valid phone.
-        SmsOtpConfig cfg = SmsOtpConfig.from(null, System::getenv);
-        return phoneOf(user, cfg) != null && !cfg.secret.isBlank();
+        // Deliberately always true.
+        //
+        // Keycloak calls this WITHOUT the execution's authenticator config, so
+        // the deployment URLs are invisible here; and the phone lives in a
+        // user-profile attribute whose visibility in this context is not
+        // something an authenticator should depend on. Measured 2026-07-31: a
+        // conditional false here made Keycloak skip the execution entirely —
+        // no log line, no form, the second factor silently absent — which is
+        // the worst failure mode for an MFA lane.
+        //
+        // Usability is decided in authenticate() instead, where the real
+        // config IS available: a user without a phone (or a deployment with
+        // no credentials) falls through to attempted() and the sibling TOTP
+        // alternative carries the subflow.
+        return true;
     }
 
     @Override
