@@ -157,6 +157,24 @@ security:
           user-service:
             - users:display-names:read
         require-explicit-permissions: true
+      keycloak-sms-otp:
+        # Faz 22 Sec / gitops#3212: the Keycloak SMS-OTP authenticator SPI.
+        # The MFA flow's SMS alternative delivers its one-time code through
+        # the notify pipeline, and the internal submit path only honours
+        # SVC_ authorities minted HERE (notify SecurityConfig maps SVC_*
+        # exclusively from this issuer's `perm` claim) — a Keycloak
+        # client-credentials token cannot reach it, which is why Keycloak
+        # itself appears as a service client. Narrowest possible identity:
+        # one audience, one permission, nothing else mintable. A leaked
+        # credential can submit notification intents and nothing more —
+        # it cannot read users, permissions, or credential material.
+        # Blank keeps the client disabled until Vault/ESO provisions it.
+        secret: ${SERVICE_CLIENT_KEYCLOAK_SMS_OTP_SECRET:}
+        allowed-audiences:
+          - notification-orchestrator
+        allowed-permissions:
+          - notify:intents:system
+        require-explicit-permissions: true
       meeting-ai:
         # ESO-synced from Vault; blank keeps the client disabled until provisioned.
         secret: ${SERVICE_CLIENT_MEETING_AI_SECRET:}

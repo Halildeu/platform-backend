@@ -16,6 +16,40 @@ import org.springframework.core.io.support.EncodedResource;
 class ServiceClientsPropertiesBindingYamlTest {
 
     @Test
+    void keycloakSmsOtpClient_bindsAsSingleAudienceSinglePermissionExplicitOnly() {
+        // gitops#3212: the Keycloak SMS-OTP authenticator delivers MFA codes
+        // through the notify pipeline, whose internal path only honours SVC_
+        // authorities minted by auth-service — hence Keycloak itself is a
+        // service client. This pins the identity to its narrowest shape: one
+        // audience, one permission, explicit-permissions required. Widening
+        // any of the three must fail this test, because a leaked SPI
+        // credential must be able to submit notification intents and nothing
+        // else.
+        ServiceClientsProperties properties = bindFromYaml("""
+                security:
+                  service-clients:
+                    clients:
+                      keycloak-sms-otp:
+                        secret: test-secret
+                        allowed-audiences:
+                          - notification-orchestrator
+                        allowed-permissions:
+                          - notify:intents:system
+                        require-explicit-permissions: true
+                """);
+
+        ServiceClientsProperties.ClientRegistration registration =
+                properties.getClients().get("keycloak-sms-otp");
+
+        assertThat(registration).isNotNull();
+        assertThat(registration.getAllowedAudiences())
+                .containsExactly("notification-orchestrator");
+        assertThat(registration.getAllowedPermissions())
+                .containsExactly("notify:intents:system");
+        assertThat(registration.isRequireExplicitPermissions()).isTrue();
+    }
+
+    @Test
     void productionYamlShape_bindsSecretAudiencePermissionAndExplicitPermissionPolicy() {
         ServiceClientsProperties properties = bindFromYaml("""
                 security:
