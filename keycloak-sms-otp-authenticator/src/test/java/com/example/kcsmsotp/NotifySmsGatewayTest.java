@@ -39,6 +39,7 @@ class NotifySmsGatewayTest {
     private NotifySmsGateway gateway;
 
     private static final String TOKEN_PATH = "/oauth2/token";
+    private static final String GRANT_PATH = "/oauth2/mfa-delivery-grant";
     private static final String INTENT_PATH = "/api/v1/internal/notify/intents";
 
     @BeforeEach
@@ -70,6 +71,18 @@ class NotifySmsGatewayTest {
                 .withBody("{\"access_token\":\"tok-1\",\"token_type\":\"Bearer\",\"expires_in\":60}")));
     }
 
+    private void stubHappyGrant() {
+        server.stubFor(post(urlEqualTo(GRANT_PATH)).willReturn(aResponse()
+                .withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"grant\":\"grant-jwt-1\",\"expires_in\":120}")));
+    }
+
+    private void send() throws Exception {
+        gateway.send("+905321234567", "tr", "123456", "sms-otp-root-1-0",
+                "kc-user-1", "auth-session-1");
+    }
+
     private void stubHappyIntent() {
         server.stubFor(post(urlEqualTo(INTENT_PATH)).willReturn(aResponse()
                 .withStatus(202)
@@ -81,9 +94,10 @@ class NotifySmsGatewayTest {
     void send_happyPath_mintsWithBasicAndForm_thenSubmitsCamelCaseIntentWithBearer()
             throws Exception {
         stubHappyMint();
+        stubHappyGrant();
         stubHappyIntent();
 
-        gateway.send("+905321234567", "tr", "123456", "sms-otp-root-1-0");
+        send();
 
         String expectedBasic = "Basic " + Base64.getEncoder().encodeToString(
                 "keycloak-sms-otp:test-secret".getBytes(StandardCharsets.UTF_8));
@@ -109,7 +123,18 @@ class NotifySmsGatewayTest {
                 .withRequestBody(matchingJsonPath("$.template.templateId", equalTo("auth.sms-otp")))
                 .withRequestBody(matchingJsonPath("$.template.locale", equalTo("tr")))
                 .withRequestBody(matchingJsonPath("$.channels[0]", equalTo("sms")))
+                .withHeader("X-Mfa-Delivery-Grant", equalTo("grant-jwt-1"))
                 .withRequestBody(matchingJsonPath("$.payload.code", equalTo("123456"))));
+
+        // The grant request itself pins the exact delivery it authorises.
+        server.verify(exactly(1), postRequestedFor(urlEqualTo(GRANT_PATH))
+                .withHeader("Authorization", equalTo(expectedBasic))
+                .withRequestBody(containing("recipient=%2B905321234567"))
+                .withRequestBody(containing("channel=sms"))
+                .withRequestBody(containing("topic=auth.mfa.sms-otp"))
+                .withRequestBody(containing("template=auth.sms-otp"))
+                .withRequestBody(containing("subject=kc-user-1"))
+                .withRequestBody(containing("auth_session_id=auth-session-1")));
     }
 
     @Test
@@ -117,7 +142,7 @@ class NotifySmsGatewayTest {
         server.stubFor(post(urlEqualTo(TOKEN_PATH)).willReturn(aResponse().withStatus(401)));
         stubHappyIntent();
 
-        assertThatThrownBy(() -> gateway.send("+905321234567", "tr", "123456", "k"))
+        assertThatThrownBy(() -> send())
                 .isInstanceOf(SmsSendException.class)
                 .hasMessageContaining("mint failed: HTTP 401");
 
@@ -131,17 +156,32 @@ class NotifySmsGatewayTest {
                 .withHeader("Content-Type", "application/json")
                 .withBody("{\"token_type\":\"Bearer\"}")));
 
-        assertThatThrownBy(() -> gateway.send("+905321234567", "tr", "123456", "k"))
+        assertThatThrownBy(() -> send())
                 .isInstanceOf(SmsSendException.class)
                 .hasMessageContaining("empty access_token");
     }
 
     @Test
+    void send_grantRefused_throws_withoutSubmittingAnIntent() {
+        stubHappyMint();
+        server.stubFor(post(urlEqualTo(GRANT_PATH)).willReturn(aResponse().withStatus(403)));
+        stubHappyIntent();
+
+        assertThatThrownBy(() -> send())
+                .isInstanceOf(SmsSendException.class)
+                .hasMessageContaining("grant failed: HTTP 403");
+
+        // No grant, no delivery: the intent must never be raised.
+        server.verify(exactly(0), postRequestedFor(urlEqualTo(INTENT_PATH)));
+    }
+
+    @Test
     void send_intentRejected_throws_andDoesNotRetry() {
         stubHappyMint();
+        stubHappyGrant();
         server.stubFor(post(urlEqualTo(INTENT_PATH)).willReturn(aResponse().withStatus(500)));
 
-        assertThatThrownBy(() -> gateway.send("+905321234567", "tr", "123456", "k"))
+        assertThatThrownBy(() -> send())
                 .isInstanceOf(SmsSendException.class)
                 .hasMessageContaining("intent failed: HTTP 500");
 

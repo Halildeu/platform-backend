@@ -58,10 +58,48 @@ public class NotifySmsGateway {
      * @param code           the one-time code (payload for the template's vars.code)
      * @param idempotencyKey stable per send attempt (auth session id + resend count)
      */
-    public void send(String phone, String localeTag, String code, String idempotencyKey)
-            throws SmsSendException {
+    public void send(String phone, String localeTag, String code, String idempotencyKey,
+            String subject, String authSessionId) throws SmsSendException {
         String accessToken = mint();
-        submitIntent(accessToken, phone, localeTag, code, idempotencyKey);
+        // gitops#3212: the access token proves WHO is calling; the grant proves
+        // that THIS delivery — this recipient, this template, this window — was
+        // authorised. notify verifies the grant against the intent and only
+        // then treats the recipient as authorised, because a one-time MFA code
+        // has no durable can_receive relationship to model.
+        String grant = requestGrant(accessToken, phone, subject, authSessionId);
+        submitIntent(accessToken, grant, phone, localeTag, code, idempotencyKey);
+    }
+
+    private String requestGrant(String accessToken, String phone, String subject,
+            String authSessionId) throws SmsSendException {
+        String basic = Base64.getEncoder().encodeToString(
+                (cfg.clientId + ":" + cfg.secret).getBytes(StandardCharsets.UTF_8));
+        String form = "audience=" + URLEncoder.encode("notification-orchestrator", StandardCharsets.UTF_8)
+                + "&subject=" + URLEncoder.encode(subject, StandardCharsets.UTF_8)
+                + "&recipient=" + URLEncoder.encode(phone, StandardCharsets.UTF_8)
+                + "&channel=sms"
+                + "&topic=" + URLEncoder.encode(cfg.topicKey, StandardCharsets.UTF_8)
+                + "&template=" + URLEncoder.encode(cfg.templateId, StandardCharsets.UTF_8)
+                + "&auth_session_id=" + URLEncoder.encode(authSessionId, StandardCharsets.UTF_8);
+        HttpRequest request = HttpRequest.newBuilder(URI.create(cfg.grantUrl))
+                .timeout(REQUEST_TIMEOUT)
+                .header("Authorization", "Basic " + basic)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(form))
+                .build();
+        HttpResponse<String> response = exchange(request, "grant");
+        if (response.statusCode() != 200) {
+            throw new SmsSendException("grant failed: HTTP " + response.statusCode());
+        }
+        try {
+            String grant = mapper.readTree(response.body()).path("grant").asText("");
+            if (grant.isBlank()) {
+                throw new SmsSendException("grant failed: empty grant");
+            }
+            return grant;
+        } catch (IOException e) {
+            throw new SmsSendException("grant failed: unparseable response", e);
+        }
     }
 
     private String mint() throws SmsSendException {
@@ -92,7 +130,7 @@ public class NotifySmsGateway {
         }
     }
 
-    private void submitIntent(String accessToken, String phone, String localeTag,
+    private void submitIntent(String accessToken, String grant, String phone, String localeTag,
             String code, String idempotencyKey) throws SmsSendException {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("intentId", UUID.randomUUID().toString());
@@ -121,6 +159,7 @@ public class NotifySmsGateway {
         HttpRequest request = HttpRequest.newBuilder(URI.create(cfg.intentUrl))
                 .timeout(REQUEST_TIMEOUT)
                 .header("Authorization", "Bearer " + accessToken)
+                .header("X-Mfa-Delivery-Grant", grant)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json))
                 .build();

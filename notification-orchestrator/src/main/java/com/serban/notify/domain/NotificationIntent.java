@@ -147,6 +147,25 @@ public class NotificationIntent {
     @Column(name = "terminated_at")
     private OffsetDateTime terminatedAt;
 
+    // gitops#3212 — server-controlled evidence that auth-service authorised
+    // THIS delivery as an authentication challenge. Written only by the grant
+    // verifier at submit time; the dispatch worker reads it much later and
+    // skips ONLY the recipient-tuple check when every field still matches.
+    @Column(name = "delivery_class", length = 32)
+    private String deliveryClass;
+
+    @Column(name = "grant_jti", length = 64)
+    private String grantJti;
+
+    @Column(name = "grant_subject", length = 128)
+    private String grantSubject;
+
+    @Column(name = "grant_recipient_hash", length = 128)
+    private String grantRecipientHash;
+
+    @Column(name = "grant_deliver_before")
+    private OffsetDateTime grantDeliverBefore;
+
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 
@@ -252,6 +271,17 @@ public class NotificationIntent {
 
     public OffsetDateTime getCreatedAt() { return createdAt; }
     public OffsetDateTime getUpdatedAt() { return updatedAt; }
+
+    public String getDeliveryClass() { return deliveryClass; }
+    public void setDeliveryClass(String deliveryClass) { this.deliveryClass = deliveryClass; }
+    public String getGrantJti() { return grantJti; }
+    public void setGrantJti(String grantJti) { this.grantJti = grantJti; }
+    public String getGrantSubject() { return grantSubject; }
+    public void setGrantSubject(String grantSubject) { this.grantSubject = grantSubject; }
+    public String getGrantRecipientHash() { return grantRecipientHash; }
+    public void setGrantRecipientHash(String grantRecipientHash) { this.grantRecipientHash = grantRecipientHash; }
+    public OffsetDateTime getGrantDeliverBefore() { return grantDeliverBefore; }
+    public void setGrantDeliverBefore(OffsetDateTime grantDeliverBefore) { this.grantDeliverBefore = grantDeliverBefore; }
 
     @Override
     public boolean equals(Object o) {

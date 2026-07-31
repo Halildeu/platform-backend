@@ -19,6 +19,7 @@ final class SmsOtpConfig {
     static final String SECRET_ENV = "SMS_OTP_SERVICE_CLIENT_SECRET";
 
     static final String CFG_TOKEN_URL = "auth-token-url";
+    static final String CFG_GRANT_URL = "auth-grant-url";
     static final String CFG_INTENT_URL = "notify-intent-url";
     static final String CFG_CLIENT_ID = "client-id";
     static final String CFG_ORG_ID = "org-id";
@@ -30,6 +31,7 @@ final class SmsOtpConfig {
     static final String CFG_PHONE_ATTRIBUTE = "phone-attribute";
 
     final String tokenUrl;
+    final String grantUrl;
     final String intentUrl;
     final String clientId;
     final String secret;
@@ -43,6 +45,11 @@ final class SmsOtpConfig {
 
     private SmsOtpConfig(Map<String, String> cfg, Function<String, String> env) {
         this.tokenUrl = value(cfg, CFG_TOKEN_URL, "");
+        // Derived from the token URL by default: the grant lives on the same
+        // auth-service, and one fewer knob is one fewer way to point half the
+        // chain at the wrong host.
+        this.grantUrl = value(cfg, CFG_GRANT_URL,
+                this.tokenUrl.isBlank() ? "" : this.tokenUrl.replaceFirst("/token$", "/mfa-delivery-grant"));
         this.intentUrl = value(cfg, CFG_INTENT_URL, "");
         this.clientId = value(cfg, CFG_CLIENT_ID, "keycloak-sms-otp");
         this.secret = env.apply(SECRET_ENV) == null ? "" : env.apply(SECRET_ENV);
