@@ -207,4 +207,74 @@ class KeycloakAdminClientTest {
         KeycloakAdminClient disabled = new KeycloakAdminClient(blank, WebClient.builder());
         assertThat(disabled.isEnabled()).isFalse();
     }
+
+    // ── requires-mfa toggle (gitops#3228) ────────────────────────────────
+
+    private static final String ASSIGNED =
+            "/admin/realms/platform-test/users/" + KC_SUBJECT + "/role-mappings/realm";
+    private static final String AVAILABLE = ASSIGNED + "/available";
+
+    private void stubRoleLists(String assignedJson, String availableJson) {
+        server.stubFor(get(urlPathEqualTo(ASSIGNED)).willReturn(aResponse().withStatus(200)
+                .withHeader("Content-Type", "application/json").withBody(assignedJson)));
+        server.stubFor(get(urlPathEqualTo(AVAILABLE)).willReturn(aResponse().withStatus(200)
+                .withHeader("Content-Type", "application/json").withBody(availableJson)));
+        server.stubFor(post(urlPathEqualTo(ASSIGNED)).willReturn(aResponse().withStatus(204)));
+        server.stubFor(delete(urlPathEqualTo(ASSIGNED)).willReturn(aResponse().withStatus(204)));
+    }
+
+    @Test
+    void enabling_takesTheRoleFromTheUserScopedAvailableList_notARealmWideRoleRead() {
+        // The service account is deliberately not granted view-realm: a live
+        // probe returns 403 on /roles/{name} while the user-scoped lists
+        // return 200. Reading the representation from `available` is what
+        // keeps the grant at view-users + manage-users.
+        stubRoleLists("[{\"id\":\"r-admin\",\"name\":\"ADMIN\"}]",
+                "[{\"id\":\"r-mfa\",\"name\":\"requires-mfa\"}]");
+
+        assertThat(client.setRequiresMfa(KC_SUBJECT, true)).isTrue();
+
+        server.verify(exactly(1), postRequestedFor(urlPathEqualTo(ASSIGNED))
+                .withRequestBody(matchingJsonPath("$[0].id", equalTo("r-mfa")))
+                .withRequestBody(matchingJsonPath("$[0].name", equalTo("requires-mfa"))));
+        server.verify(exactly(0), com.github.tomakehurst.wiremock.client.WireMock
+                .getRequestedFor(urlPathEqualTo("/admin/realms/platform-test/roles/requires-mfa")));
+    }
+
+    @Test
+    void disabling_deletesTheAssignedRole() {
+        stubRoleLists("[{\"id\":\"r-mfa\",\"name\":\"requires-mfa\"}]", "[]");
+
+        assertThat(client.setRequiresMfa(KC_SUBJECT, false)).isTrue();
+
+        server.verify(exactly(1), deleteRequestedFor(urlPathEqualTo(ASSIGNED))
+                .withRequestBody(matchingJsonPath("$[0].name", equalTo("requires-mfa"))));
+    }
+
+    @Test
+    void askingForTheStateAlreadyHeld_writesNothing() {
+        // A double click must agree with reality rather than error.
+        stubRoleLists("[{\"id\":\"r-mfa\",\"name\":\"requires-mfa\"}]", "[]");
+        assertThat(client.setRequiresMfa(KC_SUBJECT, true)).isFalse();
+
+        stubRoleLists("[]", "[{\"id\":\"r-mfa\",\"name\":\"requires-mfa\"}]");
+        assertThat(client.setRequiresMfa(KC_SUBJECT, false)).isFalse();
+
+        server.verify(exactly(0), postRequestedFor(urlPathEqualTo(ASSIGNED)));
+        server.verify(exactly(0), deleteRequestedFor(urlPathEqualTo(ASSIGNED)));
+    }
+
+    @Test
+    void realmWithoutTheRole_failsLoudlyInsteadOfReportingSuccess() {
+        // Silently succeeding would leave an operator believing the second
+        // factor is enforced when the flow condition can never match.
+        stubRoleLists("[]", "[{\"id\":\"r-other\",\"name\":\"SOMETHING_ELSE\"}]");
+
+        org.assertj.core.api.Assertions
+                .assertThatThrownBy(() -> client.setRequiresMfa(KC_SUBJECT, true))
+                .isInstanceOf(KeycloakAdminClient.RequiresMfaRoleMissingException.class)
+                .hasMessageContaining("requires-mfa");
+
+        server.verify(exactly(0), postRequestedFor(urlPathEqualTo(ASSIGNED)));
+    }
 }

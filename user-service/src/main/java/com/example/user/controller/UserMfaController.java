@@ -64,6 +64,8 @@ public class UserMfaController {
     public record MfaStatusResponse(boolean requiresMfa, boolean totpConfigured,
             String phoneNumber, boolean smsLaneReady) {}
 
+    public record RequiredUpdateRequest(Boolean required) {}
+
     public record PhoneUpdateRequest(
             @Pattern(regexp = "^\\+[1-9][0-9]{7,14}$",
                      message = "phone must be E.164 (+ followed by 8-15 digits)")
@@ -104,6 +106,38 @@ public class UserMfaController {
         requirePermissionWithCompanyScope(PermissionActions.USER_UPDATE, companyId);
         KeycloakAdminClient.MfaSnapshot snapshot = snapshotFor(id);
         keycloakAdminClient.setPhoneAttribute(snapshot.kcUserId(), request.phone());
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Turn the second-factor requirement on or off for this user.
+     *
+     * <p>The requirement is not an account flag: the privileged browser flow
+     * gates on a role condition, so this assigns or removes the
+     * {@code requires-mfa} realm role. Idempotent — asking for the state the
+     * user is already in is a no-op, not an error, because a toggle that
+     * errors on a double click is worse than one that agrees with reality.
+     */
+    @PutMapping("/required")
+    public ResponseEntity<Void> setRequired(@PathVariable Long id,
+            @RequestHeader(value = "X-Company-Id", required = false) Long companyId,
+            @RequestBody RequiredUpdateRequest request) {
+        requirePermissionWithCompanyScope(PermissionActions.USER_UPDATE, companyId);
+        if (request == null || request.required() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "required alanı zorunlu (true/false)");
+        }
+        KeycloakAdminClient.MfaSnapshot snapshot = snapshotFor(id);
+        try {
+            boolean changed = keycloakAdminClient.setRequiresMfa(
+                    snapshot.kcUserId(), request.required());
+            log.info("mfa-admin: requires-mfa set to {} for user id={} (changed={})",
+                    request.required(), id, changed);
+        } catch (KeycloakAdminClient.RequiresMfaRoleMissingException e) {
+            // The realm cannot express the requirement. Reporting success
+            // here would leave the operator believing MFA is enforced.
+            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage(), e);
+        }
         return ResponseEntity.noContent().build();
     }
 
