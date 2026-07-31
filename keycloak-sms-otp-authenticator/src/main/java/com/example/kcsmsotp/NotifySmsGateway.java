@@ -52,13 +52,13 @@ public class NotifySmsGateway {
     /**
      * Mint a service token and submit the SMS intent.
      *
-     * @param phone          E.164 recipient
+     * @param recipient      E.164 number for SMS, address for e-mail
      * @param localeTag      BCP-47 tag ("tr", "tr-TR", "en"...) — template resolver
      *                       falls back language-only, then en
      * @param code           the one-time code (payload for the template's vars.code)
      * @param idempotencyKey stable per send attempt (auth session id + resend count)
      */
-    public void send(String phone, String localeTag, String code, String idempotencyKey,
+    public void send(String recipient, String localeTag, String code, String idempotencyKey,
             String subject, String authSessionId) throws SmsSendException {
         String accessToken = mint();
         // gitops#3212: the access token proves WHO is calling; the grant proves
@@ -66,18 +66,18 @@ public class NotifySmsGateway {
         // authorised. notify verifies the grant against the intent and only
         // then treats the recipient as authorised, because a one-time MFA code
         // has no durable can_receive relationship to model.
-        String grant = requestGrant(accessToken, phone, subject, authSessionId);
-        submitIntent(accessToken, grant, phone, localeTag, code, idempotencyKey);
+        String grant = requestGrant(accessToken, recipient, subject, authSessionId);
+        submitIntent(accessToken, grant, recipient, localeTag, code, idempotencyKey);
     }
 
-    private String requestGrant(String accessToken, String phone, String subject,
+    private String requestGrant(String accessToken, String recipient, String subject,
             String authSessionId) throws SmsSendException {
         String basic = Base64.getEncoder().encodeToString(
                 (cfg.clientId + ":" + cfg.secret).getBytes(StandardCharsets.UTF_8));
         String form = "audience=" + URLEncoder.encode("notification-orchestrator", StandardCharsets.UTF_8)
                 + "&subject=" + URLEncoder.encode(subject, StandardCharsets.UTF_8)
-                + "&recipient=" + URLEncoder.encode(phone, StandardCharsets.UTF_8)
-                + "&channel=sms"
+                + "&recipient=" + URLEncoder.encode(recipient, StandardCharsets.UTF_8)
+                + "&channel=" + URLEncoder.encode(cfg.channel, StandardCharsets.UTF_8)
                 + "&topic=" + URLEncoder.encode(cfg.topicKey, StandardCharsets.UTF_8)
                 + "&template=" + URLEncoder.encode(cfg.templateId, StandardCharsets.UTF_8)
                 + "&auth_session_id=" + URLEncoder.encode(authSessionId, StandardCharsets.UTF_8);
@@ -130,7 +130,7 @@ public class NotifySmsGateway {
         }
     }
 
-    private void submitIntent(String accessToken, String grant, String phone, String localeTag,
+    private void submitIntent(String accessToken, String grant, String recipient, String localeTag,
             String code, String idempotencyKey) throws SmsSendException {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("intentId", UUID.randomUUID().toString());
@@ -139,14 +139,16 @@ public class NotifySmsGateway {
         body.put("topicKey", cfg.topicKey);
         body.put("severity", "info");
         body.put("dataClassification", "security");
+        // The recipient key names the channel — `phone` for SMS, `email` for
+        // mail — so it has to move with it, not be hardcoded.
         body.put("recipients", List.of(Map.of(
                 "type", "external",
-                "phone", phone,
+                cfg.recipientKey(), recipient,
                 "locale", localeTag)));
         body.put("template", Map.of(
                 "templateId", cfg.templateId,
                 "locale", localeTag));
-        body.put("channels", List.of("sms"));
+        body.put("channels", List.of(cfg.channel));
         body.put("payload", Map.of("code", code));
 
         String json;

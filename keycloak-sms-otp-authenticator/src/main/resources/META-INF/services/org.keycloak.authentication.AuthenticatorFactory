@@ -1,1 +1,2 @@
 com.example.kcsmsotp.SmsOtpAuthenticatorFactory
+com.example.kcsmsotp.EmailOtpAuthenticatorFactory

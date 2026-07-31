@@ -22,13 +22,13 @@ public class MfaDeliveryGrantProperties {
     private Set<String> allowedClients = Set.of();
 
     /** Topics a grant may authorise. */
-    private Set<String> allowedTopics = Set.of("auth.mfa.sms-otp");
+    private Set<String> allowedTopics = Set.of("auth.mfa.sms-otp", "auth.mfa.email-otp");
 
     /** Templates a grant may authorise. */
-    private Set<String> allowedTemplates = Set.of("auth.sms-otp");
+    private Set<String> allowedTemplates = Set.of("auth.sms-otp", "auth.email-otp");
 
     /** Channels a grant may authorise. */
-    private Set<String> allowedChannels = Set.of("sms");
+    private Set<String> allowedChannels = Set.of("sms", "email");
 
     /**
      * Grant lifetime. Short on purpose: it only has to survive the hop from

@@ -98,9 +98,10 @@ public class MfaDeliveryGrantController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_template");
         }
         // The recipient shape is pinned here as well as downstream: a grant
-        // that could name a non-E.164 target would be a grant for something
-        // this lane cannot deliver anyway.
-        if (!recipient.matches("^\\+[1-9][0-9]{7,14}$")) {
+        // that could name a target this lane cannot deliver to would be a
+        // grant for nothing. The shape follows the channel — pinning E.164
+        // unconditionally would refuse every e-mail grant before it started.
+        if (!recipientMatchesChannel(recipient, channel)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_recipient");
         }
 
@@ -126,6 +127,24 @@ public class MfaDeliveryGrantController {
         return MessageDigest.isEqual(
                 registration.getSecret().getBytes(StandardCharsets.UTF_8),
                 creds.clientSecret().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static final java.util.regex.Pattern E164 =
+            java.util.regex.Pattern.compile("^\\+[1-9][0-9]{7,14}$");
+    private static final java.util.regex.Pattern EMAIL =
+            java.util.regex.Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
+
+    /**
+     * An unknown channel matches nothing: a channel that passed the allow-list
+     * but has no shape here is a half-added channel, and issuing a grant for
+     * it would be worse than refusing it.
+     */
+    private static boolean recipientMatchesChannel(String recipient, String channel) {
+        return switch (channel) {
+            case "sms" -> E164.matcher(recipient).matches();
+            case "email" -> EMAIL.matcher(recipient).matches();
+            default -> false;
+        };
     }
 
     private String required(MultiValueMap<String, String> form, String key) {

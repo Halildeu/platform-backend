@@ -54,28 +54,32 @@ public class SmsOtpAuthenticator implements Authenticator {
     @Override
     public void authenticate(AuthenticationFlowContext context) {
         SmsOtpConfig cfg = config(context);
-        String phone = phoneOf(context.getUser(), cfg);
-        if (phone == null || !cfg.isSendable()) {
+        String recipient = recipientOf(context.getUser(), cfg);
+        boolean emailUsable = !cfg.isEmail()
+                || (context.getUser() != null && context.getUser().isEmailVerified());
+        if (recipient == null || !emailUsable || !cfg.isSendable()) {
             // Not usable for this user/deployment — let the sibling ALTERNATIVE
             // (TOTP form) carry the subflow instead of failing the login.
             // Logged because silence here is indistinguishable from "never
             // invoked", and the two have completely different fixes: a missing
             // phone is a user/user-profile problem, a non-sendable config is a
             // deployment problem. No phone number is logged.
-            LOG.warnf("sms-otp not usable: phone=%s tokenUrl=%s intentUrl=%s secret=%s",
-                    phone == null ? "absent" : "present",
+            LOG.warnf("%s-otp not usable: recipient=%s verified=%s tokenUrl=%s intentUrl=%s secret=%s",
+                    cfg.channel,
+                    recipient == null ? "absent" : "present",
+                    emailUsable ? "yes" : "no",
                     cfg.tokenUrl.isBlank() ? "blank" : "set",
                     cfg.intentUrl.isBlank() ? "blank" : "set",
                     cfg.secret.isBlank() ? "blank" : "set");
             context.attempted();
             return;
         }
-        LOG.infof("sms-otp selected for user; delivering code via notify");
+        LOG.infof("%s-otp selected for user; delivering code via notify", cfg.channel);
 
         SmsOtpCodeStore store = store(cfg);
         Notes notes = new Notes(context.getAuthenticationSession());
         String code = store.issue(notes);
-        deliverAndChallenge(context, cfg, store, notes, phone, code);
+        deliverAndChallenge(context, cfg, store, notes, recipient, code);
     }
 
     @Override
@@ -152,8 +156,36 @@ public class SmsOtpAuthenticator implements Authenticator {
         return locale == null ? "tr" : locale.toLanguageTag();
     }
 
+    /**
+     * The recipient this channel delivers to: the E.164 attribute for SMS,
+     * the account's own address for e-mail. Returning null disables the
+     * alternative for this user, which is the whole point — an account with
+     * no phone can still fall through to the authenticator app.
+     */
+    static String recipientOf(UserModel user, SmsOtpConfig cfg) {
+        if (user == null) {
+            return null;
+        }
+        return cfg.isEmail()
+                ? normalizeEmail(user.getEmail())
+                : normalizePhone(user.getFirstAttribute(cfg.phoneAttribute));
+    }
+
     static String phoneOf(UserModel user, SmsOtpConfig cfg) {
         return user == null ? null : normalizePhone(user.getFirstAttribute(cfg.phoneAttribute));
+    }
+
+    /**
+     * An unverified address is not a second factor: anyone who could set it
+     * could receive the code. Keycloak already tracks verification, so the
+     * check is a read, not a new mechanism.
+     */
+    static String normalizeEmail(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String email = raw.trim();
+        return email.matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$") ? email : null;
     }
 
     /**
