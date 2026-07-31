@@ -126,6 +126,76 @@ public class KeycloakAdminClient {
                 phoneOrNull == null || phoneOrNull.isBlank() ? "cleared" : "set", kcUserId);
     }
 
+    /** Raised when the realm has no role to hang the requirement on. */
+    public static class RequiresMfaRoleMissingException extends RuntimeException {
+        public RequiresMfaRoleMissingException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * Turn the second-factor requirement on or off for one user.
+     *
+     * <p>The requirement is not a flag on the account: the privileged browser
+     * flow gates on a {@code Condition - user role} whose config names the
+     * realm role in {@link KeycloakAdminApiProperties#getRequiresMfaRole()}.
+     * Toggling it is therefore assigning or removing that role.
+     *
+     * <p>The role representation is read from the <em>user-scoped</em>
+     * assigned/available lists rather than from {@code /roles/{name}},
+     * because the narrow service account is deliberately not granted
+     * view-realm — measured on the live client:
+     * <pre>
+     *   GET /roles/requires-mfa                        403
+     *   GET /users/{id}/role-mappings/realm            200
+     *   GET /users/{id}/role-mappings/realm/available  200
+     * </pre>
+     * Going through the user-scoped lists keeps the grant at view-users +
+     * manage-users.
+     *
+     * <p>Idempotent: the desired state is compared against the assigned list
+     * first, so toggling twice is a no-op rather than an error.
+     *
+     * @return true when a change was actually written
+     */
+    public boolean setRequiresMfa(String kcUserId, boolean required) {
+        String roleName = props.getRequiresMfaRole();
+        JsonNode assigned = findRole(realmRoles(kcUserId), roleName);
+
+        if (required == (assigned != null)) {
+            log.debug("mfa-admin: requires-mfa already {} for kc user {}",
+                    required ? "on" : "off", kcUserId);
+            return false;
+        }
+
+        JsonNode role = assigned != null ? assigned : findRole(availableRealmRoles(kcUserId), roleName);
+        if (role == null) {
+            // Neither assigned nor assignable: the realm does not carry the
+            // role at all, so the requirement cannot be expressed. Saying so
+            // beats silently reporting success for a setting that will never
+            // take effect.
+            throw new RequiresMfaRoleMissingException(
+                    "realm role '" + roleName + "' not found; the privileged MFA flow gates on it");
+        }
+
+        List<Map<String, String>> body = List.of(Map.of(
+                "id", role.path("id").asText(),
+                "name", role.path("name").asText()));
+
+        adminRequest(spec -> spec.method(required
+                        ? org.springframework.http.HttpMethod.POST
+                        : org.springframework.http.HttpMethod.DELETE)
+                .uri("/admin/realms/{realm}/users/{id}/role-mappings/realm",
+                        props.getRealm(), kcUserId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(body)
+                .retrieve().toBodilessEntity());
+
+        log.info("mfa-admin: requires-mfa {} for kc user {}",
+                required ? "granted" : "revoked", kcUserId);
+        return true;
+    }
+
     // ── internals ──
 
     private JsonNode resolveUser(String kcSubject, String canonicalEmail) {
@@ -154,6 +224,25 @@ public class KeycloakAdminClient {
     private List<JsonNode> credentials(String kcUserId) {
         JsonNode array = adminRequest(spec -> spec.get()
                 .uri("/admin/realms/{realm}/users/{id}/credentials", props.getRealm(), kcUserId)
+                .retrieve().bodyToMono(JsonNode.class));
+        List<JsonNode> out = new ArrayList<>();
+        if (array != null && array.isArray()) {
+            array.forEach(out::add);
+        }
+        return out;
+    }
+
+    private static JsonNode findRole(List<JsonNode> roles, String name) {
+        return roles.stream()
+                .filter(r -> name.equals(r.path("name").asText()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private List<JsonNode> availableRealmRoles(String kcUserId) {
+        JsonNode array = adminRequest(spec -> spec.get()
+                .uri("/admin/realms/{realm}/users/{id}/role-mappings/realm/available",
+                        props.getRealm(), kcUserId)
                 .retrieve().bodyToMono(JsonNode.class));
         List<JsonNode> out = new ArrayList<>();
         if (array != null && array.isArray()) {
