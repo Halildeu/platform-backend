@@ -29,13 +29,16 @@ class WebClientTimeoutConfigurationTest {
 
     @Test
     void defaultResponseTimeoutLeavesHeadroomOverTheMeasuredNestedHop() {
+        // 8s after gitops#3210: the carrier-starvation stall that forced 30s is
+        // gone (by-email 14.3s -> 54ms), and a 30s ceiling holds resources long
+        // enough to turn one slow downstream into a queue.
         runner.run(context -> {
             WebClientConfig config = context.getBean(WebClientConfig.class);
             Object seconds = ReflectionTestUtils.getField(config, "responseTimeoutSeconds");
 
             assertThat(seconds)
-                    .as("default response timeout; 5s is below the measured 5.029s peak")
-                    .isEqualTo(30L);
+                    .as("default response timeout; still ~150x the 54ms measured peak")
+                    .isEqualTo(8L);
         });
     }
 
