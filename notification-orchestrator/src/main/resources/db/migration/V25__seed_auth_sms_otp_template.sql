@@ -13,10 +13,17 @@
 -- plain "tr" request (it would fall through to English).
 --
 -- Body is SMS-only (body_text; subject/body_html NULL). The tr body avoids
--- Turkish diacritics on purpose: ı/ş/ğ push the message out of the GSM-7
--- alphabet into UCS-2, turning a 1-segment OTP into 2 paid segments.
+-- Turkish diacritics on purpose: ı/ş/ğ leave the GSM-7 alphabet -> UCS-2 ->
+-- 2 paid segments per OTP instead of 1.
 --
--- Payload contract: {code} — rendered via the vars namespace.
+-- Payload contract: {code}, rendered through the Thymeleaf vars namespace.
+-- The dollar sign is concatenated in (never adjacent to '{' in this file)
+-- because Flyway scans raw migration text for its OWN ${...} placeholder
+-- syntax and fails the script otherwise; script-scoped
+-- placeholderReplacement=false is not honoured by OSS Flyway (measured: CI
+-- runs 30604489528 and 30604960812, identical failure with the .conf
+-- present). The stored value is the literal inline expression the renderer
+-- expects.
 
 INSERT INTO notify.notification_template
     (template_id, version, locale, subject, body_html, body_text,
@@ -24,7 +31,7 @@ INSERT INTO notify.notification_template
 SELECT
     'auth.sms-otp', 1, 'tr',
     NULL, NULL,
-    'Tek kullanimlik giris kodunuz: [[${vars.code}]]. 5 dakika gecerlidir. Kodu kimseyle paylasmayin.',
+    'Tek kullanimlik giris kodunuz: [[' || '$' || '{vars.code}]]. 5 dakika gecerlidir. Kodu kimseyle paylasmayin.',
     TRUE, TRUE, 'migration-faz22-sec-sms-otp'
 WHERE NOT EXISTS (
     SELECT 1 FROM notify.notification_template
@@ -37,7 +44,7 @@ INSERT INTO notify.notification_template
 SELECT
     'auth.sms-otp', 1, 'en',
     NULL, NULL,
-    'Your one-time sign-in code: [[${vars.code}]]. Valid for 5 minutes. Do not share it.',
+    'Your one-time sign-in code: [[' || '$' || '{vars.code}]]. Valid for 5 minutes. Do not share it.',
     TRUE, TRUE, 'migration-faz22-sec-sms-otp'
 WHERE NOT EXISTS (
     SELECT 1 FROM notify.notification_template
