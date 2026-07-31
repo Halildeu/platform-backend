@@ -170,6 +170,39 @@ jobs:
       - name: Run common-meeting-events tests
         run: ./mvnw -pl common-meeting-events test
 
+  keycloak-sms-otp-authenticator-test:
+    name: keycloak-sms-otp-authenticator unit + WireMock contract test (Faz 22 Sec gitops#3212)
+    runs-on: ubuntu-latest
+    needs: [full-reactor-build]
+    timeout-minutes: 10
+
+    # Same rationale as the common-meeting-events lane: full-reactor-build runs
+    # `verify -DskipTests`, so without a dedicated lane this module's tests would
+    # exist but never execute in CI. What runs here:
+    #   - the SMS OTP code state machine (hash-only storage, expiry, attempt and
+    #     resend ceilings, single-use);
+    #   - the WireMock contract for the two-leg send chain (auth-service mint
+    #     Basic+form -> access_token; notify internal intent Bearer+camelCase ->
+    #     202) — the tripwire if either side's contract drifts;
+    #   - factory/services registration and the env-only-secret invariant
+    #     (Keycloak persists authenticator config plaintext in its DB).
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'maven'
+
+      # No pre-install: the providers JAR depends on no reactor sibling —
+      # Keycloak is the runtime, every server dependency is scope=provided.
+      - name: Run keycloak-sms-otp-authenticator tests
+        run: ./mvnw -pl keycloak-sms-otp-authenticator test
+
   meeting-service-test:
     name: meeting-service unit + Testcontainers PG test (Faz 24 #410 meeting intelligence)
     runs-on: ubuntu-latest
