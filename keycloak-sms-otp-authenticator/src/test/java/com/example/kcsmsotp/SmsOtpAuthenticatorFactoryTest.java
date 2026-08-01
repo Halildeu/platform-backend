@@ -15,10 +15,11 @@ import org.keycloak.provider.ProviderConfigProperty;
 class SmsOtpAuthenticatorFactoryTest {
 
     @Test
-    void servicesFile_registersExactlyTheTwoChannelFactories() throws Exception {
+    void servicesFile_registersExactlyTheThreeFactories() throws Exception {
         // Was "exactly this factory" until gitops#3230 added the e-mail
-        // channel. Still exact: an unregistered factory is invisible to
-        // Keycloak, and an unexpected one is a supply-chain question.
+        // channel, and two until gitops#3251 added the gated OTP form. Still
+        // exact: an unregistered factory is invisible to Keycloak, and an
+        // unexpected one is a supply-chain question.
         try (InputStream in = getClass().getClassLoader().getResourceAsStream(
                 "META-INF/services/org.keycloak.authentication.AuthenticatorFactory")) {
             assertThat(in).isNotNull();
@@ -26,7 +27,8 @@ class SmsOtpAuthenticatorFactoryTest {
             assertThat(content.lines().map(String::trim).filter(l -> !l.isEmpty()).toList())
                     .containsExactlyInAnyOrder(
                             SmsOtpAuthenticatorFactory.class.getName(),
-                            EmailOtpAuthenticatorFactory.class.getName());
+                            EmailOtpAuthenticatorFactory.class.getName(),
+                            MfaOtpFormAuthenticatorFactory.class.getName());
         }
     }
 

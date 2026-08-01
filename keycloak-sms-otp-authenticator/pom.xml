@@ -47,6 +47,20 @@
             <version>${keycloak.version}</version>
             <scope>provided</scope>
         </dependency>
+        <!--
+          Only for OTPFormAuthenticator, which MfaOtpFormAuthenticator extends so
+          the authenticator-app lane can honour the per-user method allow-list
+          (gitops#3251). Delegating to Keycloak's own form keeps the strongest
+          factor's validation and enrolment paths untouched; reimplementing them
+          to add one boolean would put the most reliable lane at risk. provided —
+          it is on the server classpath at runtime, never bundled.
+        -->
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-services</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <groupId>jakarta.ws.rs</groupId>
             <artifactId>jakarta.ws.rs-api</artifactId>
