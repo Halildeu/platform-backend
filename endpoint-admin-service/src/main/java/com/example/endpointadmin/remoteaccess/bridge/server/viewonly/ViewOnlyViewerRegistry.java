@@ -101,21 +101,39 @@ public final class ViewOnlyViewerRegistry {
      * @return the number of OPEN viewers the frame was delivered to (0 = dropped, no viewer)
      */
     public int publish(ViewOnlyFrame frame) {
+        return publish(frame, null);
+    }
+
+    /**
+     * Fan a frame out and, when at least one open viewer accepted it, run the metadata-only observation callback
+     * before a concurrent {@link #unsubscribe(ViewOnlyViewerSubscription)} can complete. This is the lifecycle
+     * barrier between broker-observed frame metadata and the durable viewer {@code VIEW_STOP}: once unsubscribe
+     * returns, no accepted frame can still publish its observation metadata after the stop record.
+     *
+     * <p>The callback must be short and content-free. The recording-off handler uses it only for counters and the
+     * structured metadata audit line; screen bytes are never passed to it.
+     */
+    public int publish(ViewOnlyFrame frame, Runnable afterDelivered) {
         Objects.requireNonNull(frame, "frame");
         List<ViewOnlyViewerSubscription> subs = bySession.get(frame.sessionId());
         if (subs == null || subs.isEmpty()) {
             return 0;
         }
-        int delivered = 0;
-        for (ViewOnlyViewerSubscription sub : subs) {
-            // A session may have more than one independently-authorized VIEW_ONLY operation over its lifetime.
-            // Never offer one stream's frame to a viewer bound to another stream; this prevents cross-stream
-            // observation and avoids terminating the legitimate viewer when markSent applies its final guard.
-            if (sub.streamId().equals(frame.streamId()) && sub.offer(frame)) {
-                delivered++;
+        synchronized (subs) {
+            int delivered = 0;
+            for (ViewOnlyViewerSubscription sub : subs) {
+                // A session may have more than one independently-authorized VIEW_ONLY operation over its lifetime.
+                // Never offer one stream's frame to a viewer bound to another stream; this prevents cross-stream
+                // observation and avoids terminating the legitimate viewer when markSent applies its final guard.
+                if (sub.streamId().equals(frame.streamId()) && sub.offer(frame)) {
+                    delivered++;
+                }
             }
+            if (delivered > 0 && afterDelivered != null) {
+                afterDelivered.run();
+            }
+            return delivered;
         }
-        return delivered;
     }
 
     /** Current OPEN viewer count for a session (closed entries excluded) — observability / tests. */
@@ -132,20 +150,27 @@ public final class ViewOnlyViewerRegistry {
         if (subscription == null) {
             return;
         }
-        subscription.close();
         CopyOnWriteArrayList<ViewOnlyViewerSubscription> subs = bySession.get(subscription.sessionId());
         if (subs != null) {
-            subs.remove(subscription);
-            subs.removeIf(ViewOnlyViewerSubscription::isClosed);
+            synchronized (subs) {
+                subscription.close();
+                subs.remove(subscription);
+                subs.removeIf(ViewOnlyViewerSubscription::isClosed);
+            }
             bySession.computeIfPresent(subscription.sessionId(), (s, list) -> list.isEmpty() ? null : list);
+        } else {
+            subscription.close();
         }
     }
 
     /** Detach every viewer for a session (called when the session ends — no stale viewer slot). */
     public void closeSession(String sessionId) {
-        CopyOnWriteArrayList<ViewOnlyViewerSubscription> subs = bySession.remove(sessionId);
+        CopyOnWriteArrayList<ViewOnlyViewerSubscription> subs = bySession.get(sessionId);
         if (subs != null) {
-            subs.forEach(ViewOnlyViewerSubscription::close);
+            synchronized (subs) {
+                bySession.remove(sessionId, subs);
+                subs.forEach(ViewOnlyViewerSubscription::close);
+            }
         }
     }
 }
