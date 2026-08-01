@@ -109,6 +109,14 @@ class BrokerControlPlaneTest {
         return request(sessionId, Set.of(RemoteSessionCapability.VIEW_ONLY));
     }
 
+    private static ViewOnlyViewerSubscription activeViewer(ViewOnlyViewerRegistry viewers, String sessionId,
+                                                            String streamId, String tenantId, String operator) {
+        ViewOnlyViewerSubscription viewer = viewers.reserve(
+                sessionId, streamId, tenantId, operator, null).orElseThrow();
+        assertTrue(viewers.activate(viewer));
+        return viewer;
+    }
+
     private static RemoteBridgeMessages.SessionRequest request(
             String sessionId, Set<RemoteSessionCapability> capabilities) {
         return new RemoteBridgeMessages.SessionRequest(sessionId, "dev-1", "operator@x", null,
@@ -565,8 +573,8 @@ class BrokerControlPlaneTest {
         authz.beginSession("sess-1", incarnation);
         authz.authorize(incarnation, new ViewOnlyStreamAuthorizationRegistry.Authorization(
                 "sess-1", "op-1", PEER.transportPeerKey(), "operator@x", "dev-1", PROMPT_EXPIRY));
-        ViewOnlyViewerSubscription viewer = viewers.subscribe(
-                "sess-1", "op-1", TENANT, "operator@x", null).orElseThrow();
+        ViewOnlyViewerSubscription viewer = activeViewer(
+                viewers, "sess-1", "op-1", TENANT, "operator@x");
 
         plane.onControlStreamClosed(PEER);
         plane.onControlStreamClosed(PEER); // a late duplicate transport callback is harmless
@@ -604,8 +612,8 @@ class BrokerControlPlaneTest {
         authz.beginSession("sess-1", incarnation);
         authz.authorize(incarnation, new ViewOnlyStreamAuthorizationRegistry.Authorization(
                 "sess-1", "op-1", "peer-1", "operator@x", "dev-1", PROMPT_EXPIRY));
-        ViewOnlyViewerSubscription viewer = viewers.subscribe(
-                "sess-1", "op-1", "tenant-1", "operator@x", null).orElseThrow();
+        ViewOnlyViewerSubscription viewer = activeViewer(
+                viewers, "sess-1", "op-1", "tenant-1", "operator@x");
         assertTrue(authz.isAuthorized("sess-1", "op-1", "peer-1", NOW));
 
         // the endpoint user aborts → the broker's agent-driven terminal MUST terminate the view-only surface
@@ -632,8 +640,8 @@ class BrokerControlPlaneTest {
         authz.beginSession("sess-1", incarnation);
         authz.authorize(incarnation, new ViewOnlyStreamAuthorizationRegistry.Authorization(
                 "sess-1", "op-1", "peer-1", "operator@x", "dev-1", PROMPT_EXPIRY));
-        ViewOnlyViewerSubscription viewer = viewers.subscribe(
-                "sess-1", "op-1", "tenant-1", "operator@x", null).orElseThrow();
+        ViewOnlyViewerSubscription viewer = activeViewer(
+                viewers, "sess-1", "op-1", "tenant-1", "operator@x");
 
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", false, "Console",
                 NOW, PROMPT_EXPIRY));
@@ -707,8 +715,8 @@ class BrokerControlPlaneTest {
         authz.beginSession("sess-1", incarnation);
         authz.authorize(incarnation, new ViewOnlyStreamAuthorizationRegistry.Authorization(
                 "sess-1", "op-1", PEER.transportPeerKey(), "operator@x", "dev-1", PROMPT_EXPIRY));
-        ViewOnlyViewerSubscription viewer = viewers.subscribe(
-                "sess-1", "op-1", TENANT, "operator@x", null).orElseThrow();
+        ViewOnlyViewerSubscription viewer = activeViewer(
+                viewers, "sess-1", "op-1", TENANT, "operator@x");
 
         plane.onAgentErrorFrame(PEER, new RemoteBridgeMessages.AgentErrorFrame(
                 "sess-1", BrokerControlPlane.ERROR_SCREEN_VIEW_PERMIT_EXPIRED, false, "redacted"));

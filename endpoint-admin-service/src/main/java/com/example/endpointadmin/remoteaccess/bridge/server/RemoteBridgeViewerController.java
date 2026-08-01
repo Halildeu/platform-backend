@@ -175,9 +175,10 @@ public class RemoteBridgeViewerController {
         UUID operatorTenant = parseUuidOrNull(owned.get().operatorTenantId());
         String operatorSubject = identity.operatorSubject();
 
-        // latest-wins single-slot subscription; empty Optional => the 1:1 viewer bound is already taken.
+        // Reserve the latest-wins single-slot without accepting frames; empty Optional => the 1:1 viewer bound is
+        // already taken. The slot is armed only after the durable VIEW_START audit commit below.
         Semaphore wake = new Semaphore(0);
-        Optional<ViewOnlyViewerSubscription> maybeSub = viewerRegistry.subscribe(
+        Optional<ViewOnlyViewerSubscription> maybeSub = viewerRegistry.reserve(
                 sessionId, streamId, identity.tenantId(), identity.operatorSubject(), wake::release);
         if (maybeSub.isEmpty()) {
             viewerRejected.increment();
@@ -186,8 +187,8 @@ public class RemoteBridgeViewerController {
         ViewOnlyViewerSubscription subscription = maybeSub.get();
 
         // FAIL-CLOSED hash-chain audit START (the pilot-enable HARD GATE): we hold the 1:1 slot but have NOT
-        // emitted a single frame yet. The START audit commits (its own short, advisory-locked transaction)
-        // BEFORE the emit loop is scheduled, so no screen byte is ever observed without a tamper-evident
+        // accepted a single frame yet. The START audit commits (its own short, advisory-locked transaction)
+        // BEFORE the reserved slot is armed, so no screen byte is ever observed without a tamper-evident
         // REMOTE_SUPPORT_SCREEN_OBSERVATION:VIEW_START record. A throw => no observation (release the slot, 503).
         try {
             viewerAudit.recordViewStart(operatorTenant, operatorSubject, sessionId, deviceId, streamId);
@@ -196,6 +197,18 @@ public class RemoteBridgeViewerController {
             viewerRejected.increment();
             log.warn("viewer START audit failed — fail-closed, no observation session={} stream={}",
                     sessionId, streamId, auditFailure);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
+        if (!viewerRegistry.activate(subscription)) {
+            viewerRegistry.unsubscribe(subscription);
+            viewerRejected.increment();
+            try {
+                viewerAudit.recordViewStop(operatorTenant, operatorSubject, sessionId, deviceId, streamId, 0L, 0L);
+            } catch (RuntimeException stopFailure) {
+                log.error("viewer STOP audit failed after activation race session={} stream={}",
+                        sessionId, streamId, stopFailure);
+            }
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE);
         }
 

@@ -21,7 +21,10 @@ class ViewOnlyViewerRegistryTest {
 
     private static Optional<ViewOnlyViewerSubscription> subscribe(
             ViewOnlyViewerRegistry registry, String sessionId, Runnable frameAvailable) {
-        return registry.subscribe(sessionId, "stream-1", "tenant-1", "operator-1", frameAvailable);
+        Optional<ViewOnlyViewerSubscription> reserved = registry.reserve(
+                sessionId, "stream-1", "tenant-1", "operator-1", frameAvailable);
+        reserved.ifPresent(subscription -> assertTrue(registry.activate(subscription)));
+        return reserved;
     }
 
     private static ViewOnlyFrame frame(String sessionId, long seq) {
@@ -46,6 +49,31 @@ class ViewOnlyViewerRegistryTest {
     void noViewer_dropsFrame() {
         ViewOnlyViewerRegistry registry = new ViewOnlyViewerRegistry(1);
         assertEquals(0, registry.publish(frame("s1", 0))); // no subscriber → dropped, returns 0
+    }
+
+    @Test
+    void reservedViewerRejectsFramesUntilActivated() {
+        ViewOnlyViewerRegistry registry = new ViewOnlyViewerRegistry(1);
+        ViewOnlyViewerSubscription sub = registry.reserve(
+                "s1", "stream-1", "tenant-1", "operator-1", null).orElseThrow();
+
+        assertEquals(0, registry.publish(frame("s1", 0)));
+        assertTrue(sub.poll().isEmpty());
+        assertTrue(registry.activate(sub));
+        assertEquals(1, registry.publish(frame("s1", 1)));
+        assertEquals(1L, sub.poll().orElseThrow().frameSeq());
+    }
+
+    @Test
+    void closedReservationCannotBeActivated() {
+        ViewOnlyViewerRegistry registry = new ViewOnlyViewerRegistry(1);
+        ViewOnlyViewerSubscription sub = registry.reserve(
+                "s1", "stream-1", "tenant-1", "operator-1", null).orElseThrow();
+
+        registry.unsubscribe(sub);
+
+        assertFalse(registry.activate(sub));
+        assertEquals(0, registry.publish(frame("s1", 0)));
     }
 
     @Test
@@ -155,8 +183,7 @@ class ViewOnlyViewerRegistryTest {
     @Test
     void renderAcknowledgementIsBoundToSessionStreamViewerAndSentSequence() {
         ViewOnlyViewerRegistry registry = new ViewOnlyViewerRegistry(1);
-        ViewOnlyViewerSubscription sub = registry.subscribe(
-                "s1", "stream-1", "tenant-1", "operator-1", null).orElseThrow();
+        ViewOnlyViewerSubscription sub = subscribe(registry, "s1", null).orElseThrow();
         ViewOnlyFrame sent = frame("s1", 9L);
         assertTrue(sub.markSent(sent, 12L));
 
@@ -183,8 +210,7 @@ class ViewOnlyViewerRegistryTest {
     @Test
     void publishNeverCrossesTheSubscribedStreamBoundary() {
         ViewOnlyViewerRegistry registry = new ViewOnlyViewerRegistry(1);
-        ViewOnlyViewerSubscription sub = registry.subscribe(
-                "s1", "stream-1", "tenant-1", "operator-1", null).orElseThrow();
+        ViewOnlyViewerSubscription sub = subscribe(registry, "s1", null).orElseThrow();
         ViewOnlyFrame otherStream = new ViewOnlyFrame(
                 "s1", "stream-2", 1L, "image/png", ByteString.copyFromUtf8("other"), false, 1L);
 
