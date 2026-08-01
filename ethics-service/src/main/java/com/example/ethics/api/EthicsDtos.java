@@ -25,6 +25,18 @@ public final class EthicsDtos {
     public record MailboxLoginRequest(@NotNull UUID receiptId, @NotBlank @Size(max=512) String accessSecret) {}
     public record MailboxSessionResponse(Instant expiresAt) {}
     public record MessageRequest(@NotBlank @Size(max=16000) String body) {}
+    // ES-2 (#3271): the acknowledgement draft and its dispatch. The client sends back
+    // the template identity it drafted from so the ledger records which words, which
+    // version, and what was removed — not merely "a message went out".
+    public record AcknowledgementDraftResponse(
+            String body, UUID templateId, int templateVersion,
+            boolean alreadyAcknowledged, java.util.List<String> mandatorySections) {}
+    public record AcknowledgementDispatchRequest(
+            @NotBlank @Size(max=16000) String body,
+            @jakarta.validation.constraints.NotNull UUID templateId,
+            int templateVersion) {}
+    public record AcknowledgementDispatchResponse(
+            UUID messageId, java.util.List<String> missingSections) {}
     public record MessageResponse(UUID id, String authorType, String visibility, String body, Instant createdAt) {}
     /**
      * What the reporter can see of their own case.

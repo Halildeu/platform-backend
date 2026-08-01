@@ -594,7 +594,22 @@ public class EthicsService {
         caseForSession(channel,token);
         sessions.deleteById(secrets.sha256(token));
     }
-    private EthicsCase requireCase(StaffContext staff,UUID caseId,String relation){
+    /**
+     * ES-2 (#3271) — the last-day net's send path. No StaffContext because no human is
+     * acting; the actor hash names the system component so the ledger never implies a
+     * person wrote this. Everything else — idempotency, the acknowledgement stamp, the
+     * open-case guard — is the same {@code createMessage} spine the human path uses,
+     * because two send paths with different guarantees is how one of them goes wrong.
+     */
+    @Transactional
+    public MessageResponse systemReply(UUID orgId,UUID caseId,String key,String body){
+        return createMessage(caseId,"STAFF","REPORTER_VISIBLE",key,body,orgId,"system:ack-net",
+                () -> ensureOpen(cases.findByIdAndOrgId(caseId,orgId)
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."))));
+    }
+
+    // Package-private for AcknowledgementService — same module, same authz gate.
+    EthicsCase requireCase(StaffContext staff,UUID caseId,String relation){
         EthicsCase item=cases.findByIdAndOrgId(caseId,staff.orgId()).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."));
         authorization.require(staff,relation,caseId);
         return item;
