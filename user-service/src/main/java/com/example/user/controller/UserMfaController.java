@@ -49,9 +49,17 @@ public class UserMfaController {
 
     private static final Logger log = LoggerFactory.getLogger(UserMfaController.class);
 
-    /** Delivery lanes this service owns; TOTP is stock Keycloak and ungoverned. */
+    /**
+     * The three second factors an operator can allow or withhold per user.
+     *
+     * <p>{@code totp} joined the set in gitops#3251. It was absent while the
+     * authenticator app ran on stock {@code auth-otp-form}, which does not read
+     * this attribute — accepting the value then would have stored a restriction
+     * nothing enforced, which is worse than refusing it. The privileged flow now
+     * runs {@code mfa-otp-form}, which does read it, so the value is honoured.
+     */
     private static final java.util.Set<String> SUPPORTED_METHODS =
-            java.util.Set.of("sms", "email");
+            java.util.Set.of("sms", "email", "totp");
 
     private final UserRepository userRepository;
     private final KeycloakAdminClient keycloakAdminClient;
