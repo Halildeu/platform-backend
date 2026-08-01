@@ -141,8 +141,18 @@ public class SmsOtpAuthenticator implements Authenticator {
         context.challenge(page);
     }
 
-    private LoginFormsProvider form(AuthenticationFlowContext context, String phone) {
-        return context.form().setAttribute("maskedPhone", mask(phone));
+    /**
+     * The challenge form. The channel goes in as an attribute because the two
+     * lanes share this template and the wording cannot: the e-mail screen was
+     * measured on 2026-08-01 titled "SMS verification", telling a user a code
+     * had gone to a phone that was never involved. `maskedPhone` is now
+     * `maskedRecipient` for the same reason — the old name is exactly the
+     * channel-blind habit that has cost this lane three separate bugs.
+     */
+    private LoginFormsProvider form(AuthenticationFlowContext context, String recipient) {
+        return context.form()
+                .setAttribute("otpChannel", config(context).channel)
+                .setAttribute("maskedRecipient", mask(recipient));
     }
 
     private SmsOtpConfig config(AuthenticationFlowContext context) {
