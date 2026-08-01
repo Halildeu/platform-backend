@@ -45,6 +45,7 @@ public class EthicsService {
 
     private final ParticipantHandles handles;
     private final UserDirectoryClient directory;
+    private final com.example.ethics.intake.IntakeChannelGate intakeChannel;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
             EthicsReportRepository reports, ReporterAccessGrantRepository grants, EthicsMessageRepository messages,
@@ -57,9 +58,11 @@ public class EthicsService {
             ParticipantHandles handles,
             UserDirectoryClient directory,
             CaseSlaClock sla,
-            com.example.ethics.repository.CaseWaitingReasonRepository waits) {
+            com.example.ethics.repository.CaseWaitingReasonRepository waits,
+            com.example.ethics.intake.IntakeChannelGate intakeChannel) {
         this.sla=sla;
         this.waits=waits;
+        this.intakeChannel=intakeChannel;
         this.handles=handles;
         this.directory=directory;
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
@@ -86,6 +89,12 @@ public class EthicsService {
         // host (threaded here as `channel`); unmapped hosts fall back to the
         // default public-org-id, preserving single-tenant behaviour.
         UUID orgId = tenantResolver.resolve(channel);
+        // ES-403 (#885), owner decision 2026-08-01: a lapsed subscription closes ONLY new
+        // intake. Mailbox login, reporter replies, attachments on open cases, staff handling,
+        // the SLA clock and export are untouched below and must stay that way — closing any
+        // of them would transfer the org's 2019/1937 Art.9 duties onto a billing event. The
+        // gate itself fails OPEN (outage != lapse); see IntakeChannelGate.
+        if (!intakeChannel.isOpen(orgId)) throw new ResponseStatusException(HttpStatus.FORBIDDEN,"INTAKE_CHANNEL_INACTIVE");
         if (request.mode()!=ReportMode.ANONYMOUS) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,"REPORT_MODE_NOT_ENABLED");
         transactionLocks.lock("intake\n"+orgId+"\n"+normalizedChannel+"\n"+key);
         String requestHash = secrets.sha256(canonicalField(request.mode().name())
