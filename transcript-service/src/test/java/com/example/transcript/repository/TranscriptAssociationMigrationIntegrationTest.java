@@ -11,6 +11,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -29,6 +30,14 @@ class TranscriptAssociationMigrationIntegrationTest {
                     .withDatabaseName("transcript_migration")
                     .withUsername("test")
                     .withPassword("test");
+
+    @BeforeEach
+    void resetMigrationSchema() throws SQLException {
+        try (Connection connection = connection();
+             var statement = connection.createStatement()) {
+            statement.execute("DROP SCHEMA IF EXISTS " + SCHEMA + " CASCADE");
+        }
+    }
 
     @Test
     void latestMigrationBackfillsWindowIdentityAndAddsRestartSafeFinalizationState()
@@ -49,6 +58,11 @@ class TranscriptAssociationMigrationIntegrationTest {
                 tenant, finalizedMeeting, finalizedSession, 2L);
 
         migrateTo("11");
+        // V13 deliberately refuses to guess identities for legacy rows. This
+        // models the audited pre-migration remediation required by the
+        // transcript-ready activation gate.
+        UUID remediatedAnalysisRun = UUID.randomUUID();
+        updateLegacyAnalysisRun(legacyFinalization, remediatedAnalysisRun);
         // Live TEST shape from 2026-07-29: different producer windows in
         // different transport epochs can refer to the same chunk counters.
         // V12 must preserve both rows; chunk range is provenance, not identity.
@@ -182,14 +196,38 @@ class TranscriptAssociationMigrationIntegrationTest {
                             + "AND canonical_transcript_sha256 IS NULL "
                             + "AND canonical_segments IS NULL "
                             + "AND canonical_projection_sha256 IS NULL "
-                            + "AND analysis_run_id IS NULL",
-                    legacyFinalization)).isEqualTo(1L);
+                            + "AND analysis_run_id = ?",
+                    legacyFinalization, remediatedAnalysisRun)).isEqualTo(1L);
+            assertThat(singleString(connection,
+                    "SELECT is_nullable FROM information_schema.columns "
+                            + "WHERE table_schema = ? AND table_name = 'transcript_finalizations' "
+                            + "AND column_name = 'analysis_run_id'",
+                    SCHEMA)).isEqualTo("NO");
             assertThatThrownBy(() -> updateLegacyWithPartialProjection(
                     connection, legacyFinalization))
                     .isInstanceOf(SQLException.class)
                     .satisfies(error -> assertThat(((SQLException) error).getSQLState())
                             .isEqualTo("23514"));
         }
+    }
+
+    @Test
+    void latestMigrationFailsClosedWhenLegacyAnalysisRunIdentityIsMissing()
+            throws Exception {
+        migrateTo("6");
+        UUID tenant = UUID.randomUUID();
+        UUID meeting = UUID.randomUUID();
+        UUID session = UUID.randomUUID();
+        insertLegacyFinalizedAssociation(
+                tenant, meeting, session, "SES-null-analysis", 1L);
+        insertLegacyFinalization(tenant, meeting, session, 1L);
+        migrateTo("12");
+
+        assertThatThrownBy(() -> migrateTo(null))
+                .hasRootCauseInstanceOf(SQLException.class)
+                .rootCause()
+                .satisfies(error -> assertThat(((SQLException) error).getSQLState())
+                        .isEqualTo("23502"));
     }
 
     private void migrateTo(String target) {
@@ -235,6 +273,18 @@ class TranscriptAssociationMigrationIntegrationTest {
             statement.setTimestamp(9, now);
             statement.setTimestamp(10, now);
             statement.executeUpdate();
+        }
+    }
+
+    private void updateLegacyAnalysisRun(UUID finalizationId, UUID analysisRunId)
+            throws SQLException {
+        try (Connection connection = connection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "UPDATE " + SCHEMA + ".transcript_finalizations "
+                             + "SET analysis_run_id = ? WHERE id = ?")) {
+            statement.setObject(1, analysisRunId);
+            statement.setObject(2, finalizationId);
+            assertThat(statement.executeUpdate()).isEqualTo(1);
         }
     }
 
