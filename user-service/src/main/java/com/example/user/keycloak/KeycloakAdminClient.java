@@ -103,6 +103,63 @@ public class KeycloakAdminClient {
     /** Backstop against an unbounded paging loop; far above any real realm. */
     private static final int MAX_USERNAME_SYNC_USERS = 10_000;
 
+    /**
+     * Keycloak user id → most recent successful login (gitops#3297).
+     *
+     * <p>The platform's own {@code users.last_login} is fed by
+     * {@code AuthService.login()}, the legacy username/password endpoint that
+     * Keycloak OIDC replaced — so nothing has written it since the migration.
+     * Keycloak holds the answer instead, as login events.
+     *
+     * <p>Only {@code LOGIN} is asked for: {@code LOGIN_ERROR} is a failed
+     * attempt, and counting it would report a last login that never happened.
+     *
+     * <p>The window is bounded by the realm's {@code eventsExpiration}, so a
+     * user who last signed in before it simply has no entry here. That is why
+     * the caller advances rather than overwrites — an absent entry must not be
+     * allowed to erase a timestamp already on record.
+     */
+    public Map<String, Instant> listLastLogins() {
+        Map<String, Instant> newest = new LinkedHashMap<>();
+        int page = props.getUsernameSyncPageSize();
+        for (int first = 0; first < MAX_LOGIN_EVENTS; first += page) {
+            final int offset = first;
+            JsonNode batch = adminRequest(spec -> spec.get()
+                    .uri(b -> b.path("/admin/realms/{realm}/events")
+                            .queryParam("type", "LOGIN")
+                            .queryParam("first", offset)
+                            .queryParam("max", page)
+                            .build(props.getRealm()))
+                    .retrieve().bodyToMono(JsonNode.class));
+            if (batch == null || !batch.isArray() || batch.isEmpty()) {
+                break;
+            }
+            batch.forEach(e -> {
+                String userId = e.path("userId").asText(null);
+                long time = e.path("time").asLong(0L);
+                if (userId == null || time <= 0L) {
+                    return;
+                }
+                Instant at = Instant.ofEpochMilli(time);
+                Instant seen = newest.get(userId);
+                if (seen == null || at.isAfter(seen)) {
+                    newest.put(userId, at);
+                }
+            });
+            if (batch.size() < page) {
+                break;
+            }
+        }
+        return newest;
+    }
+
+    /**
+     * Backstop on the event scan. Events are returned newest-first, so the cap
+     * costs at worst the oldest logins of the busiest realms — and those are
+     * exactly the ones a stored timestamp already covers.
+     */
+    private static final int MAX_LOGIN_EVENTS = 20_000;
+
     public Optional<MfaSnapshot> fetchMfaSnapshot(String kcSubject, String canonicalEmail) {
         JsonNode user = resolveUser(kcSubject, canonicalEmail);
         if (user == null) {

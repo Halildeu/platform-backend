@@ -87,7 +87,7 @@ public class User implements UserDetails {
 
     /**
      * Keycloak login name, cached for display (gitops#3291). Keycloak remains
-     * the authority; this is refreshed by {@code KeycloakUsernameSync}.
+     * the authority; this is refreshed by {@code KeycloakUserFactsSync}.
      * <p>
      * Deliberately NOT named {@code username}: {@link #getUsername()} is taken
      * by Spring Security's {@code UserDetails} contract and returns the e-mail.

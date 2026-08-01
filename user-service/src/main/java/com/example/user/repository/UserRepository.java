@@ -133,4 +133,25 @@ public interface UserRepository extends JpaRepository<User, Long>, JpaSpecificat
     @Modifying(clearAutomatically = true)
     @Query("update User u set u.kcUsername = :username where u.kcSubject = :subject")
     int applyKcUsername(@Param("subject") String subject, @Param("username") String username);
+
+    /**
+     * Move a cached last-login forward, never backward (gitops#3297).
+     * <p>
+     * The {@code lastLogin < :at} guard is the whole point and it belongs in the
+     * statement, not in the caller: Keycloak only keeps login events for its
+     * retention window, so a user whose last sign-in has aged out yields no
+     * event, and an unguarded write would erase a timestamp that is still true.
+     * Putting the comparison in SQL also makes two concurrent reconciles safe
+     * without a lock — the older one simply updates nothing.
+     * <p>
+     * Like {@code applyKcUsername} this deliberately does not bump
+     * {@code @Version}: it caches a Keycloak fact and must not make an unrelated
+     * concurrent edit of that user fail an optimistic-lock check.
+     */
+    @org.springframework.transaction.annotation.Transactional
+    @Modifying(clearAutomatically = true)
+    @Query("update User u set u.lastLogin = :at "
+            + "where u.kcSubject = :subject and (u.lastLogin is null or u.lastLogin < :at)")
+    int advanceLastLogin(@Param("subject") String subject,
+                         @Param("at") java.time.LocalDateTime at);
 }
