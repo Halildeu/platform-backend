@@ -34,7 +34,20 @@ import com.serban.notify.api.dto.SubmitIntentRequest;
 public class MfaDeliveryGrantVerifier {
 
     private static final Logger log = LoggerFactory.getLogger(MfaDeliveryGrantVerifier.class);
-    private static final String PURPOSE = "mfa_otp";
+    /**
+     * Purposes this verifier will honour (gitops#3285). A set rather than a
+     * constant, because the invitation lane needs its own name — but still a
+     * closed set: an unrecognised purpose falls through to the ordinary authz
+     * path rather than being trusted.
+     *
+     * <p>Widening this does NOT widen what a grant can do. The exact binding
+     * below is where the guarantee lives: a grant authorises the one recipient,
+     * channel, topic and template it names, so an invitation grant can no more
+     * deliver an OTP than the reverse. auth-service decides who may obtain
+     * which purpose in the first place.
+     */
+    private static final java.util.Set<String> PURPOSES =
+            java.util.Set.of("mfa_otp", "account_invite");
 
     private final JwtDecoder decoder;
     private final String expectedIssuer;
@@ -76,8 +89,9 @@ public class MfaDeliveryGrantVerifier {
             log.warn("mfa grant rejected: unexpected issuer");
             return java.util.Optional.empty();
         }
-        if (!PURPOSE.equals(jwt.getClaimAsString("purpose"))) {
-            log.warn("mfa grant rejected: purpose is not {}", PURPOSE);
+        String purpose = jwt.getClaimAsString("purpose");
+        if (purpose == null || !PURPOSES.contains(purpose)) {
+            log.warn("delivery grant rejected: unknown purpose");
             return java.util.Optional.empty();
         }
         String jti = jwt.getId();
