@@ -70,7 +70,10 @@ class LiveOnlyViewDataPlaneHandlerTest {
     }
 
     private ViewOnlyViewerSubscription subscribe(String streamId) {
-        return viewers.subscribe("s1", streamId, "tenant-1", "operator@acik", null).orElseThrow();
+        ViewOnlyViewerSubscription subscription = viewers.reserve(
+                "s1", streamId, "tenant-1", "operator@acik", null).orElseThrow();
+        assertTrue(viewers.activate(subscription));
+        return subscription;
     }
 
     @Test

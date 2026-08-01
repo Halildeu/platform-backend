@@ -20,7 +20,7 @@ import java.util.UUID;
  *       can only RECEIVE screen frames; there is no path from a viewer back to the agent. A test asserts the
  *       package carries no control-plane import.</li>
  *   <li><b>Bounded fanout.</b> At most {@code maxViewersPerSession} viewers per session (default 1 — the
- *       one-to-one pilot invariant); {@link #subscribe} returns empty once the bound is reached.</li>
+ *       one-to-one pilot invariant); {@link #reserve} returns empty once the bound is reached.</li>
  *   <li><b>Latest-wins, never blocks.</b> {@link #publish} offers each subscriber the newest frame with
  *       single-slot latest-wins backpressure (see {@link ViewOnlyViewerSubscription}); a slow viewer never
  *       delays the DATA stream.</li>
@@ -44,14 +44,12 @@ public final class ViewOnlyViewerRegistry {
     }
 
     /**
-     * Subscribe an operator viewer to a session's live screen frames.
-     *
-     * @param frameAvailable optional, non-blocking wake hook invoked after each newly offered frame (nullable)
-     * @return the subscription, or empty if the per-session viewer bound is already reached
+     * Reserve a bounded viewer slot without accepting frames. The controller uses this before writing VIEW_START,
+     * then calls {@link #activate(ViewOnlyViewerSubscription)} only after the audit transaction has committed.
      */
-    public Optional<ViewOnlyViewerSubscription> subscribe(String sessionId, String streamId,
-                                                           String operatorTenantId, String operatorSubject,
-                                                           Runnable frameAvailable) {
+    public Optional<ViewOnlyViewerSubscription> reserve(String sessionId, String streamId,
+                                                         String operatorTenantId, String operatorSubject,
+                                                         Runnable frameAvailable) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId is required");
         }
@@ -66,9 +64,23 @@ public final class ViewOnlyViewerRegistry {
             ViewOnlyViewerSubscription subscription = new ViewOnlyViewerSubscription(
                     sessionId, streamId, operatorTenantId, operatorSubject,
                     "vw-" + viewerSeq.incrementAndGet() + "-" + UUID.randomUUID(),
-                    frameAvailable);
+                    frameAvailable, false);
             subs.add(subscription);
             return Optional.of(subscription);
+        }
+    }
+
+    /** Activate an exact reserved subscription; false means it was closed or removed before activation. */
+    public boolean activate(ViewOnlyViewerSubscription subscription) {
+        if (subscription == null) {
+            return false;
+        }
+        CopyOnWriteArrayList<ViewOnlyViewerSubscription> subs = bySession.get(subscription.sessionId());
+        if (subs == null) {
+            return false;
+        }
+        synchronized (subs) {
+            return subs.contains(subscription) && subscription.activate();
         }
     }
 

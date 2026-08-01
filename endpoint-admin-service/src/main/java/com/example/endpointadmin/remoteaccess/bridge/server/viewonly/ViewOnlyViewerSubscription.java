@@ -34,18 +34,26 @@ public final class ViewOnlyViewerSubscription {
     private final Object lock = new Object();
     private final LinkedHashMap<Long, SentFrame> pendingSentFrames = new LinkedHashMap<>();
     private ViewOnlyFrame latest;   // guarded by lock
+    private boolean active;         // guarded by lock
     private boolean closed;         // guarded by lock
     private long lastRenderedSeq = Long.MIN_VALUE; // guarded by lock
     private long renderedCount;     // guarded by lock
 
     ViewOnlyViewerSubscription(String sessionId, String streamId, String operatorTenantId,
                                String operatorSubject, String viewerId, Runnable frameAvailable) {
+        this(sessionId, streamId, operatorTenantId, operatorSubject, viewerId, frameAvailable, true);
+    }
+
+    ViewOnlyViewerSubscription(String sessionId, String streamId, String operatorTenantId,
+                               String operatorSubject, String viewerId, Runnable frameAvailable,
+                               boolean active) {
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
         this.streamId = Objects.requireNonNullElse(streamId, "");
         this.operatorTenantId = Objects.requireNonNullElse(operatorTenantId, "");
         this.operatorSubject = Objects.requireNonNullElse(operatorSubject, "");
         this.viewerId = Objects.requireNonNull(viewerId, "viewerId");
         this.frameAvailable = frameAvailable;
+        this.active = active;
     }
 
     public String sessionId() {
@@ -71,13 +79,27 @@ public final class ViewOnlyViewerSubscription {
     }
 
     /**
-     * Offer the newest frame (latest-wins). A closed subscription ignores the frame and never re-populates the
-     * slot. Returns {@code true} only if the frame was accepted into the slot (subscription open).
+     * Arm a reserved subscription after the durable VIEW_START audit commits. Activation and frame offers share
+     * the same lock, so an offer can never cross the inactive-to-active boundary before this method returns.
+     */
+    boolean activate() {
+        synchronized (lock) {
+            if (closed) {
+                return false;
+            }
+            active = true;
+            return true;
+        }
+    }
+
+    /**
+     * Offer the newest frame (latest-wins). A reserved-but-inactive or closed subscription ignores the frame and
+     * never populates the slot. Returns {@code true} only if the frame was accepted by an active subscription.
      */
     boolean offer(ViewOnlyFrame frame) {
         Objects.requireNonNull(frame, "frame");
         synchronized (lock) {
-            if (closed) {
+            if (closed || !active) {
                 return false;
             }
             latest = frame;
@@ -159,6 +181,7 @@ public final class ViewOnlyViewerSubscription {
     /** Idempotent — marks closed and clears the slot; no later offer can re-store a frame. */
     public void close() {
         synchronized (lock) {
+            active = false;
             closed = true;
             latest = null;
             pendingSentFrames.clear();
