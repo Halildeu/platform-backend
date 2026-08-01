@@ -173,4 +173,72 @@ class MfaDeliveryGrantVerifierTest {
         assertThat(disabled.isEnabled()).isFalse();
         assertThat(disabled.verify("token", request())).isEmpty();
     }
+
+    // ── channel-aware recipient (gitops#3230, found live 2026-08-01) ─────
+
+    private SubmitIntentRequest emailRequest() {
+        return new SubmitIntentRequest(
+                "intent-2", "idem-2", null, "platform-system", "auth.mfa.email-otp",
+                NotificationIntent.Severity.info,
+                NotificationIntent.DataClassification.security,
+                List.of(new SubmitIntentRequest.RecipientRef(
+                        SubmitIntentRequest.RecipientRef.Type.external, null, "ops@acik.com",
+                        null, null, "tr")),
+                new SubmitIntentRequest.TemplateRef("auth.email-otp", null, "tr"),
+                List.of("email"), Map.of("code", "123456"),
+                null, null, null, null, null);
+    }
+
+    private Map<String, Object> emailClaims() {
+        return new java.util.HashMap<>(Map.of(
+                "iss", "auth-service", "purpose", "mfa_otp", "jti", "grant-2",
+                "client_id", "keycloak-sms-otp", "topic", "auth.mfa.email-otp",
+                "template", "auth.email-otp", "channel", "email",
+                "recipient", "ops@acik.com",
+                "auth_session_id", "sess-2",
+                "deliver_before", Instant.now().plusSeconds(600).getEpochSecond()));
+    }
+
+    @Test
+    void emailGrant_matchesTheEmailRecipient_notThePhoneField() {
+        // Live regression: the check read `phone` for every channel, so every
+        // e-mail grant was rejected and the delivery fell back to the ordinary
+        // authz path and was blocked. The endpoint was correct; the check was
+        // looking at the wrong field.
+        decoder.next = jwt(emailClaims());
+        Optional<MfaDeliveryGrant> result = verifier.verify("token", emailRequest());
+
+        assertThat(result).isPresent();
+        assertThat(result.get().recipient()).isEqualTo("ops@acik.com");
+    }
+
+    @Test
+    void emailGrantForAnotherAddress_isStillRefused() {
+        Map<String, Object> claims = emailClaims();
+        claims.put("recipient", "someone-else@acik.com");
+        decoder.next = jwt(claims);
+
+        assertThat(verifier.verify("token", emailRequest())).isEmpty();
+    }
+
+    @Test
+    void aGrantCannotCrossChannels_evenWithMatchingText() {
+        // An SMS grant naming an address must not authorise an e-mail intent:
+        // the channel is compared first, and the recipient is then read from
+        // the field that channel actually uses.
+        Map<String, Object> claims = emailClaims();
+        claims.put("channel", "sms");
+        decoder.next = jwt(claims);
+
+        assertThat(verifier.verify("token", emailRequest())).isEmpty();
+    }
+
+    @Test
+    void anUnknownChannelResolvesToNoRecipient_soItFailsClosed() {
+        Map<String, Object> claims = emailClaims();
+        claims.put("channel", "push");
+        decoder.next = jwt(claims);
+
+        assertThat(verifier.verify("token", emailRequest())).isEmpty();
+    }
 }

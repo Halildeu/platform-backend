@@ -105,7 +105,15 @@ public class MfaDeliveryGrantVerifier {
         }
         List<SubmitIntentRequest.RecipientRef> recipients =
                 request.recipients() == null ? List.of() : request.recipients();
-        if (recipients.size() != 1 || !equalsExact(recipient, recipients.get(0).phone())) {
+        // The recipient field follows the channel: `phone` for SMS, `email`
+        // for mail. Comparing against `phone` for every channel rejected every
+        // e-mail grant — the delivery then fell back to the ordinary authz
+        // path and was blocked, which reads as "the feature does not work"
+        // rather than "the check is looking at the wrong field" (measured on
+        // k3d-test 2026-08-01: `mfa grant rejected: intent must carry exactly
+        // the granted recipient`, then BLOCKED_BY_AUTHZ).
+        if (recipients.size() != 1
+                || !equalsExact(recipient, recipientForChannel(recipients.get(0), channel))) {
             log.warn("mfa grant rejected: intent must carry exactly the granted recipient");
             return java.util.Optional.empty();
         }
@@ -125,6 +133,22 @@ public class MfaDeliveryGrantVerifier {
         return java.util.Optional.of(new MfaDeliveryGrant(
                 jti, jwt.getSubject(), recipient, channel, topic, template,
                 jwt.getClaimAsString("auth_session_id"), deliverBefore));
+    }
+
+    /**
+     * An unknown channel resolves to null, so the exact-match check below
+     * fails closed: a channel we cannot read the recipient for must not be
+     * treated as matching.
+     */
+    private static String recipientForChannel(SubmitIntentRequest.RecipientRef ref, String channel) {
+        if (ref == null || channel == null) {
+            return null;
+        }
+        return switch (channel) {
+            case "sms" -> ref.phone();
+            case "email" -> ref.email();
+            default -> null;
+        };
     }
 
     private static boolean equalsExact(String a, String b) {
