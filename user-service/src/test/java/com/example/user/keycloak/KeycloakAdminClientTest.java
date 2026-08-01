@@ -277,4 +277,72 @@ class KeycloakAdminClientTest {
 
         server.verify(exactly(0), postRequestedFor(urlPathEqualTo(ASSIGNED)));
     }
+
+    // ── per-user method allow-list (gitops#3232) ────────────────────────
+
+    @Test
+    void snapshot_readsTheMethodAllowList_toleratingHoweverItWasWritten() {
+        stubUserById("{\"phoneNumber\":[\"+905321234567\"],\"mfaMethods\":[\"sms, EMAIL\"]}");
+        server.stubFor(get(urlPathEqualTo(
+                "/admin/realms/platform-test/users/" + KC_SUBJECT + "/credentials"))
+                .willReturn(aResponse().withStatus(200)
+                        .withHeader("Content-Type", "application/json").withBody("[]")));
+        server.stubFor(get(urlPathEqualTo(ASSIGNED)).willReturn(aResponse().withStatus(200)
+                .withHeader("Content-Type", "application/json").withBody("[]")));
+
+        Optional<KeycloakAdminClient.MfaSnapshot> snapshot =
+                client.fetchMfaSnapshot(KC_SUBJECT, "u@acik.com");
+
+        assertThat(snapshot).isPresent();
+        assertThat(snapshot.get().allowedMethods()).containsExactly("sms", "email");
+    }
+
+    @Test
+    void noAttribute_readsAsAnEmptyList_whichMeansUnrestricted() {
+        stubUserById("{\"phoneNumber\":[\"+905321234567\"]}");
+        server.stubFor(get(urlPathEqualTo(
+                "/admin/realms/platform-test/users/" + KC_SUBJECT + "/credentials"))
+                .willReturn(aResponse().withStatus(200)
+                        .withHeader("Content-Type", "application/json").withBody("[]")));
+        server.stubFor(get(urlPathEqualTo(ASSIGNED)).willReturn(aResponse().withStatus(200)
+                .withHeader("Content-Type", "application/json").withBody("[]")));
+
+        assertThat(client.fetchMfaSnapshot(KC_SUBJECT, "u@acik.com").get().allowedMethods())
+                .isEmpty();
+    }
+
+    @Test
+    void writingTheListMergesRatherThanReplacingEveryOtherAttribute() {
+        // Same trap as the phone attribute: KC's user update replaces the whole
+        // map, so a blind PUT would take dept with it.
+        stubUserById("{\"phoneNumber\":[\"+905321234567\"],\"dept\":[\"ops\"]}");
+        server.stubFor(put(urlPathEqualTo("/admin/realms/platform-test/users/" + KC_SUBJECT))
+                .willReturn(aResponse().withStatus(204)));
+
+        client.setAllowedMethods(KC_SUBJECT, java.util.List.of("SMS", " sms ", "email"));
+
+        server.verify(exactly(1), putRequestedFor(
+                urlPathEqualTo("/admin/realms/platform-test/users/" + KC_SUBJECT))
+                .withRequestBody(matchingJsonPath("$.attributes.dept[0]", equalTo("ops")))
+                .withRequestBody(matchingJsonPath("$.attributes.phoneNumber[0]", equalTo("+905321234567")))
+                .withRequestBody(matchingJsonPath("$.attributes.mfaMethods[0]", equalTo("sms")))
+                .withRequestBody(matchingJsonPath("$.attributes.mfaMethods[1]", equalTo("email"))));
+    }
+
+    @Test
+    void clearingRemovesTheAttributeRatherThanStoringAnEmptyList() {
+        // Both read as "unrestricted"; only one of them is a value someone has
+        // to explain later.
+        stubUserById("{\"mfaMethods\":[\"sms\"],\"dept\":[\"ops\"]}");
+        server.stubFor(put(urlPathEqualTo("/admin/realms/platform-test/users/" + KC_SUBJECT))
+                .willReturn(aResponse().withStatus(204)));
+
+        client.setAllowedMethods(KC_SUBJECT, java.util.List.of());
+
+        server.verify(exactly(1), putRequestedFor(
+                urlPathEqualTo("/admin/realms/platform-test/users/" + KC_SUBJECT))
+                .withRequestBody(matchingJsonPath("$.attributes.dept[0]", equalTo("ops")))
+                .withRequestBody(com.github.tomakehurst.wiremock.client.WireMock
+                        .notMatching(".*mfaMethods.*")));
+    }
 }

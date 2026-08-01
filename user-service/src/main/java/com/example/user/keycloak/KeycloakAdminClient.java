@@ -57,7 +57,7 @@ public class KeycloakAdminClient {
 
     /** Snapshot of everything the panel MFA section shows for one KC user. */
     public record MfaSnapshot(String kcUserId, boolean requiresMfa, boolean totpConfigured,
-            String phoneNumber) {}
+            String phoneNumber, List<String> allowedMethods) {}
 
     public Optional<MfaSnapshot> fetchMfaSnapshot(String kcSubject, String canonicalEmail) {
         JsonNode user = resolveUser(kcSubject, canonicalEmail);
@@ -73,7 +73,23 @@ public class KeycloakAdminClient {
         boolean requiresMfa = realmRoles(kcUserId).stream()
                 .anyMatch(r -> props.getRequiresMfaRole().equals(r.path("name").asText()));
 
-        return Optional.of(new MfaSnapshot(kcUserId, requiresMfa, totp, phone));
+        // Empty list means "no restriction" all the way through: the SPI reads
+        // an absent attribute the same way, so the two ends agree without a
+        // second convention to keep in sync.
+        List<String> methods = new ArrayList<>();
+        JsonNode raw = user.path("attributes").path(props.getMethodsAttribute());
+        if (raw.isArray()) {
+            raw.forEach(v -> {
+                for (String part : v.asText("").split(",")) {
+                    String trimmed = part.trim().toLowerCase(java.util.Locale.ROOT);
+                    if (!trimmed.isEmpty()) {
+                        methods.add(trimmed);
+                    }
+                }
+            });
+        }
+
+        return Optional.of(new MfaSnapshot(kcUserId, requiresMfa, totp, phone, methods));
     }
 
     /** Delete every OTP credential (reset; next login re-enrolls if required). */
@@ -194,6 +210,50 @@ public class KeycloakAdminClient {
         log.info("mfa-admin: requires-mfa {} for kc user {}",
                 required ? "granted" : "revoked", kcUserId);
         return true;
+    }
+
+    /**
+     * Set (non-empty) or clear (empty/null) the per-user method allow-list.
+     *
+     * <p>Same GET-then-PUT merge as the phone attribute, and for the same
+     * reason: Keycloak's user update replaces the whole attribute map, so a
+     * blind PUT would take every other attribute with it.
+     */
+    public void setAllowedMethods(String kcUserId, List<String> methodsOrEmpty) {
+        JsonNode user = adminRequest(spec -> spec.get()
+                .uri("/admin/realms/{realm}/users/{id}", props.getRealm(), kcUserId)
+                .retrieve().bodyToMono(JsonNode.class));
+        Map<String, Object> representation =
+                mapper.convertValue(user, new com.fasterxml.jackson.core.type.TypeReference<>() {});
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> attributes = representation.get("attributes") instanceof Map<?, ?> m
+                ? new HashMap<>((Map<String, Object>) m)
+                : new HashMap<>();
+
+        List<String> clean = methodsOrEmpty == null ? List.of() : methodsOrEmpty.stream()
+                .filter(v -> v != null && !v.isBlank())
+                .map(v -> v.trim().toLowerCase(java.util.Locale.ROOT))
+                .distinct()
+                .toList();
+
+        if (clean.isEmpty()) {
+            // Removing the attribute rather than storing an empty list: both
+            // read as "no restriction", and one of them is not a value that
+            // has to be explained later.
+            attributes.remove(props.getMethodsAttribute());
+        } else {
+            attributes.put(props.getMethodsAttribute(), clean);
+        }
+        representation.put("attributes", attributes);
+
+        adminRequest(spec -> spec.put()
+                .uri("/admin/realms/{realm}/users/{id}", props.getRealm(), kcUserId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(representation)
+                .retrieve().toBodilessEntity());
+        log.info("mfa-admin: allowed methods {} for kc user {}",
+                clean.isEmpty() ? "cleared" : clean, kcUserId);
     }
 
     // ── internals ──

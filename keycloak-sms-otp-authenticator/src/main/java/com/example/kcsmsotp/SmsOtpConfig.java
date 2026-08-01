@@ -30,6 +30,7 @@ final class SmsOtpConfig {
     static final String CFG_MAX_RESENDS = "max-resends";
     static final String CFG_PHONE_ATTRIBUTE = "phone-attribute";
     static final String CFG_CHANNEL = "delivery-channel";
+    static final String CFG_METHODS_ATTRIBUTE = "methods-attribute";
 
     static final String CHANNEL_SMS = "sms";
     static final String CHANNEL_EMAIL = "email";
@@ -48,6 +49,8 @@ final class SmsOtpConfig {
     final String phoneAttribute;
     /** notify delivery channel: {@value #CHANNEL_SMS} or {@value #CHANNEL_EMAIL}. */
     final String channel;
+    /** User attribute holding the per-user allow-list of channels. */
+    final String methodsAttribute;
 
     private SmsOtpConfig(Map<String, String> cfg, Function<String, String> env) {
         this.tokenUrl = value(cfg, CFG_TOKEN_URL, "");
@@ -74,6 +77,7 @@ final class SmsOtpConfig {
         // this key existed, keeps behaving exactly as it did.
         String ch = value(cfg, CFG_CHANNEL, CHANNEL_SMS);
         this.channel = CHANNEL_EMAIL.equalsIgnoreCase(ch) ? CHANNEL_EMAIL : CHANNEL_SMS;
+        this.methodsAttribute = value(cfg, CFG_METHODS_ATTRIBUTE, "mfaMethods");
     }
 
     boolean isEmail() {
