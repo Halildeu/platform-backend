@@ -204,6 +204,8 @@ public class RemoteBridgeViewerController {
         AtomicBoolean ended = new AtomicBoolean(false);
         Runnable end = () -> {
             if (ended.compareAndSet(false, true)) {
+                // unsubscribe is also the accepted-frame metadata barrier: after it returns, no broker-observed
+                // DELIVERED frame can still be logged after the durable VIEW_STOP below.
                 viewerRegistry.unsubscribe(subscription);
                 viewerEnded.increment();
                 // STOP audit is best-effort: the stream is already ending, so a failure is logged, not thrown

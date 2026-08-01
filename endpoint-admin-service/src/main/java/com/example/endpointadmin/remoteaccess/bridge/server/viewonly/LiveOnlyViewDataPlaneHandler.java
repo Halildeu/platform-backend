@@ -84,12 +84,12 @@ public final class LiveOnlyViewDataPlaneHandler implements DataPlaneHandler {
         // live fanout — latest-wins, dropped if no viewer (no buffer, no store)
         ViewOnlyFrame viewFrame = new ViewOnlyFrame(sessionId, streamId, frame.getFrameSeq(),
                 contentType, frame.getPayload(), frame.getEndStream(), now);
-        int delivered = viewers.publish(viewFrame);
+        int delivered = viewers.publish(viewFrame, () ->
+                audit.onFrameObserved(sessionId, streamId, frame.getFrameSeq(), payloadBytes, contentType,
+                        ViewOnlyMetadataAuditSink.Disposition.DELIVERED, now));
         if (delivered > 0) {
             meters.counter(RemoteAccessMetrics.VIEW_ONLY_FANOUT_FRAMES, "disposition", "delivered").increment();
             meters.counter(RemoteAccessMetrics.VIEW_ONLY_FANOUT_BYTES).increment(payloadBytes);
-            audit.onFrameObserved(sessionId, streamId, frame.getFrameSeq(), payloadBytes, contentType,
-                    ViewOnlyMetadataAuditSink.Disposition.DELIVERED, now);
         } else {
             drop(sessionId, streamId, frame.getFrameSeq(), payloadBytes, contentType,
                     ViewOnlyMetadataAuditSink.Disposition.DROPPED_NO_VIEWER, now);

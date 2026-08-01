@@ -12,6 +12,12 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -139,6 +145,46 @@ class LiveOnlyViewDataPlaneHandlerTest {
 
         assertTrue(viewer.poll().isPresent());
         assertEquals(ViewOnlyMetadataAuditSink.Disposition.DELIVERED, audit.lastDisposition.get());
+    }
+
+    @Test
+    void unsubscribeWaitsForAcceptedFrameMetadataBeforeViewerStopCanBeRecorded() throws Exception {
+        authorize("op-1");
+        ViewOnlyViewerSubscription viewer = subscribe("op-1");
+        CountDownLatch auditEntered = new CountDownLatch(1);
+        CountDownLatch releaseAudit = new CountDownLatch(1);
+        ViewOnlyMetadataAuditSink blockingAudit = (sessionId, streamId, frameSeq, payloadBytes, contentType,
+                disposition, epochMillis) -> {
+            auditEntered.countDown();
+            try {
+                if (!releaseAudit.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test audit release timed out");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("test audit interrupted", interrupted);
+            }
+        };
+        LiveOnlyViewDataPlaneHandler blockingHandler = new LiveOnlyViewDataPlaneHandler(
+                authz, viewers, blockingAudit, meters, Set.of("image/png"), () -> NOW);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> publish = executor.submit(
+                    () -> blockingHandler.onDataFrame(PEER, "s1", frame("op-1", "image/png")));
+            assertTrue(auditEntered.await(5, TimeUnit.SECONDS));
+
+            Future<?> unsubscribe = executor.submit(() -> viewers.unsubscribe(viewer));
+            assertThrows(TimeoutException.class, () -> unsubscribe.get(150, TimeUnit.MILLISECONDS));
+
+            releaseAudit.countDown();
+            publish.get(5, TimeUnit.SECONDS);
+            unsubscribe.get(5, TimeUnit.SECONDS);
+            assertTrue(viewer.isClosed());
+        } finally {
+            releaseAudit.countDown();
+            executor.shutdownNow();
+        }
     }
 
     @Test

@@ -4,10 +4,17 @@ import com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Faz 22.6 #1580 — bounded, latest-wins, per-session, no-persistence fanout seam (Codex 019f078a). */
 class ViewOnlyViewerRegistryTest {
@@ -94,6 +101,40 @@ class ViewOnlyViewerRegistryTest {
         assertTrue(b.isClosed());
         assertEquals(0, registry.viewerCount("s1"));
         assertEquals(0, registry.publish(frame("s1", 0)));
+    }
+
+    @Test
+    void closeSessionWaitsForAcceptedFrameMetadataBarrier() throws Exception {
+        ViewOnlyViewerRegistry registry = new ViewOnlyViewerRegistry(1);
+        ViewOnlyViewerSubscription sub = subscribe(registry, "s1", null).orElseThrow();
+        CountDownLatch metadataEntered = new CountDownLatch(1);
+        CountDownLatch releaseMetadata = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<Integer> publish = executor.submit(() -> registry.publish(frame("s1", 1), () -> {
+                metadataEntered.countDown();
+                try {
+                    if (!releaseMetadata.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("test metadata release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("test metadata interrupted", interrupted);
+                }
+            }));
+            assertTrue(metadataEntered.await(5, TimeUnit.SECONDS));
+
+            Future<?> close = executor.submit(() -> registry.closeSession("s1"));
+            assertThrows(TimeoutException.class, () -> close.get(150, TimeUnit.MILLISECONDS));
+
+            releaseMetadata.countDown();
+            assertEquals(1, publish.get(5, TimeUnit.SECONDS));
+            close.get(5, TimeUnit.SECONDS);
+            assertTrue(sub.isClosed());
+        } finally {
+            releaseMetadata.countDown();
+            executor.shutdownNow();
+        }
     }
 
     @Test
