@@ -57,9 +57,25 @@ public class EvidenceProperties {
         private Duration leaseDuration = Duration.ofMinutes(2);
         private Duration retryDelay = Duration.ofMinutes(1);
         private int maxAttempts = 8;
+        /**
+         * ES-104J (#2929): which media lane this worker instance drains.
+         * {@code all} (default) keeps single-worker deployments whole; {@code core}
+         * excludes PDFs; {@code pdf} takes only PDFs. Two deployments on disjoint
+         * lanes is what keeps a PDF bomb from stalling the text/image lane — the
+         * #2860 OOM took the whole line down precisely because there was one lane.
+         */
+        private String lane = "all";
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getLane() { return lane; }
+        public void setLane(String lane) {
+            if (!java.util.Set.of("all", "core", "pdf").contains(lane)) {
+                throw new IllegalArgumentException(
+                        "ethics.evidence.pipeline.lane must be all|core|pdf, got: " + lane);
+            }
+            this.lane = lane;
+        }
         public Duration getPollDelay() { return pollDelay; }
         public void setPollDelay(Duration pollDelay) { this.pollDelay = pollDelay; }
         public int getBatchSize() { return batchSize; }
@@ -78,6 +94,10 @@ public class EvidenceProperties {
         private int clamavPort = 3310;
         private Duration timeout = Duration.ofSeconds(20);
         private long maxDecodedImagePixels = 40_000_000L;
+        /** ES-104J: page-count ceiling — the cheap half of the PDF-bomb defence. */
+        private int maxPdfPages = 100;
+        /** ES-104J: render density; with A4 at 150 DPI a page stays ~2.2M pixels. */
+        private int pdfRenderDpi = 150;
         private String scannerDigest = "";
         private String sanitizerDigest = "";
         private String parserDigest = "";
@@ -94,6 +114,10 @@ public class EvidenceProperties {
         public void setTimeout(Duration timeout) { this.timeout = timeout; }
         public long getMaxDecodedImagePixels() { return maxDecodedImagePixels; }
         public void setMaxDecodedImagePixels(long maxDecodedImagePixels) { this.maxDecodedImagePixels = maxDecodedImagePixels; }
+        public int getMaxPdfPages() { return maxPdfPages; }
+        public void setMaxPdfPages(int maxPdfPages) { this.maxPdfPages = maxPdfPages; }
+        public int getPdfRenderDpi() { return pdfRenderDpi; }
+        public void setPdfRenderDpi(int pdfRenderDpi) { this.pdfRenderDpi = pdfRenderDpi; }
         public String getScannerDigest() { return scannerDigest; }
         public void setScannerDigest(String scannerDigest) { this.scannerDigest = scannerDigest; }
         public String getSanitizerDigest() { return sanitizerDigest; }

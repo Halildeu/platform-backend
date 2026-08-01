@@ -47,6 +47,32 @@ public interface EvidenceAttachmentRepository extends JpaRepository<EvidenceAtta
             """)
     List<UUID> findDueIds(@Param("now") Instant now, Pageable pageable);
 
+    // ES-104J (#2929): lane-scoped variants of findDueIds. Two worker deployments drain
+    // disjoint lanes so a PDF bomb exhausts only the CDR worker — the text/image lane and
+    // the mailbox keep running (#2860 took everything down because there was one lane).
+    // PDF membership is decided on the DECLARED media type: it is validated against the
+    // byte signature during processing, so a mislabeled upload fails in its lane rather
+    // than escaping both.
+    @Query("""
+            select e.id
+            from EvidenceAttachment e
+            where e.state in ('INTEGRITY_VERIFIED','ORIGINAL_SEALED','SCAN_PENDING')
+              and (e.nextAttemptAt is null or e.nextAttemptAt <= :now)
+              and e.declaredMediaType <> 'application/pdf'
+            order by e.createdAt, e.id
+            """)
+    List<UUID> findDueCoreLaneIds(@Param("now") Instant now, Pageable pageable);
+
+    @Query("""
+            select e.id
+            from EvidenceAttachment e
+            where e.state in ('INTEGRITY_VERIFIED','ORIGINAL_SEALED','SCAN_PENDING')
+              and (e.nextAttemptAt is null or e.nextAttemptAt <= :now)
+              and e.declaredMediaType = 'application/pdf'
+            order by e.createdAt, e.id
+            """)
+    List<UUID> findDuePdfLaneIds(@Param("now") Instant now, Pageable pageable);
+
     @Query("""
             select e.id
             from EvidenceAttachment e

@@ -55,7 +55,15 @@ import org.springframework.test.web.servlet.MvcResult;
         "ethics.evidence.s3.secret-key=synthetic",
         "ethics.evidence.processor.mode=disabled",
         "ethics.evidence.pipeline.enabled=false",
-        "ethics.evidence.pipeline.retry-delay=1ms"
+        "ethics.evidence.pipeline.retry-delay=1ms",
+        // The suite makes more public calls per second than the production budget (the
+        // ES-104J lane test added a second report + two declares). Raised for the TEST
+        // CLASS only — the production values are untouched and covered by their own test.
+        "resilience4j.ratelimiter.instances.publicIntake.limit-for-period=50",
+        "resilience4j.ratelimiter.instances.publicMailbox.limit-for-period=100",
+        // The ES-306 per-bucket window (PublicRateLimitFilter, default 30/min) counts the
+        // whole class's calls into one bucket under MockMvc.
+        "ethics.rate-limit-per-minute=300"
 })
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
@@ -76,6 +84,7 @@ class EvidenceCustodyIntegrationTest {
     @Autowired EvidenceDerivationRepository derivations;
     @Autowired com.example.ethics.repository.AuditOutboxRepository auditOutbox;
     @Autowired EvidencePipelineWorker worker;
+    @Autowired com.example.ethics.config.EvidenceProperties properties;
     @Autowired FakeEvidenceProcessor processor;
     @Autowired InMemoryEvidenceObjectStore objects;
     @MockitoBean com.example.ethics.security.EthicsAuthorization authorization;
@@ -378,6 +387,43 @@ class EvidenceCustodyIntegrationTest {
                 new Cookie(PublicCredentialBoundaryFilter.MAILBOX_COOKIE, token));
     }
 
+    /**
+     * Faz 35 ES-104J (#2929) — lane isolation is the crash-containment mechanism.
+     *
+     * <p>The acceptance says a dead CDR worker must not stop the text/image lane. That
+     * property is delivered by the two deployments draining DISJOINT queues, so what this
+     * test pins is the disjointness itself: a core-lane cycle must not even claim a PDF
+     * row. If a refactor ever lets the core worker touch PDF rows, the isolation story is
+     * fiction and this fails before any OOM does.
+     */
+    @Test
+    void coreLaneNeverTouchesPdfRowsAndThePdfLaneDrainsThem() throws Exception {
+        ReportSession report = createReportAndOpenMailbox();
+        byte[] text = "Sentetik metin kaniti".getBytes(StandardCharsets.UTF_8);
+        byte[] pdf = "%PDF-1.7 sentetik govde".getBytes(StandardCharsets.UTF_8);
+        Declaration textDeclaration = declare(report.mailbox(), text, "text/plain");
+        Declaration pdfDeclaration = declare(report.mailbox(), pdf, "application/pdf");
+        upload(textDeclaration, text);
+        upload(pdfDeclaration, pdf);
+
+        properties.getPipeline().setLane("core");
+        try {
+            EvidencePipelineWorker.CycleResult coreCycle = worker.runCycle();
+            assertThat(coreCycle.available()).isEqualTo(1);
+            assertThat(attachments.findById(pdfDeclaration.attachmentId()).orElseThrow().getState())
+                    .as("core şeridi PDF satırına dokunmamalı")
+                    .isIn("ORIGINAL_SEALED", "INTEGRITY_VERIFIED", "SCAN_PENDING");
+
+            properties.getPipeline().setLane("pdf");
+            EvidencePipelineWorker.CycleResult pdfCycle = worker.runCycle();
+            assertThat(pdfCycle.available()).isEqualTo(1);
+            assertThat(attachments.findById(pdfDeclaration.attachmentId()).orElseThrow().getState())
+                    .isEqualTo("AVAILABLE");
+        } finally {
+            properties.getPipeline().setLane("all");
+        }
+    }
+
     private Declaration declare(Cookie mailbox, byte[] content, String mediaType) throws Exception {
         MvcResult result = mvc.perform(post("/api/v1/public/ethics/mailbox/attachments")
                         .header("Host", "etik.acik.com")
@@ -523,7 +569,8 @@ class EvidenceCustodyIntegrationTest {
                     "sha256:" + "b".repeat(64),
                     "sha256:" + "c".repeat(64),
                     "synthetic-rules-v1",
-                    "synthetic-transform-v1");
+                    "synthetic-transform-v1",
+                    java.util.List.of());
         }
     }
 }

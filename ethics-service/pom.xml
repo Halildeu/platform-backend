@@ -36,6 +36,14 @@
             <artifactId>common-auth</artifactId>
             <version>1.1.0</version>
         </dependency>
+        <!-- ES-104J (#2929): no-network PDF CDR — parse, inspect for active content,
+             render pages to raster and rebuild from scratch. Version pinned exactly;
+             the CDR parser IS the security boundary, so it never floats. -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.5</version>
+        </dependency>
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
