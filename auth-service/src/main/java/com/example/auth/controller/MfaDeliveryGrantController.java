@@ -72,7 +72,24 @@ public class MfaDeliveryGrantController {
         if (!authenticate(creds)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "invalid_client");
         }
-        if (!props.getAllowedClients().contains(creds.clientId())) {
+
+        // Purpose first, then everything else against THAT purpose's lists
+        // (gitops#3285). Callers that predate the parameter keep the MFA lane,
+        // which is the only one they were ever able to ask for.
+        String purpose = Optional.ofNullable(form.getFirst("purpose"))
+                .filter(p -> !p.isBlank())
+                .map(String::trim)
+                .orElse(MfaDeliveryGrantProperties.PURPOSE_MFA_OTP);
+        MfaDeliveryGrantProperties.Purpose policy = props.purpose(purpose);
+        if (policy == null || !policy.isEnabled()) {
+            // Unknown or unconfigured purposes are refused rather than
+            // defaulted: defaulting would let a typo inherit another lane's
+            // permissions, which is the whole thing this split prevents.
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_purpose");
+        }
+        if (!policy.getAllowedClients().contains(creds.clientId())) {
+            // Scoped to the purpose, so being trusted for one lane grants
+            // nothing in another.
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "client_not_allowed");
         }
 
@@ -88,13 +105,13 @@ public class MfaDeliveryGrantController {
         if (registration == null || !registration.getAllowedAudiences().contains(audience)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_audience");
         }
-        if (!props.getAllowedChannels().contains(channel)) {
+        if (!policy.getAllowedChannels().contains(channel)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_channel");
         }
-        if (!props.getAllowedTopics().contains(topic)) {
+        if (!policy.getAllowedTopics().contains(topic)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_topic");
         }
-        if (!props.getAllowedTemplates().contains(template)) {
+        if (!policy.getAllowedTemplates().contains(template)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_template");
         }
         // The recipient shape is pinned here as well as downstream: a grant
@@ -107,7 +124,7 @@ public class MfaDeliveryGrantController {
 
         String token = issuer.issue(new MfaDeliveryGrantIssuer.GrantRequest(
                 creds.clientId(), audience, subject, recipient, channel, topic, template,
-                authSessionId), Instant.now());
+                authSessionId, purpose), Instant.now());
 
         return ResponseEntity.ok(Map.of(
                 "grant", token,

@@ -24,8 +24,14 @@ import com.example.auth.config.JwtProperties;
 @Component
 public class MfaDeliveryGrantIssuer {
 
-    /** Fixed purpose; a grant is not a general-purpose token. */
-    public static final String PURPOSE = "mfa_otp";
+    /**
+     * Retained so existing callers keep compiling against the MFA lane's name.
+     * The purpose now travels on the request: a grant is still not a
+     * general-purpose token — it is scoped to exactly one named lane, and the
+     * lane decides which clients, topics, templates and channels are legal
+     * (gitops#3285).
+     */
+    public static final String PURPOSE = MfaDeliveryGrantProperties.PURPOSE_MFA_OTP;
 
     private final JwtProperties jwtProperties;
     private final ServiceJwtKeyProperties serviceJwtKeyProperties;
@@ -43,7 +49,8 @@ public class MfaDeliveryGrantIssuer {
     }
 
     public record GrantRequest(String clientId, String audience, String subject, String recipient,
-            String channel, String topic, String template, String authSessionId) {}
+            String channel, String topic, String template, String authSessionId,
+            String purpose) {}
 
     public String issue(GrantRequest request, Instant now) {
         Instant expiresAt = now.plusSeconds(props.getTtlSeconds());
@@ -56,7 +63,7 @@ public class MfaDeliveryGrantIssuer {
                 .expiresAt(expiresAt)
                 .id(UUID.randomUUID().toString())
                 .audience(List.of(request.audience()))
-                .claim("purpose", PURPOSE)
+                .claim("purpose", request.purpose())
                 .claim("client_id", request.clientId())
                 .claim("recipient", request.recipient())
                 .claim("channel", request.channel())
