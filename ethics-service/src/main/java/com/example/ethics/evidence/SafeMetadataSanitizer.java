@@ -47,6 +47,10 @@ public class SafeMetadataSanitizer {
             case "text/plain; charset=utf-8" -> sanitizeText(source);
             case "image/jpeg" -> sanitizeImage(source, "jpeg", actual);
             case "image/png" -> sanitizeImage(source, "png", actual);
+            // ES-104K: the derivative is PNG, not WebP — flattening removes every
+            // container chunk (EXIF, GPS, ICC, XMP) BY CONSTRUCTION rather than by
+            // enumeration, and the case handler needs no special viewer.
+            case "image/webp" -> sanitizeImage(source, "png", "image/png");
             case "application/pdf" -> throw new EvidenceProcessor.ProcessingException(
                     EvidenceProcessor.ProcessingException.Outcome.POLICY,
                     "EVIDENCE_PDF_CDR_NOT_CONFIGURED");
@@ -74,6 +78,13 @@ public class SafeMetadataSanitizer {
                 && (source[1] & 0xff) == 0xd8
                 && (source[2] & 0xff) == 0xff) {
             return "image/jpeg";
+        }
+        // ES-104K (#2930): RIFF container carrying a WEBP fourcc. Byte 4-7 is the
+        // chunk size — deliberately ignored; the fourcc at 8-11 is the identity.
+        if (source.length >= 12
+                && source[0] == 'R' && source[1] == 'I' && source[2] == 'F' && source[3] == 'F'
+                && source[8] == 'W' && source[9] == 'E' && source[10] == 'B' && source[11] == 'P') {
+            return "image/webp";
         }
         if (isDeniedBinarySignature(source)) {
             throw new EvidenceProcessor.ProcessingException(
@@ -105,6 +116,11 @@ public class SafeMetadataSanitizer {
 
     private Sanitized sanitizeImage(byte[] source, String format, String mediaType) {
         try {
+            // ES-104K hardening, applied to every raster format: the declared canvas is
+            // read from the HEADER and refused before any pixel is decoded. The old
+            // order (decode, then count pixels) still let a small file spend the
+            // worker's memory on the decode itself — the exact #2860 failure shape.
+            requireDeclaredCanvasWithinBudget(source);
             BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(source));
             if (decoded == null || decoded.getWidth() <= 0 || decoded.getHeight() <= 0) {
                 throw new EvidenceProcessor.ProcessingException(
@@ -141,6 +157,33 @@ public class SafeMetadataSanitizer {
                     EvidenceProcessor.ProcessingException.Outcome.SANITIZE_FAILED,
                     "EVIDENCE_IMAGE_SANITIZE_FAILED",
                     error);
+        }
+    }
+
+    /** Header-only dimension read; the reader never hands out pixels here. */
+    private void requireDeclaredCanvasWithinBudget(byte[] source) throws java.io.IOException {
+        try (javax.imageio.stream.ImageInputStream input =
+                ImageIO.createImageInputStream(new ByteArrayInputStream(source))) {
+            java.util.Iterator<javax.imageio.ImageReader> readers = ImageIO.getImageReaders(input);
+            if (!readers.hasNext()) {
+                throw new EvidenceProcessor.ProcessingException(
+                        EvidenceProcessor.ProcessingException.Outcome.INTEGRITY,
+                        "EVIDENCE_IMAGE_PARSE_FAILED");
+            }
+            javax.imageio.ImageReader reader = readers.next();
+            try {
+                reader.setInput(input, true, true);
+                long width = reader.getWidth(0);
+                long height = reader.getHeight(0);
+                if (width <= 0 || height <= 0
+                        || width * height > properties.getProcessor().getMaxDecodedImagePixels()) {
+                    throw new EvidenceProcessor.ProcessingException(
+                            EvidenceProcessor.ProcessingException.Outcome.POLICY,
+                            "EVIDENCE_IMAGE_DECOMPRESSION_LIMIT");
+                }
+            } finally {
+                reader.dispose();
+            }
         }
     }
 
