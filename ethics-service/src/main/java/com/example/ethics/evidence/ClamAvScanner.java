@@ -14,9 +14,9 @@ import org.springframework.stereotype.Component;
  * logged with attachment identifiers or content.
  */
 @Component
-@ConditionalOnProperty(
-        name = "ethics.evidence.processor.mode",
-        havingValue = "clamav-reference")
+@org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+        "'${ethics.evidence.processor.mode:disabled}' == 'clamav-reference'"
+        + " or '${ethics.evidence.processor.mode:disabled}' == 'pdf-cdr'")
 public class ClamAvScanner {
     private static final int CHUNK = 64 * 1024;
     private final EvidenceProperties properties;

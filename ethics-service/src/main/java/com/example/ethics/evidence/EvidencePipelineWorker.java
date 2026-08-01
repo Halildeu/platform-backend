@@ -98,9 +98,15 @@ public class EvidencePipelineWorker {
         Instant now = Instant.now();
         int recovered = transactions.execute(status -> attachments.recoverExpiredLeases(now));
         int expired = expireUnbound(now);
-        List<UUID> due = transactions.execute(status ->
-                attachments.findDueIds(
-                        now, PageRequest.of(0, properties.getPipeline().getBatchSize())));
+        List<UUID> due = transactions.execute(status -> switch (properties.getPipeline().getLane()) {
+            // ES-104J: disjoint lanes — see the repository comment for why PDF gets its own.
+            case "core" -> attachments.findDueCoreLaneIds(
+                    now, PageRequest.of(0, properties.getPipeline().getBatchSize()));
+            case "pdf" -> attachments.findDuePdfLaneIds(
+                    now, PageRequest.of(0, properties.getPipeline().getBatchSize()));
+            default -> attachments.findDueIds(
+                    now, PageRequest.of(0, properties.getPipeline().getBatchSize()));
+        });
         int claimed = 0;
         int admitted = 0;
         int denied = 0;
@@ -258,10 +264,20 @@ public class EvidencePipelineWorker {
                     manifest.signature(),
                     now));
             row.markAvailable(now);
-            appendAudit(row, "ethics.evidence.available", Map.of(
-                    "outcome", "available",
-                    "policyVersion", row.getPolicyVersion(),
-                    "derivationVersion", version));
+            // ES-104J: removal is recorded, never silent. A derivative that quietly
+            // dropped active content is indistinguishable from a clean original, and
+            // whether the file itself was the incident is a case-handling question.
+            Map<String, Object> payload = processed.disarmed().isEmpty()
+                    ? Map.of(
+                            "outcome", "available",
+                            "policyVersion", row.getPolicyVersion(),
+                            "derivationVersion", version)
+                    : Map.of(
+                            "outcome", "available",
+                            "policyVersion", row.getPolicyVersion(),
+                            "derivationVersion", version,
+                            "disarmed", processed.disarmed());
+            appendAudit(row, "ethics.evidence.available", payload);
         });
     }
 
