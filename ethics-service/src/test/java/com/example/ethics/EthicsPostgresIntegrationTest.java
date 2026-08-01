@@ -56,6 +56,7 @@ class EthicsPostgresIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ReporterAccessGrantRepository reporterGrants;
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
+    @Autowired com.example.ethics.intake.IntakeChannelGate intakeChannel;
 
     @Test
     void outboxDeliversOnceToHashChainedAppendOnlyLedgerAndCheckpoints() {
@@ -439,5 +440,53 @@ class EthicsPostgresIntegrationTest {
         assertThat(untouched.get("root_case_id"))
                 .as("ebeveyni silinmis satirin kok vakasi onarim sirasinda kayboldu")
                 .hasToString(earlyCase.toString());
+    }
+
+    /**
+     * Faz 35 ES-403 (#885), owner decision 2026-08-01 — a lapsed subscription closes
+     * <strong>only new intake</strong>, and the mailbox proves the "only".
+     *
+     * <p>The narrow end first (test DIRECTION lesson): the interesting claim is not that an
+     * active tenant can file — everything proves that constantly — but that a tenant whose
+     * newest revocation is beyond grace is refused with {@code INTAKE_CHANNEL_INACTIVE}
+     * while the reporter who already filed can still open their mailbox on the same tenant.
+     * If the gate ever widens past createReport, the mailbox half of this test fails first.
+     */
+    @Test
+    void aLapsedTenantRefusesNewIntakeButKeepsTheMailboxOpen() {
+        UUID defaultOrg = UUID.fromString("00000000-0000-0000-0000-000000000035");
+        var request = new CreateReportRequest(
+                ReportMode.ANONYMOUS,
+                ReportCategory.OTHER,
+                "Dusen abonelik yon testi",
+                "Alim kapanmadan once acilan vaka mailbox uzerinden yasamali",
+                "tr",
+                "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_lapse",
+                "tr-test-pilot-v1");
+        var receipt = service.createReport("etik.acik.com", "lapse-direction-" + UUID.randomUUID(), request);
+
+        UUID lapsedSubscription = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO ethics_service.ethics_org_subscription
+                    (id, org_id, product_id, active, granted_at, revoked_at)
+                VALUES (?, ?, 'etik-speak-core', false,
+                        now() - interval '120 days', now() - interval '30 days')
+                """, lapsedSubscription, defaultOrg);
+        intakeChannel.invalidate(defaultOrg);
+        try {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createReport(
+                            "etik.acik.com", "lapse-direction-refused-" + UUID.randomUUID(), request))
+                    .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                    .hasMessageContaining("INTAKE_CHANNEL_INACTIVE");
+
+            // The surface that must stay open: the reporter who filed before the lapse.
+            var grant = service.openMailbox("etik.acik.com",
+                    new com.example.ethics.api.EthicsDtos.MailboxLoginRequest(
+                            receipt.receiptId(), "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_lapse"));
+            assertThat(grant.expiresAt()).isAfter(Instant.now());
+        } finally {
+            jdbc.update("DELETE FROM ethics_service.ethics_org_subscription WHERE id = ?", lapsedSubscription);
+            intakeChannel.invalidate(defaultOrg);
+        }
     }
 }

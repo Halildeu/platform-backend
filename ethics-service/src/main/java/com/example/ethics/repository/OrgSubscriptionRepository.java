@@ -8,4 +8,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface OrgSubscriptionRepository extends JpaRepository<OrgSubscription, UUID> {
 
     List<OrgSubscription> findAllByOrgIdAndActiveTrue(UUID orgId);
+
+    List<OrgSubscription> findAllByOrgId(UUID orgId);
 }
