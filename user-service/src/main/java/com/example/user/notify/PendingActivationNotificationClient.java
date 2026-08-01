@@ -32,14 +32,18 @@ public class PendingActivationNotificationClient {
     private final WebClient webClient;
     private final ServiceTokenProvider serviceTokenProvider;
     private final PendingActivationNotificationProperties props;
+    /** One-shot authorisation for a recipient notify has no tuple for (gitops#3285). */
+    private final com.example.user.serviceauth.DeliveryGrantClient grantClient;
 
     public PendingActivationNotificationClient(
             @Qualifier("directWebClientBuilder") WebClient.Builder webClientBuilder,
             ServiceTokenProvider serviceTokenProvider,
-            PendingActivationNotificationProperties props) {
+            PendingActivationNotificationProperties props,
+            com.example.user.serviceauth.DeliveryGrantClient grantClient) {
         this.webClient = webClientBuilder.build();
         this.serviceTokenProvider = serviceTokenProvider;
         this.props = props;
+        this.grantClient = grantClient;
     }
 
     public void submit(PendingActivationUserProvisionedEvent event) {
@@ -53,12 +57,24 @@ public class PendingActivationNotificationClient {
         }
         try {
             String token = serviceTokenProvider.getToken(props.getTokenAudience(), props.getTokenPermissions());
+            // Without this the intent is accepted (202) and then refused deep in
+            // notify with `authz_deny: no_tuple`, in a column nobody reads —
+            // which is why this mail had never once been delivered (gitops#3285).
+            String grant = grantClient.mintForInvite(
+                    props.getTokenAudience(),
+                    String.valueOf(event.userId()),
+                    props.getAdminEmail(),
+                    TOPIC,
+                    TEMPLATE);
             Map<String, Object> body = buildIntent(event);
             webClient.post()
                     .uri(props.getBaseUrl() + "/api/v1/internal/notify/intents")
                     .headers(h -> {
                         h.setContentType(MediaType.APPLICATION_JSON);
                         h.set(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+                        if (grant != null) {
+                            h.set("X-Mfa-Delivery-Grant", grant);
+                        }
                     })
                     .body(BodyInserters.fromValue(body))
                     .retrieve()
@@ -74,6 +90,10 @@ public class PendingActivationNotificationClient {
         }
     }
 
+    /** Named once so the grant and the intent cannot drift apart. */
+    static final String TOPIC = "auth.admin-invite";
+    static final String TEMPLATE = "auth.admin-invite";
+
     private Map<String, Object> buildIntent(PendingActivationUserProvisionedEvent event) {
         // Stable idempotency key → notification-orchestrator dedups a replay.
         String idempotencyKey = "user-activation:" + event.userId();
@@ -85,7 +105,7 @@ public class PendingActivationNotificationClient {
         recipient.put("locale", props.getLocale());
 
         Map<String, Object> template = new LinkedHashMap<>();
-        template.put("templateId", "auth.admin-invite");
+        template.put("templateId", TEMPLATE);
         template.put("version", 1);
         template.put("locale", props.getLocale());
 
@@ -98,7 +118,7 @@ public class PendingActivationNotificationClient {
         body.put("intentId", "user-activation-" + UUID.randomUUID());
         body.put("idempotencyKey", idempotencyKey);
         body.put("orgId", props.getOrgId());
-        body.put("topicKey", "auth.admin-invite");
+        body.put("topicKey", TOPIC);
         body.put("severity", "info");
         body.put("dataClassification", "security");
         body.put("recipients", List.of(recipient));
