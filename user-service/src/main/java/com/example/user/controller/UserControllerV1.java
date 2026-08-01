@@ -73,18 +73,22 @@ public class UserControllerV1 {
     private final AuthorizationContextService authorizationContextService;
     private final CurrentUserResolver currentUserResolver;
     private final MeterRegistry meterRegistry;
+    /** Keeps the cached Keycloak login names fresh for the grid (gitops#3291). */
+    private final com.example.user.keycloak.KeycloakUsernameSync keycloakUsernameSync;
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(UserControllerV1.class);
 
     public UserControllerV1(UserService userService,
                             UserAuditEventService userAuditEventService,
                             AuthorizationContextService authorizationContextService,
                             CurrentUserResolver currentUserResolver,
-                            MeterRegistry meterRegistry) {
+                            MeterRegistry meterRegistry,
+                            com.example.user.keycloak.KeycloakUsernameSync keycloakUsernameSync) {
         this.userService = userService;
         this.userAuditEventService = userAuditEventService;
         this.authorizationContextService = authorizationContextService;
         this.currentUserResolver = currentUserResolver;
         this.meterRegistry = meterRegistry;
+        this.keycloakUsernameSync = keycloakUsernameSync;
     }
 
     @GetMapping
@@ -111,6 +115,12 @@ public class UserControllerV1 {
         boolean hasSortParam = StringUtils.hasText(sort);
 
         requirePermissionWithCompanyScope(PermissionActions.USER_READ, companyId);
+
+        // Refresh the cached Keycloak login names before reading the page
+        // (gitops#3291). TTL-guarded and fail-open: at most one Keycloak round
+        // trip per window, and a Keycloak outage costs a stale column, not a
+        // broken grid.
+        keycloakUsernameSync.refreshIfStale();
 
         Sort parsedSort = parseSort(sort);
         org.springframework.data.jpa.domain.Specification<User> extraSpec = buildAdvancedFilterSpecSafe(advancedFilter);
@@ -773,7 +783,8 @@ public class UserControllerV1 {
             "enabled", FieldType.BOOLEAN,
             "createDate", FieldType.DATE_TIME,
             "lastLogin", FieldType.DATE_TIME,
-            "sessionTimeoutMinutes", FieldType.NUMBER
+            "sessionTimeoutMinutes", FieldType.NUMBER,
+            "kcUsername", FieldType.STRING
     );
 
     private Sort parseSort(String sort) {
@@ -797,8 +808,12 @@ public class UserControllerV1 {
         return Sort.by(orders);
     }
 
+    // Every column the users grid renders must appear here, or its sort is
+    // dropped in silence: rows still return, just in the default order.
+    // `sessionTimeoutMinutes` was missing for exactly that reason (gitops#3291).
     private static final java.util.Set<String> ALLOWED_SORT_FIELDS = java.util.Set.of(
-            "createDate", "lastLogin", "email", "name", "role", "enabled"
+            "createDate", "lastLogin", "email", "name", "role", "enabled",
+            "kcUsername", "sessionTimeoutMinutes"
     );
 
     private Object parseValue(com.fasterxml.jackson.databind.JsonNode val, FieldType type) {

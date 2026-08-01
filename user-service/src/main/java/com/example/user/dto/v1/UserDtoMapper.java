@@ -21,6 +21,9 @@ public final class UserDtoMapper {
                 user.getLastLogin()
         );
         dto.setSessionTimeoutMinutes(user.getSessionTimeoutMinutes());
+        // Keycloak login name (gitops#3291). Null until the reconcile has seen
+        // this row — the grid renders an em dash rather than inventing one.
+        dto.setUsername(user.getKcUsername());
         return dto;
     }
 

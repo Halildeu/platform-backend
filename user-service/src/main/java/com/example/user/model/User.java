@@ -86,6 +86,22 @@ public class User implements UserDetails {
     private String kcSubject;
 
     /**
+     * Keycloak login name, cached for display (gitops#3291). Keycloak remains
+     * the authority; this is refreshed by {@code KeycloakUsernameSync}.
+     * <p>
+     * Deliberately NOT named {@code username}: {@link #getUsername()} is taken
+     * by Spring Security's {@code UserDetails} contract and returns the e-mail.
+     * The two were interchangeable only while every username happened to be an
+     * e-mail address — gitops#3245 renamed the operator accounts to plain
+     * handles, so the login name is now its own fact.
+     * <p>
+     * Nullable: rows are populated by the reconcile, not by a Flyway backfill
+     * (a migration cannot call Keycloak).
+     */
+    @Column(name = "kc_username", length = 255)
+    private String kcUsername;
+
+    /**
      * Soft-delete tombstone (Codex thread {@code 019ea573}, platform-web #770
      * Phase 2 — user DELETE action). {@code null} = active; non-null = the
      * instant the row was soft-deleted. There is deliberately NO global
@@ -136,6 +152,9 @@ public class User implements UserDetails {
     public void setTimeFormat(String timeFormat) { this.timeFormat = normalizeTimeFormat(timeFormat); }
     public String getKcSubject() { return kcSubject; }
     public void setKcSubject(String kcSubject) { this.kcSubject = kcSubject; }
+    /** Keycloak login name (cached). Not {@link #getUsername()} — that is the e-mail. */
+    public String getKcUsername() { return kcUsername; }
+    public void setKcUsername(String kcUsername) { this.kcUsername = kcUsername; }
     public LocalDateTime getDeletedAt() { return deletedAt; }
     public void setDeletedAt(LocalDateTime deletedAt) { this.deletedAt = deletedAt; }
     /** True when this row is a soft-delete tombstone (Codex 019ea573). */

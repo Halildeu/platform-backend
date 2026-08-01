@@ -12,6 +12,12 @@ public class UserSummaryDto {
     private LocalDateTime lastLogin;
     private Integer sessionTimeoutMinutes;
 
+    /**
+     * Keycloak login name (gitops#3291). Distinct from {@link #email}: they
+     * coincided only while every username happened to be an e-mail address.
+     */
+    private String username;
+
     /** Extra fields for SSRM aggregation — holds computed values for group rows. */
     private java.util.Map<String, Object> aggValues;
 
@@ -90,6 +96,14 @@ public class UserSummaryDto {
 
     public void setSessionTimeoutMinutes(Integer sessionTimeoutMinutes) {
         this.sessionTimeoutMinutes = sessionTimeoutMinutes;
+    }
+
+    public String getUsername() {
+        return username;
+    }
+
+    public void setUsername(String username) {
+        this.username = username;
     }
 
     @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)

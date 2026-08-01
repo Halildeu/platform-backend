@@ -105,4 +105,32 @@ public interface UserRepository extends JpaRepository<User, Long>, JpaSpecificat
     @Modifying(clearAutomatically = true)
     @Query("update User u set u.sessionTimeoutMinutes = :timeout where u.sessionTimeoutMinutes is null or u.sessionTimeoutMinutes < 1")
     int normalizeSessionTimeouts(@Param("timeout") int timeout);
+
+    /** Projection for the login-name reconcile — subject + cached name only. */
+    interface KcUsernameRow {
+        String getKcSubject();
+        String getKcUsername();
+    }
+
+    /**
+     * Every active row that is bound to a Keycloak user, with its cached login
+     * name. Read as a projection so the reconcile can diff without loading
+     * entities it has no intention of mutating (gitops#3291).
+     */
+    @Query("select u.kcSubject as kcSubject, u.kcUsername as kcUsername from User u "
+            + "where u.kcSubject is not null and u.deletedAt is null")
+    List<KcUsernameRow> findKcUsernameRows();
+
+    /**
+     * Write one cached login name.
+     * <p>
+     * A targeted JPQL update rather than a loaded-entity save: {@code kc_username}
+     * is a cache of a Keycloak fact, so it must not bump {@code @Version} and
+     * make an unrelated concurrent edit of that user fail an optimistic-lock
+     * check it should never have been part of.
+     */
+    @org.springframework.transaction.annotation.Transactional
+    @Modifying(clearAutomatically = true)
+    @Query("update User u set u.kcUsername = :username where u.kcSubject = :subject")
+    int applyKcUsername(@Param("subject") String subject, @Param("username") String username);
 }
