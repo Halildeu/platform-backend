@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -56,8 +57,51 @@ public class KeycloakAdminClient {
     }
 
     /** Snapshot of everything the panel MFA section shows for one KC user. */
-    public record MfaSnapshot(String kcUserId, boolean requiresMfa, boolean totpConfigured,
-            String phoneNumber, List<String> allowedMethods) {}
+    public record MfaSnapshot(String kcUserId, String username, boolean requiresMfa,
+            boolean totpConfigured, String phoneNumber, List<String> allowedMethods) {}
+
+    /**
+     * Keycloak user id → login name, for the whole realm (gitops#3291).
+     * <p>
+     * {@code briefRepresentation=true} keeps the payload to identity fields, so
+     * one call covers a page of the realm rather than one call per user — the
+     * admin API has no get-by-ids, and a per-row lookup would make the users
+     * grid pay a round trip for every row it renders.
+     * <p>
+     * Pages until Keycloak returns a short page, capped so a misconfigured
+     * realm cannot spin here forever.
+     */
+    public Map<String, String> listUsernames() {
+        Map<String, String> out = new LinkedHashMap<>();
+        int page = props.getUsernameSyncPageSize();
+        for (int first = 0; first < MAX_USERNAME_SYNC_USERS; first += page) {
+            final int offset = first;
+            JsonNode batch = adminRequest(spec -> spec.get()
+                    .uri(b -> b.path("/admin/realms/{realm}/users")
+                            .queryParam("first", offset)
+                            .queryParam("max", page)
+                            .queryParam("briefRepresentation", "true")
+                            .build(props.getRealm()))
+                    .retrieve().bodyToMono(JsonNode.class));
+            if (batch == null || !batch.isArray() || batch.isEmpty()) {
+                break;
+            }
+            batch.forEach(u -> {
+                String id = u.path("id").asText(null);
+                String username = u.path("username").asText(null);
+                if (id != null && username != null) {
+                    out.put(id, username);
+                }
+            });
+            if (batch.size() < page) {
+                break;
+            }
+        }
+        return out;
+    }
+
+    /** Backstop against an unbounded paging loop; far above any real realm. */
+    private static final int MAX_USERNAME_SYNC_USERS = 10_000;
 
     public Optional<MfaSnapshot> fetchMfaSnapshot(String kcSubject, String canonicalEmail) {
         JsonNode user = resolveUser(kcSubject, canonicalEmail);
@@ -89,7 +133,8 @@ public class KeycloakAdminClient {
             });
         }
 
-        return Optional.of(new MfaSnapshot(kcUserId, requiresMfa, totp, phone, methods));
+        return Optional.of(new MfaSnapshot(kcUserId, user.path("username").asText(null),
+                requiresMfa, totp, phone, methods));
     }
 
     /** Delete every OTP credential (reset; next login re-enrolls if required). */

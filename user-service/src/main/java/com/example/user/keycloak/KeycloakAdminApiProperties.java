@@ -39,6 +39,17 @@ public class KeycloakAdminApiProperties {
     /** User attribute holding the per-user second-factor allow-list. */
     private String methodsAttribute = "mfaMethods";
 
+    /** Page size for the login-name reconcile (gitops#3291). */
+    private int usernameSyncPageSize = 200;
+
+    /**
+     * How long a login-name reconcile stays fresh. The users grid triggers a
+     * refresh when the cache is older than this, so one Keycloak call covers
+     * every grid render in the window and a rename made in the Keycloak console
+     * shows up on its own within it. Zero refreshes on every request.
+     */
+    private int usernameSyncTtlSeconds = 60;
+
     public String getBaseUrl() { return baseUrl; }
     public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
     public String getRealm() { return realm; }
@@ -55,6 +66,14 @@ public class KeycloakAdminApiProperties {
     public void setMethodsAttribute(String methodsAttribute) { this.methodsAttribute = methodsAttribute; }
     public String getRequiresMfaRole() { return requiresMfaRole; }
     public void setRequiresMfaRole(String requiresMfaRole) { this.requiresMfaRole = requiresMfaRole; }
+    public int getUsernameSyncPageSize() { return usernameSyncPageSize; }
+    public void setUsernameSyncPageSize(int usernameSyncPageSize) {
+        this.usernameSyncPageSize = usernameSyncPageSize;
+    }
+    public int getUsernameSyncTtlSeconds() { return usernameSyncTtlSeconds; }
+    public void setUsernameSyncTtlSeconds(int usernameSyncTtlSeconds) {
+        this.usernameSyncTtlSeconds = usernameSyncTtlSeconds;
+    }
 
     public boolean isEnabled() {
         return clientSecret != null && !clientSecret.isBlank();

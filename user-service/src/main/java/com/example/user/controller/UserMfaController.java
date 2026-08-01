@@ -75,7 +75,7 @@ public class UserMfaController {
 
     public record MfaStatusResponse(boolean requiresMfa, boolean totpConfigured,
             String phoneNumber, boolean smsLaneReady,
-            java.util.List<String> allowedMethods) {}
+            java.util.List<String> allowedMethods, String username) {}
 
     public record MethodsUpdateRequest(java.util.List<String> methods) {}
 
@@ -96,7 +96,10 @@ public class UserMfaController {
                 snapshot.totpConfigured(),
                 snapshot.phoneNumber(),
                 snapshot.phoneNumber() != null && !snapshot.phoneNumber().isBlank(),
-                snapshot.allowedMethods()));
+                snapshot.allowedMethods(),
+                // The login name is already in the representation this call
+                // fetched, so surfacing it here costs nothing (gitops#3291).
+                snapshot.username()));
     }
 
     /**
