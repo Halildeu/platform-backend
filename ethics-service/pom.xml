@@ -44,6 +44,16 @@
             <artifactId>pdfbox</artifactId>
             <version>3.0.5</version>
         </dependency>
+        <!-- ES-104K (#2930): WebP decode, pure Java (read-only plugin). Chosen over a
+             native libheif path for THIS format precisely because it keeps the
+             request-adjacent sanitizer free of native attack surface; HEIC, which has
+             no pure-Java decoder, goes to a separate digest-pinned converter instead.
+             Exact pin: the decoder is the security boundary. -->
+        <dependency>
+            <groupId>com.twelvemonkeys.imageio</groupId>
+            <artifactId>imageio-webp</artifactId>
+            <version>3.12.0</version>
+        </dependency>
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
