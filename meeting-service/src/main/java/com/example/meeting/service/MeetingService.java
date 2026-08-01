@@ -4,6 +4,9 @@ import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.dto.v1.admin.MeetingActionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingActionResponse;
 import com.example.meeting.dto.v1.admin.MeetingActionUpdateRequest;
+import com.example.meeting.dto.v1.admin.MeetingAgendaItemCreateRequest;
+import com.example.meeting.dto.v1.admin.MeetingAgendaItemResponse;
+import com.example.meeting.dto.v1.admin.MeetingAgendaItemUpdateRequest;
 import com.example.meeting.dto.v1.admin.MeetingCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingDecisionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingDecisionResponse;
@@ -22,11 +25,14 @@ import com.example.meeting.dto.v1.internal.MeetingSessionResolutionResponse;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingActionStatus;
+import com.example.meeting.model.MeetingAgendaItem;
+import com.example.meeting.model.MeetingAgendaItemStatus;
 import com.example.meeting.model.MeetingDecision;
 import com.example.meeting.model.MeetingSession;
 import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.model.TranscriptStatus;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAgendaItemRepository;
 import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
@@ -81,6 +87,7 @@ public class MeetingService {
     private final MeetingRepository meetingRepository;
     private final MeetingSessionRepository sessionRepository;
     private final MeetingActionRepository actionRepository;
+    private final MeetingAgendaItemRepository agendaItemRepository;
     private final MeetingDecisionRepository decisionRepository;
     private final MeetingEventOutboxRepository eventOutboxRepository;
     private final MeetingAnalysisRunRepository analysisRunRepository;
@@ -94,6 +101,7 @@ public class MeetingService {
             MeetingRepository meetingRepository,
             MeetingSessionRepository sessionRepository,
             MeetingActionRepository actionRepository,
+            MeetingAgendaItemRepository agendaItemRepository,
             MeetingDecisionRepository decisionRepository,
             MeetingEventOutboxRepository eventOutboxRepository,
             MeetingAnalysisRunRepository analysisRunRepository,
@@ -106,6 +114,7 @@ public class MeetingService {
         this.meetingRepository = meetingRepository;
         this.sessionRepository = sessionRepository;
         this.actionRepository = actionRepository;
+        this.agendaItemRepository = agendaItemRepository;
         this.decisionRepository = decisionRepository;
         this.eventOutboxRepository = eventOutboxRepository;
         this.analysisRunRepository = analysisRunRepository;
@@ -451,6 +460,72 @@ public class MeetingService {
         saveMeetingHistoryStartIfChanged(tenant, meeting);
     }
 
+    // ──────────────────────────── Agenda ────────────────────────────
+
+    @Transactional(readOnly = true)
+    public List<MeetingAgendaItemResponse> listAgendaItems(
+            AdminTenantContext tenant, UUID meetingId) {
+        requireMeeting(tenant, meetingId);
+        return agendaItemRepository.findByMeetingIdVisibleToOrg(meetingId, tenant.tenantId())
+                .stream()
+                .map(this::toAgendaItemResponse)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public MeetingAgendaItemResponse getAgendaItem(
+            AdminTenantContext tenant, UUID meetingId, UUID agendaItemId) {
+        requireMeeting(tenant, meetingId);
+        return toAgendaItemResponse(requireAgendaItem(tenant, meetingId, agendaItemId));
+    }
+
+    @Transactional
+    public MeetingAgendaItemResponse createAgendaItem(
+            AdminTenantContext tenant,
+            UUID meetingId,
+            MeetingAgendaItemCreateRequest request) {
+        Meeting meeting = requireMeeting(tenant, meetingId);
+        MeetingAgendaItem item = new MeetingAgendaItem();
+        item.setMeetingId(meeting.getId());
+        item.setTenantId(tenant.tenantId());
+        item.setOrgId(tenant.tenantId());
+        item.setPosition(request.position());
+        item.setTitle(request.title());
+        item.setDetail(request.detail());
+        item.setOwnerSubject(request.ownerSubject());
+        item.setPlannedDurationMinutes(request.plannedDurationMinutes());
+        item.setStatus(MeetingAgendaItemStatus.PENDING);
+        item.setCreatedBySubject(tenant.subject());
+        item.setLastUpdatedBySubject(tenant.subject());
+        return toAgendaItemResponse(agendaItemRepository.save(item));
+    }
+
+    @Transactional
+    public MeetingAgendaItemResponse updateAgendaItem(
+            AdminTenantContext tenant,
+            UUID meetingId,
+            UUID agendaItemId,
+            MeetingAgendaItemUpdateRequest request) {
+        requireMeeting(tenant, meetingId);
+        MeetingAgendaItem item = requireAgendaItem(tenant, meetingId, agendaItemId);
+        requireExpectedVersion(request.expectedVersion(), item.getVersion());
+        item.setPosition(request.position());
+        item.setTitle(request.title());
+        item.setDetail(request.detail());
+        item.setOwnerSubject(request.ownerSubject());
+        item.setPlannedDurationMinutes(request.plannedDurationMinutes());
+        item.setStatus(request.status());
+        item.setLastUpdatedBySubject(tenant.subject());
+        return toAgendaItemResponse(agendaItemRepository.save(item));
+    }
+
+    @Transactional
+    public void deleteAgendaItem(
+            AdminTenantContext tenant, UUID meetingId, UUID agendaItemId) {
+        requireMeeting(tenant, meetingId);
+        agendaItemRepository.delete(requireAgendaItem(tenant, meetingId, agendaItemId));
+    }
+
     // ──────────────────────────── Actions ────────────────────────────
 
     @Transactional(readOnly = true)
@@ -598,6 +673,14 @@ public class MeetingService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Meeting action not found."));
     }
 
+    private MeetingAgendaItem requireAgendaItem(
+            AdminTenantContext tenant, UUID meetingId, UUID agendaItemId) {
+        return agendaItemRepository.findByIdAndMeetingIdVisibleToOrg(
+                        agendaItemId, meetingId, tenant.tenantId())
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Agenda item not found"));
+    }
+
     private MeetingDecision requireDecision(AdminTenantContext tenant, UUID meetingId, UUID decisionId) {
         return decisionRepository.findByIdAndMeetingIdVisibleToOrg(decisionId, meetingId, tenant.tenantId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Meeting decision not found."));
@@ -705,6 +788,24 @@ public class MeetingService {
                 a.getLastUpdatedBySubject(),
                 a.getUpdatedAt(),
                 a.getVersion());
+    }
+
+    private MeetingAgendaItemResponse toAgendaItemResponse(MeetingAgendaItem item) {
+        return new MeetingAgendaItemResponse(
+                item.getId(),
+                item.getMeetingId(),
+                item.getEffectiveOrgId(),
+                item.getPosition(),
+                item.getTitle(),
+                item.getDetail(),
+                item.getOwnerSubject(),
+                item.getPlannedDurationMinutes(),
+                item.getStatus(),
+                item.getCreatedBySubject(),
+                item.getCreatedAt(),
+                item.getLastUpdatedBySubject(),
+                item.getUpdatedAt(),
+                item.getVersion());
     }
 
     private MeetingDecisionResponse toDecisionResponse(MeetingDecision d) {

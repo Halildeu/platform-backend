@@ -69,6 +69,16 @@ class MeetingEntityTest {
     }
 
     @Test
+    void agendaItem_effectiveOrgIdFallsBackToTenant_andDefaultsPending() {
+        UUID tenant = UUID.randomUUID();
+        MeetingAgendaItem item = new MeetingAgendaItem();
+        item.setTenantId(tenant);
+
+        assertThat(item.getEffectiveOrgId()).isEqualTo(tenant);
+        assertThat(item.getStatus()).isEqualTo(MeetingAgendaItemStatus.PENDING);
+    }
+
+    @Test
     void decision_effectiveOrgId_fallsBackToTenant() {
         UUID tenant = UUID.randomUUID();
         MeetingDecision d = new MeetingDecision();

@@ -22,6 +22,7 @@ import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.model.MeetingEventOutbox;
 import com.example.meeting.model.TranscriptStatus;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAgendaItemRepository;
 import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
@@ -60,6 +61,7 @@ class MeetingServiceRecordingLifecycleTest {
     @Mock private MeetingRepository meetingRepository;
     @Mock private MeetingSessionRepository sessionRepository;
     @Mock private MeetingActionRepository actionRepository;
+    @Mock private MeetingAgendaItemRepository agendaItemRepository;
     @Mock private MeetingDecisionRepository decisionRepository;
     @Mock private MeetingEventOutboxRepository eventOutboxRepository;
     @Mock private MeetingAnalysisRunRepository analysisRunRepository;
@@ -74,7 +76,8 @@ class MeetingServiceRecordingLifecycleTest {
     @BeforeEach
     void setUp() {
         service = new MeetingService(
-                meetingRepository, sessionRepository, actionRepository, decisionRepository,
+                meetingRepository, sessionRepository, actionRepository, agendaItemRepository,
+                decisionRepository,
                 eventOutboxRepository, analysisRunRepository, sessionErasureService,
                 authzProvider, false, false);
         meeting = meeting(MeetingStatus.SCHEDULED);
