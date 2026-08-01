@@ -307,9 +307,10 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         UUID finalizationId = UUID.randomUUID();
         jdbc.update("INSERT INTO " + SCHEMA + ".transcript_finalizations "
                         + "(id,tenant_id,org_id,meeting_id,session_id,finalization_version,"
-                        + "segment_count,snapshot_sha256,finalized_at,created_at,legal_hold) "
-                        + "VALUES (?,?,?,?,?,1,1,?,?,?,false)",
-                finalizationId, TENANT, TENANT, MEETING, SESSION, "a".repeat(64),
+                        + "analysis_run_id,segment_count,snapshot_sha256,finalized_at,created_at,legal_hold) "
+                        + "VALUES (?,?,?,?,?,1,?,1,?,?,?,false)",
+                finalizationId, TENANT, TENANT, MEETING, SESSION, UUID.randomUUID(),
+                "a".repeat(64),
                 Timestamp.from(now), Timestamp.from(now));
 
         var prepared = erasureService.prepare(TENANT, MEETING, SESSION, "SES-42");
