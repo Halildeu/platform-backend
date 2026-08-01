@@ -33,7 +33,7 @@ public class TranscriptFinalization {
     private long finalizationVersion;
 
     /** Producer-owned authorization identity emitted only with this occurrence. */
-    @Column(name = "analysis_run_id", updatable = false)
+    @Column(name = "analysis_run_id", nullable = false, updatable = false)
     private UUID analysisRunId;
 
     @Column(name = "segment_count", nullable = false, updatable = false)

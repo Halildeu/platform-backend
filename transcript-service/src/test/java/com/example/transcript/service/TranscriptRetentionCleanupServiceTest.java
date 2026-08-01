@@ -331,6 +331,7 @@ class TranscriptRetentionCleanupServiceTest {
         finalization.setMeetingId(segment.getMeetingId());
         finalization.setSessionId(segment.getSessionId());
         finalization.setFinalizationVersion(1L);
+        finalization.setAnalysisRunId(UUID.randomUUID());
         finalization.setSegmentCount(1);
         finalization.setSnapshotSha256("a".repeat(64));
         finalization.setFinalizedAt(createdAt);
