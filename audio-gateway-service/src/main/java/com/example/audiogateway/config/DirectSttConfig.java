@@ -3,7 +3,10 @@ package com.example.audiogateway.config;
 import com.example.audiogateway.service.AudioChunkDispatcher;
 import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.DirectSttForwardingDispatcher;
+import com.example.audiogateway.service.DirectSttProviderRegistry;
+import com.example.audiogateway.service.DirectSttTranscriptionClient;
 import com.example.audiogateway.service.DirectSttTranscriptResultSink;
+import com.example.audiogateway.service.InternalDirectSttTranscriptionClient;
 import com.example.audiogateway.service.LiveAnalyzeTrigger;
 import com.example.audiogateway.service.LiveAnalyzeTriggerSink;
 import com.example.audiogateway.service.LiveTranscriptBroadcastSink;
@@ -14,6 +17,8 @@ import com.example.audiogateway.service.SentenceAssemblingSink;
 import com.example.audiogateway.service.SentenceAssemblyPolicy;
 import com.example.audiogateway.service.SentenceAssemblySweeper;
 import com.example.audiogateway.service.RedisStreamDirectSttTranscriptResultSink;
+import com.example.audiogateway.service.SpeechmaticsRealtimeTranscriptionClient;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.ChannelOption;
@@ -21,6 +26,7 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import java.io.File;
 import java.time.Duration;
+import java.util.List;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLParameters;
 
@@ -34,7 +40,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
+import org.springframework.web.reactive.socket.client.WebSocketClient;
 import reactor.netty.http.client.HttpClient;
+import reactor.netty.http.client.WebsocketClientSpec;
 
 /**
  * Direct-STT wiring — Faz 24 issue #182 (architecture "A").
@@ -115,6 +124,45 @@ public class DirectSttConfig {
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(cfg.getMaxResponseBytes()))
                 .build();
+    }
+
+    @Bean
+    public DirectSttTranscriptionClient internalDirectSttTranscriptionClient(
+            @org.springframework.beans.factory.annotation.Qualifier("directSttWebClient")
+            final WebClient webClient,
+            final AudioGatewayProperties props) {
+        return new InternalDirectSttTranscriptionClient(webClient, props.getDirectStt());
+    }
+
+    @Bean(name = "speechmaticsWebSocketClient", defaultCandidate = false)
+    public WebSocketClient speechmaticsWebSocketClient(final AudioGatewayProperties props) {
+        final AudioGatewayProperties.DirectStt direct = props.getDirectStt();
+        final HttpClient client = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) direct.getConnectTimeoutMs())
+                .responseTimeout(Duration.ofMillis(direct.getResponseTimeoutMs()));
+        return new ReactorNettyWebSocketClient(
+                client,
+                () -> WebsocketClientSpec.builder()
+                        .maxFramePayloadLength(direct.getMaxResponseBytes()));
+    }
+
+    @Bean
+    public DirectSttTranscriptionClient speechmaticsTranscriptionClient(
+            @org.springframework.beans.factory.annotation.Qualifier("speechmaticsWebSocketClient")
+            final WebSocketClient webSocketClient,
+            final ObjectMapper objectMapper,
+            final AudioGatewayProperties props) {
+        return new SpeechmaticsRealtimeTranscriptionClient(
+                webSocketClient,
+                objectMapper,
+                props.getDirectStt().getSpeechmatics());
+    }
+
+    @Bean
+    public DirectSttProviderRegistry directSttProviderRegistry(
+            final List<DirectSttTranscriptionClient> clients,
+            final AudioGatewayProperties props) {
+        return new DirectSttProviderRegistry(clients, props.getDirectStt());
     }
 
     static HttpClient applyMutualTls(
@@ -282,8 +330,7 @@ public class DirectSttConfig {
             final MeterRegistry meters,
             final AudioGatewayAuditSink auditSink,
             final DirectSttTranscriptResultSink transcriptResultSink,
-            @org.springframework.beans.factory.annotation.Qualifier("directSttWebClient")
-            final WebClient directSttWebClient,
+            final DirectSttProviderRegistry providerRegistry,
             final ObjectProvider<RedisStreamsAudioChunkDispatcher> redisProvider,
             final ObjectProvider<NoOpAudioChunkDispatcher> noOpProvider) {
 
@@ -291,7 +338,7 @@ public class DirectSttConfig {
                 props.getDispatcher().getMode(), redisProvider, noOpProvider);
 
         return new DirectSttForwardingDispatcher(
-                delegate, auditSink, transcriptResultSink, directSttWebClient, props, meters);
+                delegate, auditSink, transcriptResultSink, providerRegistry, props, meters);
     }
 
     private AudioChunkDispatcher resolveDelegate(

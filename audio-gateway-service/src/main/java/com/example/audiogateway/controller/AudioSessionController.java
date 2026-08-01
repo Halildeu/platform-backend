@@ -301,14 +301,26 @@ public class AudioSessionController {
         if (tenantId == null) return Mono.just(forbidden(props.getJwt().getTenantClaim(), corrId));
         if (userId == null) return Mono.just(forbidden(props.getJwt().getUserClaim(), corrId));
 
+        final String sttProvider;
+        try {
+            sttProvider = props.getDirectStt().resolveRequestedProvider(req.sttProvider());
+        } catch (final IllegalArgumentException ex) {
+            return Mono.just(ResponseEntity.badRequest().body(ErrorResponse.of(
+                    ErrorResponse.CODE_STT_PROVIDER_UNAVAILABLE,
+                    "Requested STT provider is not available",
+                    corrId,
+                    false)));
+        }
+
         return meetingAccessValidator.validate(req.meetingId(), jwt, corrId)
                 .map(decision -> decision.allowed()
-                        ? createSession(req, idempotencyKey, tenantId, userId, corrId)
+                        ? createSession(req, sttProvider, idempotencyKey, tenantId, userId, corrId)
                         : meetingAccessError(decision, corrId));
     }
 
     private ResponseEntity<?> createSession(
             final StartSessionRequest req,
+            final String sttProvider,
             final String idempotencyKey,
             final Long tenantId,
             final Long userId,
@@ -316,7 +328,7 @@ public class AudioSessionController {
         final long now = Instant.now().toEpochMilli();
         final CreateOutcome outcome = registry.create(new SessionCreateCommand(
                 tenantId, userId, req.meetingId(), req.deviceId(), req.language(),
-                req.audioFormat(), req.sampleRateHz(), req.channels(),
+                sttProvider, req.audioFormat(), req.sampleRateHz(), req.channels(),
                 idempotencyKey, now));
 
         return switch (outcome) {
@@ -1095,6 +1107,7 @@ public class AudioSessionController {
                 base + "/chunks",
                 base + "/status",
                 base + "/finish",
-                record.sessionStartMs());
+                record.sessionStartMs(),
+                record.sttProvider());
     }
 }

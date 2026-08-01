@@ -89,6 +89,56 @@ class AudioGatewayPropertiesTest {
     }
 
     @Test
+    void speechmaticsProviderRequiresApiKeyFailClosed() {
+        final AudioGatewayProperties props = speechmaticsProps();
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("speechmatics.api-key must be set");
+    }
+
+    @Test
+    void speechmaticsProviderAcceptsSecretAndSecureEndpoint() {
+        final AudioGatewayProperties props = speechmaticsProps();
+        props.getDirectStt().getSpeechmatics().setApiKey("test-key-not-a-secret");
+
+        assertThatCode(props::validate).doesNotThrowAnyException();
+    }
+
+    @Test
+    void speechmaticsProviderRejectsInsecureEndpointByDefault() {
+        final AudioGatewayProperties props = speechmaticsProps();
+        props.getDirectStt().getSpeechmatics().setApiKey("test-key-not-a-secret");
+        props.getDirectStt().getSpeechmatics().setRealtimeUrl("ws://localhost:9000/v2");
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("realtime-url must use wss");
+    }
+
+    @Test
+    void speechmaticsProviderRejectsInternalStreamingBridge() {
+        final AudioGatewayProperties props = speechmaticsProps();
+        props.getDirectStt().getSpeechmatics().setApiKey("test-key-not-a-secret");
+        props.getDirectStt().getStreaming().setEnabled(true);
+        props.getDirectStt().getStreaming().setStreamUrl("wss://internal.example/ws/stream");
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("streaming.enabled is not supported");
+    }
+
+    @Test
+    void directSttRejectsMissingProvider() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().setProvider(null);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("direct-stt.provider must be internal or speechmatics");
+    }
+
+    @Test
     void directSttTlsRequiresHttpsTranscribeUrl() throws IOException {
         final AudioGatewayProperties props = directSttProps("http://live-stt.denetim:8243/transcribe");
         enableTlsWithReadableFiles(props);
@@ -319,6 +369,14 @@ class AudioGatewayPropertiesTest {
         final AudioGatewayProperties props = new AudioGatewayProperties();
         props.getDirectStt().setEnabled(true);
         props.getDirectStt().setTranscribeUrl(transcribeUrl);
+        props.getDirectStt().getTranscriptResultStream().setEnabled(true);
+        return props;
+    }
+
+    private static AudioGatewayProperties speechmaticsProps() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getDirectStt().setEnabled(true);
+        props.getDirectStt().setProvider(AudioGatewayProperties.DirectStt.Provider.SPEECHMATICS);
         props.getDirectStt().getTranscriptResultStream().setEnabled(true);
         return props;
     }

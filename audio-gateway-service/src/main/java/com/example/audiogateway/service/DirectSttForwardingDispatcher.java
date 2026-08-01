@@ -17,12 +17,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.MediaType;
-import org.springframework.http.client.MultipartBodyBuilder;
-import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
-import org.springframework.web.util.UriComponentsBuilder;
 
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
@@ -90,12 +86,10 @@ public class DirectSttForwardingDispatcher
     private static final Logger log = LoggerFactory.getLogger(DirectSttForwardingDispatcher.class);
 
     private static final String METRIC_PREFIX = "audio_gateway_direct_stt_";
-    private static final String AUDIO_PART = "audio";
-
     private final AudioChunkDispatcher delegate;
     private final AudioGatewayAuditSink auditSink;
     private final DirectSttTranscriptResultSink transcriptResultSink;
-    private final WebClient webClient;
+    private final DirectSttProviderRegistry providerRegistry;
     private final AudioGatewayProperties.DirectStt cfg;
     private final MeterRegistry meters;
     private final Semaphore inFlight;
@@ -108,19 +102,18 @@ public class DirectSttForwardingDispatcher
     private final long unavailableRetryAfterSeconds;
     private final Scheduler forwardScheduler;
     private final Scheduler transcriptSinkScheduler;
-    private final String transcribeUri;
 
     public DirectSttForwardingDispatcher(
             final AudioChunkDispatcher delegate,
             final AudioGatewayAuditSink auditSink,
             final DirectSttTranscriptResultSink transcriptResultSink,
-            final WebClient webClient,
+            final DirectSttProviderRegistry providerRegistry,
             final AudioGatewayProperties properties,
             final MeterRegistry meters) {
         this.delegate = delegate;
         this.auditSink = auditSink;
         this.transcriptResultSink = transcriptResultSink;
-        this.webClient = webClient;
+        this.providerRegistry = providerRegistry;
         this.cfg = properties.getDirectStt();
         this.meters = meters;
         this.inFlight = new Semaphore(cfg.getMaxInFlight());
@@ -133,7 +126,6 @@ public class DirectSttForwardingDispatcher
                 properties.getBounds().getMaxBufferedSeconds());
         this.queueFullRetryAfterSeconds = properties.getDispatcher().getQueueFullRetryAfterSeconds();
         this.unavailableRetryAfterSeconds = properties.getDispatcher().getUnavailableRetryAfterSeconds();
-        this.transcribeUri = cfg.getTranscribeUrl().trim();
         // Dedicated bounded scheduler — the "leave the admission monitor now" boundary.
         // Bounded so a slow/down live-stt cannot spawn unbounded threads; the Semaphore is
         // the real in-flight cap, this just hands work off the monitor thread.
@@ -159,6 +151,11 @@ public class DirectSttForwardingDispatcher
                 DirectSttAudioAccountant::negativeInvariantBreaches);
         meters.gauge(METRIC_PREFIX + "aggregation_buffered_bytes", aggregator,
                 DirectSttAudioWindowAggregator::bufferedBytes);
+        providerRegistry.selectableProviderIds().forEach(provider -> meters.gauge(
+                METRIC_PREFIX + "provider_active",
+                Tags.of("provider", provider),
+                this,
+                ignored -> 1.0d));
         // Runtime acceptance scrapes a zero baseline before the first chunk.
         // Register these counters eagerly so "no event yet" is observable as 0
         // instead of being indistinguishable from missing instrumentation.
@@ -170,8 +167,35 @@ public class DirectSttForwardingDispatcher
         counter("aggregation_session_discarded_bytes");
     }
 
+    /** Compatibility seam for existing internal-provider tests and callers. */
+    public DirectSttForwardingDispatcher(
+            final AudioChunkDispatcher delegate,
+            final AudioGatewayAuditSink auditSink,
+            final DirectSttTranscriptResultSink transcriptResultSink,
+            final WebClient webClient,
+            final AudioGatewayProperties properties,
+            final MeterRegistry meters) {
+        this(
+                delegate,
+                auditSink,
+                transcriptResultSink,
+                new DirectSttProviderRegistry(
+                        java.util.List.of(new InternalDirectSttTranscriptionClient(
+                                webClient, properties.getDirectStt())),
+                        properties.getDirectStt()),
+                properties,
+                meters);
+    }
+
     @Override
     public DispatchOutcome dispatch(final ChunkDispatchCommand cmd) {
+        try {
+            providerRegistry.require(cmd.sttProvider());
+        } catch (final IllegalArgumentException | IllegalStateException ex) {
+            counter("provider_unavailable", "provider", safeProviderLabel(cmd.sttProvider()))
+                    .increment();
+            return new DispatchOutcome.Unavailable(unavailableRetryAfterSeconds);
+        }
         // The audio bound (#428 / platform-ai#257) is charged BEFORE the delegate — this is
         // the ordering fix. The delegate in Redis mode is RedisStreamsAudioChunkDispatcher,
         // whose dispatch() performs the XADD; charging afterwards let a 429/503 refusal
@@ -383,7 +407,8 @@ public class DirectSttForwardingDispatcher
                 audio, 0L, cmd.sessionId(), cmd.tenantId(), cmd.userId(),
                 cmd.chunkSeq(), cmd.chunkSeq(), cmd.chunkSeq(),
                 cmd.chunkStartedAtMs(), durationMs, "chunk",
-                cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.audioFormat().name(),
+                cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.sttProvider(),
+                cmd.audioFormat().name(),
                 cmd.sampleRateHz(), cmd.channels(), cmd.correlationId(), cmd.payload().sha256(),
                 cmd.payload().length(),
                 accountant.refundHandle(cmd.tenantId(), cmd.sessionId(), chunkFrames));
@@ -417,7 +442,8 @@ public class DirectSttForwardingDispatcher
                 window.userId(),
                 window.windowSeq(), window.firstChunkSeq(), window.lastChunkSeq(),
                 window.startedAtMs(), window.durationMs(), flushReason,
-                window.meetingId(), window.deviceId(), window.language(), AudioFormat.PCM16.name(),
+                window.meetingId(), window.deviceId(), window.language(), window.sttProvider(),
+                AudioFormat.PCM16.name(),
                 window.sampleRateHz(), window.channels(), window.correlationId(), window.sha256(),
                 window.audio().length,
                 accountant.refundHandle(window.tenantId(), window.sessionId(), windowFrames));
@@ -444,7 +470,9 @@ public class DirectSttForwardingDispatcher
         final AtomicBoolean released = new AtomicBoolean(false);
 
         try {
-            if (!emitComputePlaneAudit(task)) {
+            final DirectSttTranscriptionClient transcriptionClient =
+                    providerRegistry.require(task.sttProvider());
+            if (!emitComputePlaneAudit(task, transcriptionClient)) {
                 // Audit refused, so the audio never leaves — a terminal path like any other.
                 task.refund().release();
                 clearAudio(task);
@@ -453,42 +481,19 @@ public class DirectSttForwardingDispatcher
             }
             counter("attempted").increment();
 
-            final MultipartBodyBuilder body = new MultipartBodyBuilder();
             final AudioFormat audioFormat = AudioFormat.valueOf(task.audioFormat());
-            final byte[] partBytes;
-            final String partFilename;
-            final MediaType partContentType;
-            if (audioFormat == AudioFormat.PCM16) {
-                // live-stt cannot decode headerless raw PCM — proven live: raw PCM is rejected
-                // with HTTP 400 whether labelled application/octet-stream, audio/L16, or
-                // audio/wav; only a real WAV container (audio/wav) returns 200. The recorder
-                // uploads raw PCM16 (X-Audio-Format: PCM16), so wrap it into a self-describing
-                // WAV container using the session's PCM params and forward as audio/wav.
-                partBytes = WavEncoder.pcm16ToWav(task.audio(), task.sampleRateHz(), task.channels());
-                partFilename = audioFilename(AudioFormat.WAV);
-                partContentType = MediaType.parseMediaType(AudioFormat.WAV.mediaType());
-            } else {
-                partBytes = task.audio();
-                partFilename = audioFilename(audioFormat);
-                partContentType = MediaType.parseMediaType(audioFormat.mediaType());
-            }
-            body.part(AUDIO_PART, new NamedByteArrayResource(partBytes, partFilename))
-                    .contentType(partContentType);
+            final DirectSttTranscriptionRequest request = new DirectSttTranscriptionRequest(
+                    task.audio(),
+                    audioFormat,
+                    task.sampleRateHz(),
+                    task.channels(),
+                    task.meetingId(),
+                    task.sessionId(),
+                    task.deviceId(),
+                    task.language(),
+                    task.audioDurationMs());
 
-            final String uri = UriComponentsBuilder.fromUriString(transcribeUri)
-                    .queryParam("meeting_id", nullSafe(task.meetingId()))
-                    .queryParam("session_id", nullSafe(task.sessionId()))
-                    .queryParam("device_id", nullSafe(task.deviceId()))
-                    .queryParam("language", nullSafe(task.language()))
-                    .build()
-                    .toUriString();
-
-            webClient.post()
-                    .uri(uri)
-                    .contentType(MediaType.MULTIPART_FORM_DATA)
-                    .body(BodyInserters.fromMultipartData(body.build()))
-                    .retrieve()
-                    .bodyToMono(TranscriptResult.class)
+            transcriptionClient.transcribe(request)
                     .timeout(Duration.ofMillis(cfg.getResponseTimeoutMs()))
                     .flatMap(result -> persistTranscriptResult(result, task))
                     .publishOn(forwardScheduler)
@@ -513,7 +518,9 @@ public class DirectSttForwardingDispatcher
         }
     }
 
-    private boolean emitComputePlaneAudit(final ForwardTask task) {
+    private boolean emitComputePlaneAudit(
+            final ForwardTask task,
+            final DirectSttTranscriptionClient transcriptionClient) {
         try {
             auditSink.emit(new AuditEvent.ChunkForwardedToComputePlane(
                     task.sessionId(),
@@ -537,7 +544,7 @@ public class DirectSttForwardingDispatcher
                     task.length(),
                     task.correlationId(),
                     System.currentTimeMillis(),
-                    "live-stt"));
+                    transcriptionClient.computePlaneId()));
             return true;
         } catch (final Exception ex) {
             counter("audit_blocked").increment();
@@ -713,6 +720,7 @@ public class DirectSttForwardingDispatcher
 
     private static String kv(final ChunkDispatchCommand cmd) {
         return "sessionId=" + cmd.sessionId()
+                + " provider=" + safeProviderLabel(cmd.sttProvider())
                 + " chunkSeq=" + cmd.chunkSeq()
                 + " correlationId=" + nullSafe(cmd.correlationId())
                 + " sha256=" + shaPrefix(cmd.payload().sha256())
@@ -721,6 +729,7 @@ public class DirectSttForwardingDispatcher
 
     private static String kv(final ForwardTask task) {
         return "sessionId=" + task.sessionId()
+                + " provider=" + safeProviderLabel(task.sttProvider())
                 + " windowSeq=" + task.windowSeq()
                 + " chunkRange=" + task.firstChunkSeq() + "-" + task.lastChunkSeq()
                 + " durationMs=" + task.audioDurationMs()
@@ -742,16 +751,12 @@ public class DirectSttForwardingDispatcher
         return value == null ? "" : value;
     }
 
-    private static String audioFilename(final AudioFormat audioFormat) {
-        return switch (audioFormat) {
-            case WAV -> "chunk.wav";
-            case WEBM_OPUS -> "chunk.webm";
-            case PCM16 -> "chunk.pcm";
-            case MP3 -> "chunk.mp3";
-            case M4A -> "chunk.m4a";
-            case OGG -> "chunk.ogg";
-            case FLAC -> "chunk.flac";
-        };
+    private static String safeProviderLabel(final String provider) {
+        if (provider == null) {
+            return "missing";
+        }
+        final String normalized = provider.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.matches("[a-z0-9_-]{1,32}") ? normalized : "invalid";
     }
 
     /**
@@ -774,6 +779,7 @@ public class DirectSttForwardingDispatcher
             String meetingId,
             String deviceId,
             String language,
+            String sttProvider,
             String audioFormat,
             int sampleRateHz,
             int channels,
@@ -786,26 +792,6 @@ public class DirectSttForwardingDispatcher
              * drop, a rejected schedule and shutdown all do, and they overlap in practice.
              */
             DirectSttAudioAccountant.Refund refund) {
-    }
-
-    /**
-     * {@link org.springframework.core.io.ByteArrayResource} with a filename so the multipart
-     * {@code audio} part is sent as a file part (Content-Disposition filename), matching the
-     * live-stt {@code /transcribe} multipart contract.
-     */
-    private static final class NamedByteArrayResource
-            extends org.springframework.core.io.ByteArrayResource {
-        private final String filename;
-
-        NamedByteArrayResource(final byte[] bytes, final String filename) {
-            super(bytes);
-            this.filename = filename;
-        }
-
-        @Override
-        public String getFilename() {
-            return filename;
-        }
     }
 
     private static final class TranscriptResultDeliveryException extends RuntimeException {

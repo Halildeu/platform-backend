@@ -85,7 +85,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
         final String sessionId = "SES-" + UUID.randomUUID();
         final SessionRecord rec = new SessionRecord(
                 sessionId, cmd.tenantId(), cmd.userId(), cmd.meetingId(), cmd.deviceId(),
-                cmd.language(), cmd.audioFormat(), cmd.sampleRateHz(), cmd.channels(),
+                cmd.language(), cmd.sttProvider(), cmd.audioFormat(), cmd.sampleRateHz(), cmd.channels(),
                 cmd.idempotencyKey(), cmd.sessionStartMs(),
                 SessionState.STARTED,
                 -1L, 0L, 0L, null, null,
@@ -158,6 +158,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
         final ChunkDispatchCommand dispatchCmd = new ChunkDispatchCommand(
                 cmd.sessionId(), existing.tenantId(), existing.userId(),
                 existing.meetingId(), existing.deviceId(), existing.language(),
+                existing.sttProvider(),
                 existing.audioFormat(), existing.sampleRateHz(), existing.channels(),
                 cmd.chunkSeq(), cmd.chunkStartedAtMs(), cmd.correlationId(),
                 cmd.payload());
@@ -314,6 +315,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
 
     private static String startSignature(final SessionCreateCommand cmd) {
         return cmd.meetingId() + "|" + cmd.deviceId() + "|" + cmd.language() + "|"
+                + cmd.sttProvider() + "|"
                 + cmd.audioFormat() + "|" + cmd.sampleRateHz() + "|" + cmd.channels();
     }
 

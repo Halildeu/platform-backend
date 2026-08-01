@@ -46,8 +46,24 @@ public record StartSessionRequest(
         Integer sampleRateHz,
 
         @NotNull
-        Integer channels
+        Integer channels,
+
+        @Size(max = 32)
+        @Pattern(regexp = "^(internal|speechmatics)$",
+                message = "sttProvider must be internal or speechmatics")
+        String sttProvider
 ) {
+
+    /** Backward-compatible constructor for clients that rely on the server default. */
+    public StartSessionRequest(
+            final String meetingId,
+            final String deviceId,
+            final String language,
+            final AudioFormat audioFormat,
+            final Integer sampleRateHz,
+            final Integer channels) {
+        this(meetingId, deviceId, language, audioFormat, sampleRateHz, channels, null);
+    }
 
     /** Allowed sample rates (Hz) — Codex {@code 019e879c} fixed enum. */
     public static final java.util.Set<Integer> ALLOWED_SAMPLE_RATES = java.util.Set.of(16_000, 48_000);

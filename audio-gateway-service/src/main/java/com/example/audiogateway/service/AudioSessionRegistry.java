@@ -101,12 +101,27 @@ public interface AudioSessionRegistry {
             String meetingId,
             String deviceId,
             String language,
+            String sttProvider,
             AudioFormat audioFormat,
             int sampleRateHz,
             int channels,
             String idempotencyKey,
             long sessionStartMs
     ) {
+        public SessionCreateCommand(
+                final Long tenantId,
+                final Long userId,
+                final String meetingId,
+                final String deviceId,
+                final String language,
+                final AudioFormat audioFormat,
+                final int sampleRateHz,
+                final int channels,
+                final String idempotencyKey,
+                final long sessionStartMs) {
+            this(tenantId, userId, meetingId, deviceId, language, "internal", audioFormat,
+                    sampleRateHz, channels, idempotencyKey, sessionStartMs);
+        }
     }
 
     sealed interface CreateOutcome {

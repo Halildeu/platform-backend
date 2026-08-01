@@ -24,6 +24,8 @@ public record ErrorResponse(
     public static final String CODE_OVERSIZE = "AUDIO_GATEWAY_OVERSIZE";
     public static final String CODE_QUEUE_FULL = "AUDIO_GATEWAY_QUEUE_FULL";
     public static final String CODE_STT_UNAVAILABLE = "AUDIO_GATEWAY_STT_UNAVAILABLE";
+    public static final String CODE_STT_PROVIDER_UNAVAILABLE =
+            "AUDIO_GATEWAY_STT_PROVIDER_UNAVAILABLE";
     public static final String CODE_MEETING_FORBIDDEN = "AUDIO_GATEWAY_MEETING_FORBIDDEN";
     public static final String CODE_MEETING_VALIDATION_UNAVAILABLE =
             "AUDIO_GATEWAY_MEETING_VALIDATION_UNAVAILABLE";

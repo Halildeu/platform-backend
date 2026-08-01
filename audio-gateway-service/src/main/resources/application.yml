@@ -80,6 +80,7 @@ audio:
     # persisted/logged; transcript text NEVER logged.
     direct-stt:
       enabled: false                 # opt-in; overlay flips true once live-stt /transcribe reachable
+      provider: internal             # internal | speechmatics; internal preserves the existing path
       transcribe-url: ""             # e.g. https://10.99.0.2:8000/transcribe (WireGuard+mTLS, ADR-0031 D2). Required when enabled.
       max-in-flight: 32              # bounded concurrent forwards; saturation → drop (best-effort), admission unaffected
       connect-timeout-ms: 3000
@@ -94,6 +95,13 @@ audio:
         ca-certificate-path: ""      # mounted PEM CA bundle for live-stt.denetim/Caddy server verification
         client-certificate-path: ""  # mounted PEM client cert presented by audio-gateway
         client-private-key-path: ""  # mounted PEM private key; never log/copy to Redis
+      speechmatics:
+        realtime-url: wss://eu2.rt.speechmatics.com/v2
+        api-key: ""                   # secret only; required fail-closed when provider=speechmatics
+        language: tr
+        max-delay-seconds: 2.0
+        audio-chunk-bytes: 32768
+        allow-insecure: false         # loopback protocol tests only; deployment must remain false
       transcript-result-stream:
         enabled: false               # opt-in; writes transcript text to result stream after live-stt returns
         stream-key: transcript:direct-stt-results

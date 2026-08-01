@@ -16,6 +16,19 @@ public record StartSessionResponse(
         String chunkUploadUrl,
         String statusUrl,
         String finishUrl,
-        long sessionStartMs
+        long sessionStartMs,
+        String sttProvider
 ) {
+
+    public StartSessionResponse(
+            final String sessionId,
+            final String correlationId,
+            final String websocketUrl,
+            final String chunkUploadUrl,
+            final String statusUrl,
+            final String finishUrl,
+            final long sessionStartMs) {
+        this(sessionId, correlationId, websocketUrl, chunkUploadUrl, statusUrl, finishUrl,
+                sessionStartMs, "internal");
+    }
 }
