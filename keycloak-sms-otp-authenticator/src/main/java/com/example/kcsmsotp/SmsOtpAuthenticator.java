@@ -57,17 +57,19 @@ public class SmsOtpAuthenticator implements Authenticator {
         String recipient = recipientOf(context.getUser(), cfg);
         boolean emailUsable = !cfg.isEmail()
                 || (context.getUser() != null && context.getUser().isEmailVerified());
-        if (recipient == null || !emailUsable || !cfg.isSendable()) {
+        boolean allowed = channelAllowedForUser(context.getUser(), cfg);
+        if (recipient == null || !emailUsable || !allowed || !cfg.isSendable()) {
             // Not usable for this user/deployment — let the sibling ALTERNATIVE
             // (TOTP form) carry the subflow instead of failing the login.
             // Logged because silence here is indistinguishable from "never
             // invoked", and the two have completely different fixes: a missing
             // phone is a user/user-profile problem, a non-sendable config is a
             // deployment problem. No phone number is logged.
-            LOG.warnf("%s-otp not usable: recipient=%s verified=%s tokenUrl=%s intentUrl=%s secret=%s",
+            LOG.warnf("%s-otp not usable: recipient=%s verified=%s allowed=%s tokenUrl=%s intentUrl=%s secret=%s",
                     cfg.channel,
                     recipient == null ? "absent" : "present",
                     emailUsable ? "yes" : "no",
+                    allowed ? "yes" : "no",
                     cfg.tokenUrl.isBlank() ? "blank" : "set",
                     cfg.intentUrl.isBlank() ? "blank" : "set",
                     cfg.secret.isBlank() ? "blank" : "set");
@@ -162,6 +164,43 @@ public class SmsOtpAuthenticator implements Authenticator {
      * alternative for this user, which is the whole point — an account with
      * no phone can still fall through to the authenticator app.
      */
+    /**
+     * Per-user method allow-list (gitops#3232).
+     *
+     * <p>Absent attribute means "no restriction" — every account that predates
+     * this feature keeps every lane it could already use. Present but empty is
+     * treated the same way: an empty list almost certainly means a UI wrote
+     * nothing rather than that an operator meant "no methods at all", and the
+     * safe reading of an ambiguous restriction is the one that does not lock
+     * people out.
+     *
+     * <p>When the list does name channels, this one has to be among them. A
+     * disallowed channel disables the alternative exactly as a missing phone
+     * number does, so the sibling factors still carry the login.
+     */
+    static boolean channelAllowedForUser(UserModel user, SmsOtpConfig cfg) {
+        if (user == null) {
+            return false;
+        }
+        return channelAllowed(user.getAttributeStream(cfg.methodsAttribute).toList(), cfg.channel);
+    }
+
+    /**
+     * The parsing half, split out so it can be tested without standing up a
+     * UserModel. Tolerant on input by design: a multi-valued attribute, one
+     * comma-joined value, stray spacing and casing all mean the same thing to
+     * the operator who typed them.
+     */
+    static boolean channelAllowed(java.util.List<String> rawValues, String channel) {
+        java.util.List<String> allowed = rawValues.stream()
+                .filter(v -> v != null && !v.isBlank())
+                .flatMap(v -> java.util.Arrays.stream(v.split(",")))
+                .map(v -> v.trim().toLowerCase(java.util.Locale.ROOT))
+                .filter(v -> !v.isEmpty())
+                .toList();
+        return allowed.isEmpty() || allowed.contains(channel);
+    }
+
     static String recipientOf(UserModel user, SmsOtpConfig cfg) {
         if (user == null) {
             return null;

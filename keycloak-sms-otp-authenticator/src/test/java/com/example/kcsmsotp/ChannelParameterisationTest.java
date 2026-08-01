@@ -70,4 +70,48 @@ class ChannelParameterisationTest {
         assertThat(SmsOtpAuthenticator.normalizeEmail("")).isNull();
         assertThat(SmsOtpAuthenticator.normalizeEmail(null)).isNull();
     }
+
+    // ── per-user method allow-list (gitops#3232) ────────────────────────
+
+    private static java.util.List<String> attr(String... values) {
+        return java.util.List.of(values);
+    }
+
+    @Test
+    void noAttribute_meansNoRestriction_soExistingAccountsKeepEveryLane() {
+        assertThat(SmsOtpAuthenticator.channelAllowed(attr(), "sms")).isTrue();
+        assertThat(SmsOtpAuthenticator.channelAllowed(attr(), "email")).isTrue();
+    }
+
+    @Test
+    void anEmptyValueIsReadAsNoRestriction_notAsLockEveryoneOut() {
+        // An empty list almost certainly means a UI wrote nothing, not that an
+        // operator meant "no methods at all". The safe reading of an ambiguous
+        // restriction is the one that does not lock people out.
+        assertThat(SmsOtpAuthenticator.channelAllowed(attr("", "  "), "sms")).isTrue();
+    }
+
+    @Test
+    void aNamedListGatesTheChannel() {
+        assertThat(SmsOtpAuthenticator.channelAllowed(attr("sms"), "sms")).isTrue();
+        assertThat(SmsOtpAuthenticator.channelAllowed(attr("sms"), "email")).isFalse();
+        assertThat(SmsOtpAuthenticator.channelAllowed(attr("email"), "email")).isTrue();
+    }
+
+    @Test
+    void theListToleratesHoweverTheUiHappensToWriteIt() {
+        // Multi-valued attribute, one comma-joined value, stray spacing and
+        // casing all mean the same thing to an operator; they should mean the
+        // same thing here.
+        assertThat(SmsOtpAuthenticator.channelAllowed(attr("sms", "email"), "email")).isTrue();
+        assertThat(SmsOtpAuthenticator.channelAllowed(attr("sms, EMAIL"), "email")).isTrue();
+        assertThat(SmsOtpAuthenticator.channelAllowed(attr(" Email "), "email")).isTrue();
+    }
+
+    @Test
+    void anUnknownEntryDoesNotAccidentallyAllowEverything() {
+        // A typo restricts rather than opens: the list is non-empty, so the
+        // channel still has to be named in it.
+        assertThat(SmsOtpAuthenticator.channelAllowed(attr("smss"), "sms")).isFalse();
+    }
 }

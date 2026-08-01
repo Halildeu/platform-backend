@@ -49,6 +49,10 @@ public class UserMfaController {
 
     private static final Logger log = LoggerFactory.getLogger(UserMfaController.class);
 
+    /** Delivery lanes this service owns; TOTP is stock Keycloak and ungoverned. */
+    private static final java.util.Set<String> SUPPORTED_METHODS =
+            java.util.Set.of("sms", "email");
+
     private final UserRepository userRepository;
     private final KeycloakAdminClient keycloakAdminClient;
     private final AuthorizationContextService authorizationContextService;
@@ -62,7 +66,10 @@ public class UserMfaController {
     }
 
     public record MfaStatusResponse(boolean requiresMfa, boolean totpConfigured,
-            String phoneNumber, boolean smsLaneReady) {}
+            String phoneNumber, boolean smsLaneReady,
+            java.util.List<String> allowedMethods) {}
+
+    public record MethodsUpdateRequest(java.util.List<String> methods) {}
 
     public record RequiredUpdateRequest(Boolean required) {}
 
@@ -80,7 +87,8 @@ public class UserMfaController {
                 snapshot.requiresMfa(),
                 snapshot.totpConfigured(),
                 snapshot.phoneNumber(),
-                snapshot.phoneNumber() != null && !snapshot.phoneNumber().isBlank()));
+                snapshot.phoneNumber() != null && !snapshot.phoneNumber().isBlank(),
+                snapshot.allowedMethods()));
     }
 
     /**
@@ -138,6 +146,40 @@ public class UserMfaController {
             // here would leave the operator believing MFA is enforced.
             throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage(), e);
         }
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Restrict which delivery methods this account may use, or lift the
+     * restriction with an empty list.
+     *
+     * <p>Empty means "no restriction" rather than "no methods": the SPI reads
+     * an absent attribute the same way, and the safe reading of an ambiguous
+     * restriction is the one that cannot lock someone out of their own
+     * account. Only the lanes we own are governed — the authenticator app is
+     * stock Keycloak and does not consult this list.
+     */
+    @PutMapping("/methods")
+    public ResponseEntity<Void> setMethods(@PathVariable Long id,
+            @RequestHeader(value = "X-Company-Id", required = false) Long companyId,
+            @RequestBody MethodsUpdateRequest request) {
+        requirePermissionWithCompanyScope(PermissionActions.USER_UPDATE, companyId);
+        java.util.List<String> methods = request == null || request.methods() == null
+                ? java.util.List.of()
+                : request.methods();
+        for (String m : methods) {
+            if (m == null || !SUPPORTED_METHODS.contains(m.trim().toLowerCase(java.util.Locale.ROOT))) {
+                // Refusing an unknown method beats storing one: a typo would
+                // otherwise narrow the list to nothing the SPI recognises and
+                // quietly remove every delivery option.
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "desteklenmeyen yöntem: " + m);
+            }
+        }
+        KeycloakAdminClient.MfaSnapshot snapshot = snapshotFor(id);
+        keycloakAdminClient.setAllowedMethods(snapshot.kcUserId(), methods);
+        log.info("mfa-admin: allowed methods set to {} for user id={}",
+                methods.isEmpty() ? "(unrestricted)" : methods, id);
         return ResponseEntity.noContent().build();
     }
 

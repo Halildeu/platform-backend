@@ -36,6 +36,9 @@ public class KeycloakAdminApiProperties {
     /** Realm role marking accounts that must present a second factor. */
     private String requiresMfaRole = "requires-mfa";
 
+    /** User attribute holding the per-user second-factor allow-list. */
+    private String methodsAttribute = "mfaMethods";
+
     public String getBaseUrl() { return baseUrl; }
     public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
     public String getRealm() { return realm; }
@@ -48,6 +51,8 @@ public class KeycloakAdminApiProperties {
     public void setTimeoutMillis(int timeoutMillis) { this.timeoutMillis = timeoutMillis; }
     public String getPhoneAttribute() { return phoneAttribute; }
     public void setPhoneAttribute(String phoneAttribute) { this.phoneAttribute = phoneAttribute; }
+    public String getMethodsAttribute() { return methodsAttribute; }
+    public void setMethodsAttribute(String methodsAttribute) { this.methodsAttribute = methodsAttribute; }
     public String getRequiresMfaRole() { return requiresMfaRole; }
     public void setRequiresMfaRole(String requiresMfaRole) { this.requiresMfaRole = requiresMfaRole; }
 
