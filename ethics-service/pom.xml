@@ -24,6 +24,17 @@
         <java.version>21</java.version>
         <flyway.version>11.7.2</flyway.version>
         <awssdk.version>2.28.16</awssdk.version>
+        <!-- ES-306 (#2665): the running image carried six High findings that the Spring
+             Boot 3.5.16 train had not yet picked up. Both are managed by the parent, so
+             they are overridden here rather than declared as direct dependencies — the
+             version stays a single fact instead of being repeated per artefact.
+             netty 4.1.135 → 4.1.136 closes GHSA-6jqx-86gh-f27w, -jppx-w49h-x2qq and
+             -mvh2-crg5-v77c in netty-codec-http plus -558v-64gr-wgg4 (netty-codec) and
+             -93wv-jw9v-4972 (netty-codec-http2). pgJDBC 42.7.11 → 42.7.12 closes
+             GHSA-j92g-9f8w-j867. Verified after the bump by re-resolving and re-scanning
+             the built image, not by reading the advisory. -->
+        <netty.version>4.1.136.Final</netty.version>
+        <postgresql.version>42.7.12</postgresql.version>
     </properties>
     <dependencyManagement>
         <dependencies>
