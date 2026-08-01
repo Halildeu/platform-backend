@@ -22,5 +22,23 @@
                         type="submit" name="resend" value="resend" formnovalidate>${msg("smsOtpResend")}</button>
             </div>
         </form>
+
+        <#--
+          The method switcher. Without it this screen is a dead end: a user
+          whose code never arrives has only "Resend", and no way back to the
+          authenticator app or the other channel — on an account that carries
+          requires-mfa, that is a lockout with a spinner in front of it.
+          Keycloak renders this on its own OTP form; our template simply never
+          carried it, which is also why the earlier live round showed no
+          alternatives on the SMS screen.
+        -->
+        <#if auth?? && auth.showTryAnotherWayLink()>
+            <form id="kc-select-try-another-way-form" action="${url.loginAction}" method="post">
+                <input type="hidden" name="tryAnotherWay" value="on"/>
+                <a href="#" id="try-another-way"
+                   onclick="document.forms['kc-select-try-another-way-form'].requestSubmit();return false;"
+                >${msg("doTryAnotherWay")}</a>
+            </form>
+        </#if>
     </#if>
 </@layout.registrationLayout>
