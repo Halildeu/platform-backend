@@ -40,4 +40,14 @@ public interface EthicsCaseRepository extends JpaRepository<EthicsCase,UUID>{
     @Query("update EthicsCase c set c.acknowledgedAt = :when, c.updatedAt = :when "
             + "where c.id = :caseId and c.acknowledgedAt is null")
     int markAcknowledged(@Param("caseId") UUID caseId, @Param("when") Instant when);
+
+    /**
+     * ES-2 (#3271): the last-day net's worklist — open cases whose reporter has never
+     * been written to and whose seventh day has begun. CLOSED is excluded because the
+     * message path refuses closed cases anyway; the net must not fight that guard.
+     */
+    @Query("select c.id from EthicsCase c"
+            + " where c.acknowledgedAt is null and c.status <> 'CLOSED'"
+            + " and c.createdAt <= :cutoff order by c.createdAt")
+    java.util.List<UUID> findUnacknowledgedOpenBefore(@Param("cutoff") Instant cutoff);
 }

@@ -14,11 +14,31 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/ethics/cases")
 public class StaffEthicsController {
     private final EthicsService service; private final EvidenceService evidence; private final StaffContextResolver context;
-    public StaffEthicsController(EthicsService service,EvidenceService evidence,StaffContextResolver context){this.service=service;this.evidence=evidence;this.context=context;}
+    private final com.example.ethics.service.AcknowledgementService acknowledgements;
+    public StaffEthicsController(EthicsService service,EvidenceService evidence,StaffContextResolver context,com.example.ethics.service.AcknowledgementService acknowledgements){this.service=service;this.evidence=evidence;this.context=context;this.acknowledgements=acknowledgements;}
     @GetMapping List<CaseSummary> list(){return service.listCases(context.required());}
     @GetMapping("/{id}") ResponseEntity<CaseDetail> detail(@PathVariable UUID id){CaseDetail value=service.caseDetail(context.required(),id);return ResponseEntity.ok().eTag("\""+value.version()+"\"").body(value);}
     @PatchMapping("/{id}") ResponseEntity<CaseSummary> update(@PathVariable UUID id,@RequestHeader("If-Match") String ifMatch,@Valid @RequestBody UpdateCaseRequest body){CaseSummary value=service.updateCase(context.required(),id,ifMatch,body);return ResponseEntity.ok().eTag("\""+value.version()+"\"").body(value);}
     @PostMapping("/{id}/messages") ResponseEntity<MessageResponse> reply(@PathVariable UUID id,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody MessageRequest body){return ResponseEntity.status(HttpStatus.CREATED).body(service.staffReply(context.required(),id,key,body,false));}
+    // ES-2 (#3271): automatic draft, human dispatch. GET is side-effect free; POST
+    // sends the (possibly edited) draft through the ordinary staff-reply spine and
+    // returns the mandatory sections the edit removed, if any — recorded, not blocked.
+    @GetMapping("/{id}/acknowledgement-draft")
+    EthicsDtos.AcknowledgementDraftResponse acknowledgementDraft(@PathVariable UUID id){
+        var draft=acknowledgements.draft(context.required(),id);
+        return new EthicsDtos.AcknowledgementDraftResponse(
+                draft.body(),draft.templateId(),draft.templateVersion(),
+                draft.alreadyAcknowledged(),draft.mandatorySections());
+    }
+    @PostMapping("/{id}/acknowledgement")
+    ResponseEntity<EthicsDtos.AcknowledgementDispatchResponse> acknowledge(
+            @PathVariable UUID id,@RequestHeader("Idempotency-Key") String key,
+            @Valid @RequestBody EthicsDtos.AcknowledgementDispatchRequest body){
+        var result=acknowledgements.dispatch(
+                context.required(),id,key,body.body(),body.templateId(),body.templateVersion());
+        return ResponseEntity.status(HttpStatus.CREATED).body(
+                new EthicsDtos.AcknowledgementDispatchResponse(result.messageId(),result.missingSections()));
+    }
     @PostMapping("/{id}/internal-notes") ResponseEntity<MessageResponse> note(@PathVariable UUID id,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody MessageRequest body){return ResponseEntity.status(HttpStatus.CREATED).body(service.staffReply(context.required(),id,key,body,true));}
     /**
      * ES-203 / B+ slice 1 — put a named person on this case, or read who is on it.

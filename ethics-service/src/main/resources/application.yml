@@ -50,6 +50,13 @@ ethics:
   # Public mutations are accepted only after ingress-nginx overwrites the
   # transport proof header. The NetworkPolicy admits only that namespace.
   secure-transport-required: ${ETHICS_SECURE_TRANSPORT_REQUIRED:true}
+  acknowledgement:
+    # ES-2 (#3271): the last-day net under the seven-day acknowledgement promise.
+    # Fail-safe by design INTENT but explicit by deployment: only the request-facing
+    # deployment (the one already running the delivery loops) turns this on, for the
+    # same reason — one poller per outbox-shaped job.
+    net-enabled: ${ETHICS_ACK_NET_ENABLED:false}
+    net-poll-delay: ${ETHICS_ACK_NET_POLL_DELAY:15m}
   audit-delivery:
     # Source/runtime separation: the worker is wired in every environment but
     # only an explicit overlay may activate scheduled delivery.
