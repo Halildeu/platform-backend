@@ -557,6 +557,18 @@ public class EthicsService {
      * reporter something while the record still said nobody had been in touch.
      */
     private MessageResponse createMessage(UUID caseId,String author,String visibility,String key,String body,UUID orgId,String actorHash,Runnable beforeCreate){
+        return createMessage(caseId,author,visibility,key,body,orgId,actorHash,beforeCreate,null);
+    }
+
+    /**
+     * ES-2 (#3271) canli dersi: iki poller ayni vakaya es zamanli gonderim denedi;
+     * mesaj idempotency ile tek kaldi ama dispatch denetim kaydi CIFT uretildi,
+     * cunku kayit "gonderimi deneyen" tarafta yaziliyordu. Kaydi yazma hakki,
+     * damgayi GERCEKTEN vuran cagrinindir — markAcknowledged'in satir sayisi
+     * zaten tam bu karari veriyor; callback o dala baglanir ve ayni transaction
+     * icinde kosar: damga geri alinirsa kayit da geri alinir.
+     */
+    private MessageResponse createMessage(UUID caseId,String author,String visibility,String key,String body,UUID orgId,String actorHash,Runnable beforeCreate,Runnable onAcknowledgementStamped){
         if(key==null||key.isBlank()||key.length()>200) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Idempotency-Key is required.");
         transactionLocks.lock("message\n"+caseId+"\n"+author+"\n"+key);
         Optional<EthicsMessage> prior=messages.findByCaseIdAndAuthorTypeAndIdempotencyKey(caseId,author,key);
@@ -572,6 +584,7 @@ public class EthicsService {
             notifications.enqueue(orgId, NotificationOutboxPublisher.REPORTER_MESSAGE, Instant.now());
         } else if ("REPORTER_VISIBLE".equals(visibility)
                 && cases.markAcknowledged(caseId, message.getCreatedAt()) == 1) {
+            if (onAcknowledgementStamped != null) onAcknowledgementStamped.run();
             // The row count decides: only the write that actually stamped records the event,
             // so a second reply cannot claim to have acknowledged an already-acknowledged case.
             EthicsCase item = cases.findById(caseId).orElseThrow();
@@ -602,10 +615,11 @@ public class EthicsService {
      * because two send paths with different guarantees is how one of them goes wrong.
      */
     @Transactional
-    public MessageResponse systemReply(UUID orgId,UUID caseId,String key,String body){
+    public MessageResponse systemReply(UUID orgId,UUID caseId,String key,String body,Runnable onAcknowledgementStamped){
         return createMessage(caseId,"STAFF","REPORTER_VISIBLE",key,body,orgId,"system:ack-net",
                 () -> ensureOpen(cases.findByIdAndOrgId(caseId,orgId)
-                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."))));
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."))),
+                onAcknowledgementStamped);
     }
 
     // Package-private for AcknowledgementService — same module, same authz gate.
