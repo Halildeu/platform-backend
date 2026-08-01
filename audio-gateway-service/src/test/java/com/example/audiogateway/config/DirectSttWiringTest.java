@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.audiogateway.service.AudioChunkDispatcher;
 import com.example.audiogateway.service.DirectSttForwardingDispatcher;
+import com.example.audiogateway.service.DirectSttTranscriptionClient;
 import com.example.audiogateway.service.NoOpAudioChunkDispatcher;
 import com.example.audiogateway.service.RedisStreamsAudioChunkDispatcher;
 
@@ -72,6 +73,35 @@ class DirectSttWiringTest {
             assertThat(injectedDispatcher)
                     .as("with direct-stt enabled the decorator must be the injected @Primary")
                     .isInstanceOf(DirectSttForwardingDispatcher.class);
+        }
+    }
+
+    /** Speechmatics selection must wire its adapter without silently creating internal HTTP. */
+    @Nested
+    @SpringBootTest
+    @TestPropertySource(properties = {
+            ISSUER,
+            "audio.gateway.direct-stt.enabled=true",
+            "audio.gateway.direct-stt.provider=speechmatics",
+            "audio.gateway.direct-stt.transcript-result-stream.enabled=true",
+            "audio.gateway.direct-stt.speechmatics.api-key=test-key-not-a-secret"
+    })
+    class SpeechmaticsProviderEnabled {
+
+        @Autowired
+        private ApplicationContext ctx;
+
+        @Autowired
+        private AudioChunkDispatcher injectedDispatcher;
+
+        @Autowired
+        private DirectSttTranscriptionClient transcriptionClient;
+
+        @Test
+        void speechmaticsAdapterIsSelectedAndInternalClientIsAbsent() {
+            assertThat(injectedDispatcher).isInstanceOf(DirectSttForwardingDispatcher.class);
+            assertThat(transcriptionClient.providerId()).isEqualTo("speechmatics");
+            assertThat(ctx.containsBean("directSttWebClient")).isFalse();
         }
     }
 

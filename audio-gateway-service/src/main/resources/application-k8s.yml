@@ -70,6 +70,14 @@ audio:
       response-timeout-ms: ${AUDIO_GATEWAY_MEETING_SERVICE_RESPONSE_TIMEOUT_MS:3000}
       max-response-bytes: ${AUDIO_GATEWAY_MEETING_SERVICE_MAX_RESPONSE_BYTES:32768}
     direct-stt:
+      provider: ${AUDIO_GATEWAY_DIRECT_STT_PROVIDER:internal}
+      speechmatics:
+        realtime-url: ${AUDIO_GATEWAY_SPEECHMATICS_REALTIME_URL:wss://eu2.rt.speechmatics.com/v2}
+        api-key: ${AUDIO_GATEWAY_SPEECHMATICS_API_KEY:}
+        language: ${AUDIO_GATEWAY_SPEECHMATICS_LANGUAGE:tr}
+        max-delay-seconds: ${AUDIO_GATEWAY_SPEECHMATICS_MAX_DELAY_SECONDS:2.0}
+        audio-chunk-bytes: ${AUDIO_GATEWAY_SPEECHMATICS_AUDIO_CHUNK_BYTES:32768}
+        allow-insecure: ${AUDIO_GATEWAY_SPEECHMATICS_ALLOW_INSECURE:false}
       aggregation:
         enabled: ${AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_ENABLED:true}
         window-seconds: ${AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_WINDOW_SECONDS:5}

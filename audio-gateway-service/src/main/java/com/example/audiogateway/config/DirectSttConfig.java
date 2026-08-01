@@ -3,7 +3,9 @@ package com.example.audiogateway.config;
 import com.example.audiogateway.service.AudioChunkDispatcher;
 import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.DirectSttForwardingDispatcher;
+import com.example.audiogateway.service.DirectSttTranscriptionClient;
 import com.example.audiogateway.service.DirectSttTranscriptResultSink;
+import com.example.audiogateway.service.InternalDirectSttTranscriptionClient;
 import com.example.audiogateway.service.LiveAnalyzeTrigger;
 import com.example.audiogateway.service.LiveAnalyzeTriggerSink;
 import com.example.audiogateway.service.LiveTranscriptBroadcastSink;
@@ -14,6 +16,8 @@ import com.example.audiogateway.service.SentenceAssemblingSink;
 import com.example.audiogateway.service.SentenceAssemblyPolicy;
 import com.example.audiogateway.service.SentenceAssemblySweeper;
 import com.example.audiogateway.service.RedisStreamDirectSttTranscriptResultSink;
+import com.example.audiogateway.service.SpeechmaticsRealtimeTranscriptionClient;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.ChannelOption;
@@ -34,7 +38,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
+import org.springframework.web.reactive.socket.client.WebSocketClient;
 import reactor.netty.http.client.HttpClient;
+import reactor.netty.http.client.WebsocketClientSpec;
 
 /**
  * Direct-STT wiring — Faz 24 issue #182 (architecture "A").
@@ -103,6 +110,10 @@ public class DirectSttConfig {
      * builds the absolute URI from {@code transcribe-url} + query params per request.
      */
     @Bean("directSttWebClient")
+    @ConditionalOnProperty(
+            name = "audio.gateway.direct-stt.provider",
+            havingValue = "internal",
+            matchIfMissing = true)
     public WebClient directSttWebClient(final AudioGatewayProperties props) throws SSLException {
         final AudioGatewayProperties.DirectStt cfg = props.getDirectStt();
         HttpClient httpClient = HttpClient.create()
@@ -115,6 +126,48 @@ public class DirectSttConfig {
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(cfg.getMaxResponseBytes()))
                 .build();
+    }
+
+    @Bean
+    @ConditionalOnProperty(
+            name = "audio.gateway.direct-stt.provider",
+            havingValue = "internal",
+            matchIfMissing = true)
+    public DirectSttTranscriptionClient internalDirectSttTranscriptionClient(
+            @org.springframework.beans.factory.annotation.Qualifier("directSttWebClient")
+            final WebClient webClient,
+            final AudioGatewayProperties props) {
+        return new InternalDirectSttTranscriptionClient(webClient, props.getDirectStt());
+    }
+
+    @Bean(name = "speechmaticsWebSocketClient", defaultCandidate = false)
+    @ConditionalOnProperty(
+            name = "audio.gateway.direct-stt.provider",
+            havingValue = "speechmatics")
+    public WebSocketClient speechmaticsWebSocketClient(final AudioGatewayProperties props) {
+        final AudioGatewayProperties.DirectStt direct = props.getDirectStt();
+        final HttpClient client = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) direct.getConnectTimeoutMs())
+                .responseTimeout(Duration.ofMillis(direct.getResponseTimeoutMs()));
+        return new ReactorNettyWebSocketClient(
+                client,
+                () -> WebsocketClientSpec.builder()
+                        .maxFramePayloadLength(direct.getMaxResponseBytes()));
+    }
+
+    @Bean
+    @ConditionalOnProperty(
+            name = "audio.gateway.direct-stt.provider",
+            havingValue = "speechmatics")
+    public DirectSttTranscriptionClient speechmaticsTranscriptionClient(
+            @org.springframework.beans.factory.annotation.Qualifier("speechmaticsWebSocketClient")
+            final WebSocketClient webSocketClient,
+            final ObjectMapper objectMapper,
+            final AudioGatewayProperties props) {
+        return new SpeechmaticsRealtimeTranscriptionClient(
+                webSocketClient,
+                objectMapper,
+                props.getDirectStt().getSpeechmatics());
     }
 
     static HttpClient applyMutualTls(
@@ -282,8 +335,7 @@ public class DirectSttConfig {
             final MeterRegistry meters,
             final AudioGatewayAuditSink auditSink,
             final DirectSttTranscriptResultSink transcriptResultSink,
-            @org.springframework.beans.factory.annotation.Qualifier("directSttWebClient")
-            final WebClient directSttWebClient,
+            final DirectSttTranscriptionClient transcriptionClient,
             final ObjectProvider<RedisStreamsAudioChunkDispatcher> redisProvider,
             final ObjectProvider<NoOpAudioChunkDispatcher> noOpProvider) {
 
@@ -291,7 +343,7 @@ public class DirectSttConfig {
                 props.getDispatcher().getMode(), redisProvider, noOpProvider);
 
         return new DirectSttForwardingDispatcher(
-                delegate, auditSink, transcriptResultSink, directSttWebClient, props, meters);
+                delegate, auditSink, transcriptResultSink, transcriptionClient, props, meters);
     }
 
     private AudioChunkDispatcher resolveDelegate(

@@ -342,6 +342,9 @@ public class AudioGatewayProperties {
         /** DEFAULT-OFF — see {@link DirectStt}. */
         private boolean enabled = false;
 
+        /** Selected provider adapter. Existing deployments default to the internal service. */
+        private Provider provider = Provider.INTERNAL;
+
         /**
          * live-stt {@code /transcribe} absolute URL (e.g.
          * {@code https://10.99.0.2:8000/transcribe} over the WireGuard+mTLS tunnel,
@@ -385,6 +388,9 @@ public class AudioGatewayProperties {
          * audio enables this per ADR-0031 + B+ I7.
          */
         private final Tls tls = new Tls();
+
+        /** Speechmatics Realtime API settings. Used only when provider=speechmatics. */
+        private final Speechmatics speechmatics = new Speechmatics();
 
         /**
          * Durable transcript-result stream handoff. This is transcript content, not raw
@@ -440,29 +446,20 @@ public class AudioGatewayProperties {
                                 + "sentence-assembly.enabled is true (assembly needs the "
                                 + "aggregation window to identify a sequence space)");
             }
-            if (transcribeUrl == null || transcribeUrl.isBlank()) {
+            if (provider == null) {
                 throw new IllegalStateException(
-                        "audio.gateway.direct-stt.transcribe-url must be set when direct-stt is enabled");
+                        "audio.gateway.direct-stt.provider must be internal or speechmatics");
             }
-            final java.net.URI uri;
-            try {
-                uri = java.net.URI.create(transcribeUrl.trim());
-            } catch (final IllegalArgumentException ex) {
-                throw new IllegalStateException(
-                        "audio.gateway.direct-stt.transcribe-url is not a valid URI", ex);
+            if (provider == Provider.INTERNAL) {
+                validateInternalProvider();
+            } else {
+                if (streaming.isEnabled()) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.enabled is not supported with "
+                                    + "provider=speechmatics; use the bounded aggregation path");
+                }
+                speechmatics.validate();
             }
-            final String scheme = uri.getScheme();
-            if (scheme == null
-                    || !("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))) {
-                throw new IllegalStateException(
-                        "audio.gateway.direct-stt.transcribe-url must be http or https, got scheme="
-                                + scheme);
-            }
-            if (tls.isEnabled() && !"https".equalsIgnoreCase(scheme)) {
-                throw new IllegalStateException(
-                        "audio.gateway.direct-stt.tls.enabled=true requires an https transcribe-url");
-            }
-            tls.validate();
             if (maxInFlight <= 0) {
                 throw new IllegalStateException(
                         "audio.gateway.direct-stt.max-in-flight must be positive, got " + maxInFlight);
@@ -492,6 +489,14 @@ public class AudioGatewayProperties {
 
         public void setEnabled(final boolean enabled) {
             this.enabled = enabled;
+        }
+
+        public Provider getProvider() {
+            return provider;
+        }
+
+        public void setProvider(final Provider provider) {
+            this.provider = provider;
         }
 
         public String getTranscribeUrl() {
@@ -542,6 +547,10 @@ public class AudioGatewayProperties {
             return tls;
         }
 
+        public Speechmatics getSpeechmatics() {
+            return speechmatics;
+        }
+
         public TranscriptResultStream getTranscriptResultStream() {
             return transcriptResultStream;
         }
@@ -556,6 +565,37 @@ public class AudioGatewayProperties {
 
         public SentenceAssembly getSentenceAssembly() {
             return sentenceAssembly;
+        }
+
+        private void validateInternalProvider() {
+            if (transcribeUrl == null || transcribeUrl.isBlank()) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.transcribe-url must be set when provider=internal");
+            }
+            final java.net.URI uri;
+            try {
+                uri = java.net.URI.create(transcribeUrl.trim());
+            } catch (final IllegalArgumentException ex) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.transcribe-url is not a valid URI", ex);
+            }
+            final String scheme = uri.getScheme();
+            if (scheme == null
+                    || !("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.transcribe-url must be http or https, got scheme="
+                                + scheme);
+            }
+            if (tls.isEnabled() && !"https".equalsIgnoreCase(scheme)) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.tls.enabled=true requires an https transcribe-url");
+            }
+            tls.validate();
+        }
+
+        public enum Provider {
+            INTERNAL,
+            SPEECHMATICS
         }
 
         /**
@@ -883,6 +923,113 @@ public class AudioGatewayProperties {
 
             public void setMaxBufferedSessions(final int maxBufferedSessions) {
                 this.maxBufferedSessions = maxBufferedSessions;
+            }
+        }
+
+        public static class Speechmatics {
+            /** Speechmatics self-service realtime endpoint, without the language suffix. */
+            private String realtimeUrl = "wss://eu2.rt.speechmatics.com/v2";
+
+            /** Bound from a Secret; never logged or committed. */
+            private String apiKey = "";
+
+            /** Speechmatics language pack identifier appended to the realtime endpoint. */
+            private String language = "tr";
+
+            /** Finalization latency requested from Speechmatics. */
+            private double maxDelaySeconds = 2.0d;
+
+            /** Maximum raw PCM bytes per AddAudio WebSocket frame. */
+            private int audioChunkBytes = 32_768;
+
+            /** Allows ws:// only for loopback protocol tests. Never enable in deployment. */
+            private boolean allowInsecure = false;
+
+            void validate() {
+                if (apiKey == null || apiKey.isBlank()) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.speechmatics.api-key must be set "
+                                    + "when provider=speechmatics");
+                }
+                if (language == null || !language.matches("[A-Za-z]{2,3}([_-][A-Za-z]{2,4})?")) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.speechmatics.language is invalid");
+                }
+                if (maxDelaySeconds < 0.7d || maxDelaySeconds > 10.0d) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.speechmatics.max-delay-seconds "
+                                    + "must be in [0.7,10.0]");
+                }
+                if (audioChunkBytes < 1_024 || audioChunkBytes > 65_535) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.speechmatics.audio-chunk-bytes "
+                                    + "must be in [1024,65535]");
+                }
+                final java.net.URI uri;
+                try {
+                    uri = java.net.URI.create(realtimeUrl == null ? "" : realtimeUrl.trim());
+                } catch (final IllegalArgumentException ex) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.speechmatics.realtime-url is invalid", ex);
+                }
+                final String scheme = uri.getScheme();
+                if (!"wss".equalsIgnoreCase(scheme)
+                        && !(allowInsecure && "ws".equalsIgnoreCase(scheme))) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.speechmatics.realtime-url must use wss");
+                }
+                if (uri.getHost() == null || uri.getHost().isBlank()) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.speechmatics.realtime-url must have a host");
+                }
+            }
+
+            public String getRealtimeUrl() {
+                return realtimeUrl;
+            }
+
+            public void setRealtimeUrl(final String realtimeUrl) {
+                this.realtimeUrl = realtimeUrl;
+            }
+
+            public String getApiKey() {
+                return apiKey;
+            }
+
+            public void setApiKey(final String apiKey) {
+                this.apiKey = apiKey;
+            }
+
+            public String getLanguage() {
+                return language;
+            }
+
+            public void setLanguage(final String language) {
+                this.language = language;
+            }
+
+            public double getMaxDelaySeconds() {
+                return maxDelaySeconds;
+            }
+
+            public void setMaxDelaySeconds(final double maxDelaySeconds) {
+                this.maxDelaySeconds = maxDelaySeconds;
+            }
+
+            public int getAudioChunkBytes() {
+                return audioChunkBytes;
+            }
+
+            public void setAudioChunkBytes(final int audioChunkBytes) {
+                this.audioChunkBytes = audioChunkBytes;
+            }
+
+            public boolean isAllowInsecure() {
+                return allowInsecure;
+            }
+
+            public void setAllowInsecure(final boolean allowInsecure) {
+                this.allowInsecure = allowInsecure;
             }
         }
 
