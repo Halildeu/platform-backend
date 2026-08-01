@@ -36,7 +36,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class EvidenceService {
     private static final Set<String> DECLARED_TYPES = Set.of(
-            "application/pdf", "image/webp", "text/plain", "text/plain; charset=utf-8",
+            "application/pdf", "image/heic", "image/heif", "image/webp", "text/plain", "text/plain; charset=utf-8",
             "image/jpeg", "image/png");
     private final EvidenceProperties properties;
     private final SecretHasher secrets;

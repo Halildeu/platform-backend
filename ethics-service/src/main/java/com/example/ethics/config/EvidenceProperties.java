@@ -98,6 +98,8 @@ public class EvidenceProperties {
         private int maxPdfPages = 100;
         /** ES-104J: render density; with A4 at 150 DPI a page stays ~2.2M pixels. */
         private int pdfRenderDpi = 150;
+        /** ES-104K dilim 2: empty means HEIC stays fail-closed. */
+        private String heicConverterUrl = "";
         private String scannerDigest = "";
         private String sanitizerDigest = "";
         private String parserDigest = "";
@@ -118,6 +120,8 @@ public class EvidenceProperties {
         public void setMaxPdfPages(int maxPdfPages) { this.maxPdfPages = maxPdfPages; }
         public int getPdfRenderDpi() { return pdfRenderDpi; }
         public void setPdfRenderDpi(int pdfRenderDpi) { this.pdfRenderDpi = pdfRenderDpi; }
+        public String getHeicConverterUrl() { return heicConverterUrl; }
+        public void setHeicConverterUrl(String heicConverterUrl) { this.heicConverterUrl = heicConverterUrl; }
         public String getScannerDigest() { return scannerDigest; }
         public void setScannerDigest(String scannerDigest) { this.scannerDigest = scannerDigest; }
         public String getSanitizerDigest() { return sanitizerDigest; }

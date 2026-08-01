@@ -30,9 +30,11 @@ import org.springframework.stereotype.Component;
         havingValue = "clamav-reference")
 public class SafeMetadataSanitizer {
     private final EvidenceProperties properties;
+    private final HeicConverter heicConverter;
 
-    public SafeMetadataSanitizer(EvidenceProperties properties) {
+    public SafeMetadataSanitizer(EvidenceProperties properties, HeicConverter heicConverter) {
         this.properties = properties;
+        this.heicConverter = heicConverter;
     }
 
     public Sanitized sanitize(byte[] source, String declaredMediaType) {
@@ -51,6 +53,14 @@ public class SafeMetadataSanitizer {
             // container chunk (EXIF, GPS, ICC, XMP) BY CONSTRUCTION rather than by
             // enumeration, and the case handler needs no special viewer.
             case "image/webp" -> sanitizeImage(source, "png", "image/png");
+            // ES-104K dilim 2: HEIC has no pure-Java decoder, so decode happens in
+            // the separate digest-pinned converter (clamav discipline: single
+            // purpose, no egress, reachable only from the workers). Its output is
+            // NOT trusted: the returned PNG goes through the same in-JVM header
+            // gate and decode-recode as every other raster, so the derivative's
+            // metadata-free claim rests on THIS JVM, not on the converter.
+            case "image/heic" -> sanitizeImage(
+                    heicConverter.toPng(source), "png", "image/png");
             case "application/pdf" -> throw new EvidenceProcessor.ProcessingException(
                     EvidenceProcessor.ProcessingException.Outcome.POLICY,
                     "EVIDENCE_PDF_CDR_NOT_CONFIGURED");
@@ -78,6 +88,19 @@ public class SafeMetadataSanitizer {
                 && (source[1] & 0xff) == 0xd8
                 && (source[2] & 0xff) == 0xff) {
             return "image/jpeg";
+        }
+        // ES-104K dilim 2 (#2930): ISO-BMFF ftyp box with a HEIC/HEIF brand. The
+        // box size at 0-3 is ignored on purpose; "ftyp" at 4-7 plus the brand at
+        // 8-11 is the identity. Brands per the issue: heic, heix (stills), mif1,
+        // msf1 (structural brands iPhones actually emit — the fixture's own major
+        // brand is heic with mif1 compatible).
+        if (source.length >= 12
+                && source[4] == 'f' && source[5] == 't' && source[6] == 'y' && source[7] == 'p') {
+            String brand = new String(source, 8, 4, StandardCharsets.US_ASCII);
+            if ("heic".equals(brand) || "heix".equals(brand)
+                    || "mif1".equals(brand) || "msf1".equals(brand)) {
+                return "image/heic";
+            }
         }
         // ES-104K (#2930): RIFF container carrying a WEBP fourcc. Byte 4-7 is the
         // chunk size — deliberately ignored; the fourcc at 8-11 is the identity.
