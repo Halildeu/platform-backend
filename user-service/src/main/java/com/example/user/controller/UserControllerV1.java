@@ -74,7 +74,7 @@ public class UserControllerV1 {
     private final CurrentUserResolver currentUserResolver;
     private final MeterRegistry meterRegistry;
     /** Keeps the cached Keycloak login names fresh for the grid (gitops#3291). */
-    private final com.example.user.keycloak.KeycloakUsernameSync keycloakUsernameSync;
+    private final com.example.user.keycloak.KeycloakUserFactsSync keycloakUserFactsSync;
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(UserControllerV1.class);
 
     public UserControllerV1(UserService userService,
@@ -82,13 +82,13 @@ public class UserControllerV1 {
                             AuthorizationContextService authorizationContextService,
                             CurrentUserResolver currentUserResolver,
                             MeterRegistry meterRegistry,
-                            com.example.user.keycloak.KeycloakUsernameSync keycloakUsernameSync) {
+                            com.example.user.keycloak.KeycloakUserFactsSync keycloakUserFactsSync) {
         this.userService = userService;
         this.userAuditEventService = userAuditEventService;
         this.authorizationContextService = authorizationContextService;
         this.currentUserResolver = currentUserResolver;
         this.meterRegistry = meterRegistry;
-        this.keycloakUsernameSync = keycloakUsernameSync;
+        this.keycloakUserFactsSync = keycloakUserFactsSync;
     }
 
     @GetMapping
@@ -120,7 +120,7 @@ public class UserControllerV1 {
         // (gitops#3291). TTL-guarded and fail-open: at most one Keycloak round
         // trip per window, and a Keycloak outage costs a stale column, not a
         // broken grid.
-        keycloakUsernameSync.refreshIfStale();
+        keycloakUserFactsSync.refreshIfStale();
 
         Sort parsedSort = parseSort(sort);
         org.springframework.data.jpa.domain.Specification<User> extraSpec = buildAdvancedFilterSpecSafe(advancedFilter);

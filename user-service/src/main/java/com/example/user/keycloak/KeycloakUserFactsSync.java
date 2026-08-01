@@ -2,6 +2,8 @@ package com.example.user.keycloak;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -13,9 +15,11 @@ import org.springframework.stereotype.Component;
 import com.example.user.repository.UserRepository;
 
 /**
- * Keeps {@code users.kc_username} in step with Keycloak (gitops#3291).
+ * Keeps the Keycloak-owned facts on a user row in step with Keycloak:
+ * {@code kc_username} (gitops#3291) and {@code last_login} (gitops#3297).
  *
- * <p>Keycloak owns the login name; this is a cache, and it is treated like one:
+ * <p>Both moved to Keycloak when authentication did, and the panel's copy of
+ * each is a cache, treated like one:
  *
  * <ul>
  *   <li><b>Fail-open.</b> A refresh failure is logged and swallowed. The users
@@ -35,11 +39,24 @@ import com.example.user.repository.UserRepository;
  * application to keep one cache warm would arm every future {@code @Scheduled}
  * annotation in the service as a side effect. Refresh is demand-driven, which
  * is also the only time anyone can observe the value.
+ *
+ * <p><b>Last-login is monotonic.</b> Keycloak keeps login events for
+ * {@code eventsExpiration} (7 days here), so an account that last signed in
+ * before the window simply has no event. Writing whatever Keycloak reports
+ * would then drag a good stored timestamp backwards — or to nothing — and the
+ * panel would show a login that appears to have moved into the past. The write
+ * advances only, enforced in SQL rather than here, so two concurrent reconciles
+ * cannot race it either.
+ *
+ * <p>That is also why persisting matters rather than reading through: once a
+ * timestamp is stored it outlives the event that produced it. The retention
+ * window bounds how far back the first sync can reach, not what accumulates
+ * from then on.
  */
 @Component
-public class KeycloakUsernameSync {
+public class KeycloakUserFactsSync {
 
-    private static final Logger log = LoggerFactory.getLogger(KeycloakUsernameSync.class);
+    private static final Logger log = LoggerFactory.getLogger(KeycloakUserFactsSync.class);
 
     private final KeycloakAdminClient keycloak;
     private final UserRepository users;
@@ -48,7 +65,7 @@ public class KeycloakUsernameSync {
     private final AtomicBoolean inFlight = new AtomicBoolean(false);
     private volatile Instant lastSuccess = Instant.EPOCH;
 
-    public KeycloakUsernameSync(KeycloakAdminClient keycloak,
+    public KeycloakUserFactsSync(KeycloakAdminClient keycloak,
                                 UserRepository users,
                                 KeycloakAdminApiProperties props) {
         this.keycloak = keycloak;
@@ -75,22 +92,21 @@ public class KeycloakUsernameSync {
             int changed = reconcile();
             lastSuccess = Instant.now();
             if (changed > 0) {
-                log.info("kc-username sync: {} row(s) updated", changed);
+                log.info("kc-facts sync: {} row(s) updated", changed);
             }
         } catch (RuntimeException ex) {
             // Fail-open: the grid still renders, with whatever was last known.
-            log.warn("kc-username sync failed, serving cached login names: {}", ex.toString());
+            log.warn("kc-facts sync failed, serving cached values: {}", ex.toString());
         } finally {
             inFlight.set(false);
         }
     }
 
     /**
-     * Not transactional, on purpose. The Keycloak listing is a network round
-     * trip; wrapping this method would pin a pooled database connection for its
-     * whole duration. Each write carries its own short transaction
-     * ({@code UserRepository.applyKcUsername}), and a partial reconcile is
-     * harmless — the next window finishes it.
+     * Not transactional, on purpose. The Keycloak calls are network round trips;
+     * wrapping this method would pin a pooled database connection for their
+     * whole duration. Each write carries its own short transaction, and a
+     * partial reconcile is harmless — the next window finishes it.
      */
     int reconcile() {
         Map<String, String> live = keycloak.listUsernames();
@@ -99,21 +115,35 @@ public class KeycloakUsernameSync {
             // paging fault than a realm with no users. Blanking every cached
             // name on that reading would turn a transient fault into visible
             // data loss, so treat it as "no information" instead.
-            log.warn("kc-username sync: realm listing returned no users, leaving cache untouched");
+            log.warn("kc-facts sync: realm listing returned no users, leaving cache untouched");
             return 0;
         }
+        // Absent or failing is "no information": an empty map simply advances
+        // nothing, because the write is monotonic.
+        Map<String, Instant> logins = keycloak.listLastLogins();
+
         List<UserRepository.KcUsernameRow> rows = users.findKcUsernameRows();
         int changed = 0;
         for (UserRepository.KcUsernameRow row : rows) {
-            String fresh = live.get(row.getKcSubject());
-            if (fresh == null || fresh.equals(row.getKcUsername())) {
-                // Absent from the listing: the row points at a subject this
-                // realm no longer has. Keep the last known name — it is the
-                // only remaining clue to what the account was.
-                continue;
+            String subject = row.getKcSubject();
+
+            String fresh = live.get(subject);
+            if (fresh != null && !fresh.equals(row.getKcUsername())) {
+                users.applyKcUsername(subject, fresh);
+                changed++;
             }
-            users.applyKcUsername(row.getKcSubject(), fresh);
-            changed++;
+            // A subject missing from the listing keeps its last known name — it
+            // is the only remaining clue to what the account was.
+
+            Instant login = logins.get(subject);
+            if (login != null) {
+                // Advance-only, and the guard lives in the query: Keycloak
+                // forgets events past its retention, so a plain write would drag
+                // a good stored timestamp backwards for anyone whose last sign-in
+                // has aged out.
+                changed += users.advanceLastLogin(
+                        subject, LocalDateTime.ofInstant(login, ZoneId.systemDefault()));
+            }
         }
         return changed;
     }
