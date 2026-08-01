@@ -89,7 +89,7 @@ public class DirectSttForwardingDispatcher
     private final AudioChunkDispatcher delegate;
     private final AudioGatewayAuditSink auditSink;
     private final DirectSttTranscriptResultSink transcriptResultSink;
-    private final DirectSttTranscriptionClient transcriptionClient;
+    private final DirectSttProviderRegistry providerRegistry;
     private final AudioGatewayProperties.DirectStt cfg;
     private final MeterRegistry meters;
     private final Semaphore inFlight;
@@ -107,13 +107,13 @@ public class DirectSttForwardingDispatcher
             final AudioChunkDispatcher delegate,
             final AudioGatewayAuditSink auditSink,
             final DirectSttTranscriptResultSink transcriptResultSink,
-            final DirectSttTranscriptionClient transcriptionClient,
+            final DirectSttProviderRegistry providerRegistry,
             final AudioGatewayProperties properties,
             final MeterRegistry meters) {
         this.delegate = delegate;
         this.auditSink = auditSink;
         this.transcriptResultSink = transcriptResultSink;
-        this.transcriptionClient = transcriptionClient;
+        this.providerRegistry = providerRegistry;
         this.cfg = properties.getDirectStt();
         this.meters = meters;
         this.inFlight = new Semaphore(cfg.getMaxInFlight());
@@ -151,11 +151,11 @@ public class DirectSttForwardingDispatcher
                 DirectSttAudioAccountant::negativeInvariantBreaches);
         meters.gauge(METRIC_PREFIX + "aggregation_buffered_bytes", aggregator,
                 DirectSttAudioWindowAggregator::bufferedBytes);
-        meters.gauge(
+        providerRegistry.selectableProviderIds().forEach(provider -> meters.gauge(
                 METRIC_PREFIX + "provider_active",
-                Tags.of("provider", transcriptionClient.providerId()),
+                Tags.of("provider", provider),
                 this,
-                ignored -> 1.0d);
+                ignored -> 1.0d));
         // Runtime acceptance scrapes a zero baseline before the first chunk.
         // Register these counters eagerly so "no event yet" is observable as 0
         // instead of being indistinguishable from missing instrumentation.
@@ -179,13 +179,23 @@ public class DirectSttForwardingDispatcher
                 delegate,
                 auditSink,
                 transcriptResultSink,
-                new InternalDirectSttTranscriptionClient(webClient, properties.getDirectStt()),
+                new DirectSttProviderRegistry(
+                        java.util.List.of(new InternalDirectSttTranscriptionClient(
+                                webClient, properties.getDirectStt())),
+                        properties.getDirectStt()),
                 properties,
                 meters);
     }
 
     @Override
     public DispatchOutcome dispatch(final ChunkDispatchCommand cmd) {
+        try {
+            providerRegistry.require(cmd.sttProvider());
+        } catch (final IllegalArgumentException | IllegalStateException ex) {
+            counter("provider_unavailable", "provider", safeProviderLabel(cmd.sttProvider()))
+                    .increment();
+            return new DispatchOutcome.Unavailable(unavailableRetryAfterSeconds);
+        }
         // The audio bound (#428 / platform-ai#257) is charged BEFORE the delegate — this is
         // the ordering fix. The delegate in Redis mode is RedisStreamsAudioChunkDispatcher,
         // whose dispatch() performs the XADD; charging afterwards let a 429/503 refusal
@@ -397,7 +407,8 @@ public class DirectSttForwardingDispatcher
                 audio, 0L, cmd.sessionId(), cmd.tenantId(), cmd.userId(),
                 cmd.chunkSeq(), cmd.chunkSeq(), cmd.chunkSeq(),
                 cmd.chunkStartedAtMs(), durationMs, "chunk",
-                cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.audioFormat().name(),
+                cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.sttProvider(),
+                cmd.audioFormat().name(),
                 cmd.sampleRateHz(), cmd.channels(), cmd.correlationId(), cmd.payload().sha256(),
                 cmd.payload().length(),
                 accountant.refundHandle(cmd.tenantId(), cmd.sessionId(), chunkFrames));
@@ -431,7 +442,8 @@ public class DirectSttForwardingDispatcher
                 window.userId(),
                 window.windowSeq(), window.firstChunkSeq(), window.lastChunkSeq(),
                 window.startedAtMs(), window.durationMs(), flushReason,
-                window.meetingId(), window.deviceId(), window.language(), AudioFormat.PCM16.name(),
+                window.meetingId(), window.deviceId(), window.language(), window.sttProvider(),
+                AudioFormat.PCM16.name(),
                 window.sampleRateHz(), window.channels(), window.correlationId(), window.sha256(),
                 window.audio().length,
                 accountant.refundHandle(window.tenantId(), window.sessionId(), windowFrames));
@@ -458,7 +470,9 @@ public class DirectSttForwardingDispatcher
         final AtomicBoolean released = new AtomicBoolean(false);
 
         try {
-            if (!emitComputePlaneAudit(task)) {
+            final DirectSttTranscriptionClient transcriptionClient =
+                    providerRegistry.require(task.sttProvider());
+            if (!emitComputePlaneAudit(task, transcriptionClient)) {
                 // Audit refused, so the audio never leaves — a terminal path like any other.
                 task.refund().release();
                 clearAudio(task);
@@ -504,7 +518,9 @@ public class DirectSttForwardingDispatcher
         }
     }
 
-    private boolean emitComputePlaneAudit(final ForwardTask task) {
+    private boolean emitComputePlaneAudit(
+            final ForwardTask task,
+            final DirectSttTranscriptionClient transcriptionClient) {
         try {
             auditSink.emit(new AuditEvent.ChunkForwardedToComputePlane(
                     task.sessionId(),
@@ -704,6 +720,7 @@ public class DirectSttForwardingDispatcher
 
     private static String kv(final ChunkDispatchCommand cmd) {
         return "sessionId=" + cmd.sessionId()
+                + " provider=" + safeProviderLabel(cmd.sttProvider())
                 + " chunkSeq=" + cmd.chunkSeq()
                 + " correlationId=" + nullSafe(cmd.correlationId())
                 + " sha256=" + shaPrefix(cmd.payload().sha256())
@@ -712,6 +729,7 @@ public class DirectSttForwardingDispatcher
 
     private static String kv(final ForwardTask task) {
         return "sessionId=" + task.sessionId()
+                + " provider=" + safeProviderLabel(task.sttProvider())
                 + " windowSeq=" + task.windowSeq()
                 + " chunkRange=" + task.firstChunkSeq() + "-" + task.lastChunkSeq()
                 + " durationMs=" + task.audioDurationMs()
@@ -731,6 +749,14 @@ public class DirectSttForwardingDispatcher
 
     private static String nullSafe(final String value) {
         return value == null ? "" : value;
+    }
+
+    private static String safeProviderLabel(final String provider) {
+        if (provider == null) {
+            return "missing";
+        }
+        final String normalized = provider.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.matches("[a-z0-9_-]{1,32}") ? normalized : "invalid";
     }
 
     /**
@@ -753,6 +779,7 @@ public class DirectSttForwardingDispatcher
             String meetingId,
             String deviceId,
             String language,
+            String sttProvider,
             String audioFormat,
             int sampleRateHz,
             int channels,

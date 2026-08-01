@@ -3,6 +3,7 @@ package com.example.audiogateway.config;
 import com.example.audiogateway.service.AudioChunkDispatcher;
 import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.DirectSttForwardingDispatcher;
+import com.example.audiogateway.service.DirectSttProviderRegistry;
 import com.example.audiogateway.service.DirectSttTranscriptionClient;
 import com.example.audiogateway.service.DirectSttTranscriptResultSink;
 import com.example.audiogateway.service.InternalDirectSttTranscriptionClient;
@@ -25,6 +26,7 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import java.io.File;
 import java.time.Duration;
+import java.util.List;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLParameters;
 
@@ -110,10 +112,6 @@ public class DirectSttConfig {
      * builds the absolute URI from {@code transcribe-url} + query params per request.
      */
     @Bean("directSttWebClient")
-    @ConditionalOnProperty(
-            name = "audio.gateway.direct-stt.provider",
-            havingValue = "internal",
-            matchIfMissing = true)
     public WebClient directSttWebClient(final AudioGatewayProperties props) throws SSLException {
         final AudioGatewayProperties.DirectStt cfg = props.getDirectStt();
         HttpClient httpClient = HttpClient.create()
@@ -129,10 +127,6 @@ public class DirectSttConfig {
     }
 
     @Bean
-    @ConditionalOnProperty(
-            name = "audio.gateway.direct-stt.provider",
-            havingValue = "internal",
-            matchIfMissing = true)
     public DirectSttTranscriptionClient internalDirectSttTranscriptionClient(
             @org.springframework.beans.factory.annotation.Qualifier("directSttWebClient")
             final WebClient webClient,
@@ -141,9 +135,6 @@ public class DirectSttConfig {
     }
 
     @Bean(name = "speechmaticsWebSocketClient", defaultCandidate = false)
-    @ConditionalOnProperty(
-            name = "audio.gateway.direct-stt.provider",
-            havingValue = "speechmatics")
     public WebSocketClient speechmaticsWebSocketClient(final AudioGatewayProperties props) {
         final AudioGatewayProperties.DirectStt direct = props.getDirectStt();
         final HttpClient client = HttpClient.create()
@@ -156,9 +147,6 @@ public class DirectSttConfig {
     }
 
     @Bean
-    @ConditionalOnProperty(
-            name = "audio.gateway.direct-stt.provider",
-            havingValue = "speechmatics")
     public DirectSttTranscriptionClient speechmaticsTranscriptionClient(
             @org.springframework.beans.factory.annotation.Qualifier("speechmaticsWebSocketClient")
             final WebSocketClient webSocketClient,
@@ -168,6 +156,13 @@ public class DirectSttConfig {
                 webSocketClient,
                 objectMapper,
                 props.getDirectStt().getSpeechmatics());
+    }
+
+    @Bean
+    public DirectSttProviderRegistry directSttProviderRegistry(
+            final List<DirectSttTranscriptionClient> clients,
+            final AudioGatewayProperties props) {
+        return new DirectSttProviderRegistry(clients, props.getDirectStt());
     }
 
     static HttpClient applyMutualTls(
@@ -335,7 +330,7 @@ public class DirectSttConfig {
             final MeterRegistry meters,
             final AudioGatewayAuditSink auditSink,
             final DirectSttTranscriptResultSink transcriptResultSink,
-            final DirectSttTranscriptionClient transcriptionClient,
+            final DirectSttProviderRegistry providerRegistry,
             final ObjectProvider<RedisStreamsAudioChunkDispatcher> redisProvider,
             final ObjectProvider<NoOpAudioChunkDispatcher> noOpProvider) {
 
@@ -343,7 +338,7 @@ public class DirectSttConfig {
                 props.getDispatcher().getMode(), redisProvider, noOpProvider);
 
         return new DirectSttForwardingDispatcher(
-                delegate, auditSink, transcriptResultSink, transcriptionClient, props, meters);
+                delegate, auditSink, transcriptResultSink, providerRegistry, props, meters);
     }
 
     private AudioChunkDispatcher resolveDelegate(

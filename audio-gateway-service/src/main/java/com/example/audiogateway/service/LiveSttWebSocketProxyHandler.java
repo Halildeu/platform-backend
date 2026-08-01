@@ -137,6 +137,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             || record.state() == SessionState.FINISHED) {
                         return clientSession.close(CloseStatus.POLICY_VIOLATION);
                     }
+                    if (!"internal".equals(record.sttProvider())) {
+                        return clientSession.close(CloseStatus.NOT_ACCEPTABLE);
+                    }
                     if (record.audioFormat() != AudioFormat.PCM16
                             || record.sampleRateHz() != 16_000
                             || record.channels() != 1) {

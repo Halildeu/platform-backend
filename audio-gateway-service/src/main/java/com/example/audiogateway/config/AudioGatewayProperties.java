@@ -346,6 +346,13 @@ public class AudioGatewayProperties {
         private Provider provider = Provider.INTERNAL;
 
         /**
+         * Providers that a client may select for a new session. Empty preserves the legacy
+         * single-provider contract by exposing only {@link #provider}.
+         */
+        private java.util.Set<Provider> selectableProviders =
+                java.util.EnumSet.noneOf(Provider.class);
+
+        /**
          * live-stt {@code /transcribe} absolute URL (e.g.
          * {@code https://10.99.0.2:8000/transcribe} over the WireGuard+mTLS tunnel,
          * ADR-0031 §D2). Required + must be http/https when {@code enabled=true};
@@ -450,15 +457,21 @@ public class AudioGatewayProperties {
                 throw new IllegalStateException(
                         "audio.gateway.direct-stt.provider must be internal or speechmatics");
             }
-            if (provider == Provider.INTERNAL) {
+            final java.util.Set<Provider> effectiveProviders = effectiveSelectableProviders();
+            if (!effectiveProviders.contains(provider)) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.provider must be included in selectable-providers");
+            }
+            if (effectiveProviders.contains(Provider.INTERNAL)) {
                 validateInternalProvider();
-            } else {
-                if (streaming.isEnabled()) {
-                    throw new IllegalStateException(
-                            "audio.gateway.direct-stt.streaming.enabled is not supported with "
-                                    + "provider=speechmatics; use the bounded aggregation path");
-                }
+            }
+            if (effectiveProviders.contains(Provider.SPEECHMATICS)) {
                 speechmatics.validate();
+            }
+            if (provider == Provider.SPEECHMATICS && streaming.isEnabled()) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.streaming.enabled is not supported when the "
+                                + "default provider is speechmatics; use the bounded REST path");
             }
             if (maxInFlight <= 0) {
                 throw new IllegalStateException(
@@ -497,6 +510,40 @@ public class AudioGatewayProperties {
 
         public void setProvider(final Provider provider) {
             this.provider = provider;
+        }
+
+        public java.util.Set<Provider> getSelectableProviders() {
+            return selectableProviders;
+        }
+
+        public void setSelectableProviders(final java.util.Set<Provider> selectableProviders) {
+            this.selectableProviders = selectableProviders == null || selectableProviders.isEmpty()
+                    ? java.util.EnumSet.noneOf(Provider.class)
+                    : java.util.EnumSet.copyOf(selectableProviders);
+        }
+
+        public java.util.Set<Provider> effectiveSelectableProviders() {
+            if (selectableProviders == null || selectableProviders.isEmpty()) {
+                return java.util.Set.of(provider);
+            }
+            return java.util.Set.copyOf(selectableProviders);
+        }
+
+        /** Resolve an omitted client value to the configured default without silent fallback. */
+        public String resolveRequestedProvider(final String requested) {
+            if (requested == null || requested.isBlank()) {
+                return provider.name().toLowerCase(java.util.Locale.ROOT);
+            }
+            final Provider parsed;
+            try {
+                parsed = Provider.valueOf(requested.trim().toUpperCase(java.util.Locale.ROOT));
+            } catch (final IllegalArgumentException ex) {
+                throw new IllegalArgumentException("Unsupported STT provider", ex);
+            }
+            if (!effectiveSelectableProviders().contains(parsed)) {
+                throw new IllegalArgumentException("STT provider is not selectable");
+            }
+            return parsed.name().toLowerCase(java.util.Locale.ROOT);
         }
 
         public String getTranscribeUrl() {

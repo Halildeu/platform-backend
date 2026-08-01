@@ -47,7 +47,8 @@ import static org.springframework.security.test.web.reactive.server.SecurityMock
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureWebTestClient
 @TestPropertySource(properties = {
-        "spring.security.oauth2.resourceserver.jwt.issuer-uri=http://localhost:9999/realms/test"
+        "spring.security.oauth2.resourceserver.jwt.issuer-uri=http://localhost:9999/realms/test",
+        "audio.gateway.direct-stt.selectable-providers=internal,speechmatics"
 })
 class StartSessionContractTest {
 
@@ -225,8 +226,48 @@ class StartSessionContractTest {
                     assertThat(resp.chunkUploadUrl()).contains("/api/v1/audio-gateway/sessions/")
                             .endsWith("/chunks");
                     assertThat(resp.sessionStartMs()).isPositive();
+                    assertThat(resp.sttProvider()).isEqualTo("internal");
                 });
         verify(meetingAccessValidator).validate(eq(VALID_MEETING_ID), any(), any());
+    }
+
+    @Test
+    void explicitSpeechmaticsSelection_isStoredAndReadBack() {
+        final StartSessionRequest request = new StartSessionRequest(
+                VALID_MEETING_ID, "device-1", "tr", AudioFormat.WAV, 16000, 1,
+                "speechmatics");
+
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-speechmatics")
+                .bodyValue(request)
+                .exchange()
+                .expectStatus().isCreated()
+                .expectBody(StartSessionResponse.class)
+                .value(resp -> assertThat(resp.sttProvider()).isEqualTo("speechmatics"));
+    }
+
+    @Test
+    void invalidProvider_returns400WithoutMeetingLookup() {
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-invalid-provider")
+                .header("Content-Type", "application/json")
+                .bodyValue("""
+                        {
+                          "meetingId": "22222222-2222-4222-8222-222222222222",
+                          "deviceId": "device-1",
+                          "language": "tr",
+                          "audioFormat": "WAV",
+                          "sampleRateHz": 16000,
+                          "channels": 1,
+                          "sttProvider": "unknown"
+                        }
+                        """)
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_VALIDATION));
     }
 
     @Test

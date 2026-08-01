@@ -138,6 +138,7 @@ final class DirectSttAudioWindowAggregator {
             String meetingId,
             String deviceId,
             String language,
+            String sttProvider,
             int sampleRateHz,
             int channels,
             String correlationId,
@@ -155,6 +156,7 @@ final class DirectSttAudioWindowAggregator {
         private final String meetingId;
         private final String deviceId;
         private final String language;
+        private final String sttProvider;
         private final int sampleRateHz;
         private final int channels;
         private final int targetBytes;
@@ -174,6 +176,7 @@ final class DirectSttAudioWindowAggregator {
             this.meetingId = cmd.meetingId();
             this.deviceId = cmd.deviceId();
             this.language = cmd.language();
+            this.sttProvider = cmd.sttProvider();
             this.sampleRateHz = cmd.sampleRateHz();
             this.channels = cmd.channels();
             this.targetBytes = targetBytes;
@@ -219,6 +222,7 @@ final class DirectSttAudioWindowAggregator {
                     || !meetingId.equals(cmd.meetingId())
                     || !deviceId.equals(cmd.deviceId())
                     || !language.equals(cmd.language())
+                    || !sttProvider.equals(cmd.sttProvider())
                     || sampleRateHz != cmd.sampleRateHz()
                     || channels != cmd.channels()) {
                 throw new IllegalArgumentException(
@@ -259,6 +263,7 @@ final class DirectSttAudioWindowAggregator {
                     meetingId,
                     deviceId,
                     language,
+                    sttProvider,
                     sampleRateHz,
                     channels,
                     correlationId,

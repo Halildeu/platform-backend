@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.audiogateway.service.AudioChunkDispatcher;
 import com.example.audiogateway.service.DirectSttForwardingDispatcher;
-import com.example.audiogateway.service.DirectSttTranscriptionClient;
+import com.example.audiogateway.service.DirectSttProviderRegistry;
 import com.example.audiogateway.service.NoOpAudioChunkDispatcher;
 import com.example.audiogateway.service.RedisStreamsAudioChunkDispatcher;
 
@@ -83,6 +83,7 @@ class DirectSttWiringTest {
             ISSUER,
             "audio.gateway.direct-stt.enabled=true",
             "audio.gateway.direct-stt.provider=speechmatics",
+            "audio.gateway.direct-stt.selectable-providers=speechmatics",
             "audio.gateway.direct-stt.transcript-result-stream.enabled=true",
             "audio.gateway.direct-stt.speechmatics.api-key=test-key-not-a-secret"
     })
@@ -95,13 +96,15 @@ class DirectSttWiringTest {
         private AudioChunkDispatcher injectedDispatcher;
 
         @Autowired
-        private DirectSttTranscriptionClient transcriptionClient;
+        private DirectSttProviderRegistry providerRegistry;
 
         @Test
-        void speechmaticsAdapterIsSelectedAndInternalClientIsAbsent() {
+        void speechmaticsAdapterIsSelected() {
             assertThat(injectedDispatcher).isInstanceOf(DirectSttForwardingDispatcher.class);
-            assertThat(transcriptionClient.providerId()).isEqualTo("speechmatics");
-            assertThat(ctx.containsBean("directSttWebClient")).isFalse();
+            assertThat(providerRegistry.require("speechmatics").providerId())
+                    .isEqualTo("speechmatics");
+            assertThat(providerRegistry.selectableProviderIds()).containsExactly("speechmatics");
+            assertThat(ctx.containsBean("directSttWebClient")).isTrue();
         }
     }
 
