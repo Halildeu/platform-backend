@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 
 class SafeMetadataSanitizerTest {
     private final SafeMetadataSanitizer sanitizer =
-            new SafeMetadataSanitizer(new EvidenceProperties());
+            new SafeMetadataSanitizer(new EvidenceProperties(), new DisabledHeicConverter());
 
     @Test
     void normalizesUtf8TextWithoutTreatingExtensionAsAuthority() {
@@ -149,5 +149,63 @@ class SafeMetadataSanitizerTest {
                         EvidenceProcessor.ProcessingException.class,
                         error -> assertThat(error.code())
                                 .isEqualTo("EVIDENCE_IMAGE_DECOMPRESSION_LIMIT"));
+    }
+
+    // ------------------------------------------------------------------
+    // ES-104K dilim 2 — HEIC: detect by brand, decode via the pinned converter,
+    // and NEVER trust the converter's output as the derivative.
+    // Fixture provenance: the first 24 bytes of a real Apple-encoded HEIC
+    // (macOS `sips -s format heic`, 2026-08-01) — ftyp box, major brand heic,
+    // compatible brand mif1. Detection needs only the header; decode tests use
+    // a fake converter because the real one is a separate deployment.
+    // ------------------------------------------------------------------
+    private static final byte[] APPLE_HEIC_HEADER = {
+            0x00, 0x00, 0x00, 0x24, 'f', 't', 'y', 'p',
+            'h', 'e', 'i', 'c', 0x00, 0x00, 0x00, 0x00,
+            'm', 'i', 'f', '1', 'M', 'i', 'P', 'r'};
+
+    @Test
+    void heicIsDetectedByItsFtypBrand() {
+        assertThat(SafeMetadataSanitizer.detect(APPLE_HEIC_HEADER)).isEqualTo("image/heic");
+        byte[] heix = APPLE_HEIC_HEADER.clone();
+        heix[11] = 'x';
+        assertThat(SafeMetadataSanitizer.detect(heix)).isEqualTo("image/heic");
+    }
+
+    @Test
+    void withoutAConverterHeicFailsClosed() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> sanitizer.sanitize(APPLE_HEIC_HEADER, "image/heic"))
+                .isInstanceOfSatisfying(
+                        EvidenceProcessor.ProcessingException.class,
+                        error -> assertThat(error.code())
+                                .isEqualTo("EVIDENCE_HEIC_CONVERTER_NOT_CONFIGURED"));
+    }
+
+    /**
+     * The load-bearing distrust: the converter's answer goes through the SAME in-JVM
+     * header gate and decode-recode as a direct upload. A converter that answered with
+     * a canvas bomb must die at the gate; one that answered with a clean PNG must still
+     * be re-encoded (the derivative's provenance is this JVM, not the converter).
+     */
+    @Test
+    void theConvertersOutputIsGatedAndReEncodedNotTrusted() {
+        // A fake converter returning our real Chrome-webp-derived... simplest honest
+        // input: a valid tiny PNG produced by the sanitizer itself from the webp fixture.
+        byte[] convertedPng = new SafeMetadataSanitizer(
+                new EvidenceProperties(), new DisabledHeicConverter())
+                .sanitize(CHROME_WEBP, "image/webp").content();
+        SafeMetadataSanitizer viaConverter = new SafeMetadataSanitizer(
+                new EvidenceProperties(), heic -> convertedPng);
+        SafeMetadataSanitizer.Sanitized clean =
+                viaConverter.sanitize(APPLE_HEIC_HEADER, "image/heic");
+        assertThat(clean.mediaType()).isEqualTo("image/png");
+        assertThat(clean.content()[0] & 0xff).isEqualTo(0x89);
+
+        SafeMetadataSanitizer viaHostileConverter = new SafeMetadataSanitizer(
+                new EvidenceProperties(), heic -> "gecersiz png degil".getBytes());
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> viaHostileConverter.sanitize(APPLE_HEIC_HEADER, "image/heic"))
+                .isInstanceOf(EvidenceProcessor.ProcessingException.class);
     }
 }

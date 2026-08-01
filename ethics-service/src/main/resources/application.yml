@@ -140,6 +140,7 @@ ethics:
       max-decoded-image-pixels: ${ETHICS_EVIDENCE_MAX_IMAGE_PIXELS:40000000}
       max-pdf-pages: ${ETHICS_EVIDENCE_MAX_PDF_PAGES:100}
       pdf-render-dpi: ${ETHICS_EVIDENCE_PDF_RENDER_DPI:150}
+      heic-converter-url: ${ETHICS_EVIDENCE_HEIC_CONVERTER_URL:}
       scanner-digest: ${ETHICS_EVIDENCE_SCANNER_DIGEST:}
       sanitizer-digest: ${ETHICS_EVIDENCE_SANITIZER_DIGEST:}
       parser-digest: ${ETHICS_EVIDENCE_PARSER_DIGEST:}
