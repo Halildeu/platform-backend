@@ -6,7 +6,13 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.6</version>
+        <!-- ES-306 (#2665): 3.5.6 carried four Critical findings in the running image —
+             three in tomcat-embed-core (10.1.46) and one in spring-security-web (6.5.5),
+             all fixed upstream. Bumped within the same minor line so the change is a
+             patch train rather than a migration; the sibling services stay on 3.5.6 for
+             now and move on their own gates. Verified after the bump by re-resolving the
+             two artefacts, not by trusting the release notes. -->
+        <version>3.5.16</version>
         <relativePath/>
     </parent>
     <groupId>com.example</groupId>
