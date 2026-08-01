@@ -50,6 +50,7 @@ class AcknowledgementIntegrationTest {
     @Autowired EthicsMessageRepository messages;
     @Autowired AuditOutboxRepository audit;
     @Autowired AckNetWorker net;
+    @Autowired com.example.ethics.service.EthicsService ethicsService;
     @Autowired jakarta.persistence.EntityManager entityManager;
     @Autowired com.example.ethics.repository.ReporterAccessGrantRepository grants;
     @Autowired org.springframework.transaction.support.TransactionTemplate transactions;
@@ -157,6 +158,32 @@ class AcknowledgementIntegrationTest {
 
         // A second cycle finds nothing: the stamp closed the window.
         assertThat(net.runCycle(Instant.now())).isZero();
+        assertThat(dispatchAuditPayloads(caseId)).hasSize(1);
+    }
+
+    /**
+     * The 2026-08-01 live race, reproduced at its essence: two dispatch attempts for the
+     * same case (a second poller, a crash-rerun). The message stays single via
+     * idempotency; what this pins is the LEDGER — the dispatch record rides the
+     * acknowledgement stamp, so the losing attempt writes nothing.
+     */
+    @Test
+    void aSecondDispatchAttemptWritesNoSecondLedgerEntry() throws Exception {
+        UUID caseId = createCase("OTHER");
+        transactions.executeWithoutResult(tx -> entityManager.createNativeQuery(
+                        "update ethics_cases set created_at = :aged where id = :id")
+                .setParameter("aged", Instant.now().minusSeconds(6 * 86_400 + 3_600))
+                .setParameter("id", caseId)
+                .executeUpdate());
+
+        assertThat(net.runCycle(Instant.now())).isEqualTo(1);
+        // Simulate the second poller: replay the SAME dispatch (same key, same body —
+        // both pollers render the same template). The idempotent message replays, the
+        // callback must not fire, the ledger must not grow.
+        String sentBody = messages.findAllByCaseIdAndVisibilityInOrderByCreatedAtAsc(
+                caseId, java.util.List.of("REPORTER_VISIBLE")).get(0).getBody();
+        ethicsService.systemReply(ORG, caseId, "ack-net-" + caseId, sentBody,
+                () -> { throw new AssertionError("damgayı vurmayan çağrı kayıt yazamaz"); });
         assertThat(dispatchAuditPayloads(caseId)).hasSize(1);
     }
 

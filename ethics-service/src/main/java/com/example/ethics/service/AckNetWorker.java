@@ -111,11 +111,17 @@ public class AckNetWorker {
         }
         String body = acknowledgements.fill(template.getBody(), item);
         // One deterministic key per case: a rerun after a crash replays idempotently.
-        ethics.systemReply(item.getOrgId(), caseId, "ack-net-" + caseId, body);
-        acknowledgements.appendDispatchAudit(
-                item.getOrgId(), caseId, template.getId(), template.getVersion(),
-                "AUTOMATIC", List.of());
-        dispatched.increment();
-        return true;
+        // The dispatch record rides the acknowledgement stamp itself — only the call
+        // that actually stamped writes it, so a concurrent second poller (the 2026-08-01
+        // live race) can no longer produce a duplicate ledger entry.
+        boolean[] stamped = {false};
+        ethics.systemReply(item.getOrgId(), caseId, "ack-net-" + caseId, body, () -> {
+            acknowledgements.appendDispatchAudit(
+                    item.getOrgId(), caseId, template.getId(), template.getVersion(),
+                    "AUTOMATIC", List.of());
+            stamped[0] = true;
+        });
+        if (stamped[0]) dispatched.increment();
+        return stamped[0];
     }
 }
