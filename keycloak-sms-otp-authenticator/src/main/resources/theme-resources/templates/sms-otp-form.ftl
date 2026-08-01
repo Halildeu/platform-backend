@@ -1,7 +1,9 @@
 <#import "template.ftl" as layout>
 <@layout.registrationLayout displayMessage=true; section>
     <#if section = "header">
-        ${msg("smsOtpFormTitle")}
+        <#-- The channel picks the wording; both lanes render this one template. -->
+        <#assign otpChannel = otpChannel!'sms'>
+        ${msg(otpChannel + "OtpFormTitle")}
     <#elseif section = "form">
         <form id="kc-sms-otp-form" class="${properties.kcFormClass!}" action="${url.loginAction}" method="post">
             <div class="${properties.kcFormGroupClass!}">
@@ -9,7 +11,7 @@
                     <label for="smsOtp" class="${properties.kcLabelClass!}">${msg("smsOtpLabel")}</label>
                 </div>
                 <div class="${properties.kcInputWrapperClass!}">
-                    <p>${msg("smsOtpInstruction", maskedPhone!'***')}</p>
+                    <p>${msg(otpChannel + "OtpInstruction", maskedRecipient!'***')}</p>
                     <input id="smsOtp" name="smsOtp" type="text" inputmode="numeric"
                            pattern="[0-9]*" maxlength="6" autocomplete="one-time-code"
                            class="${properties.kcInputClass!}" autofocus autocapitalize="off"/>
