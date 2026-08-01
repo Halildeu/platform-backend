@@ -196,7 +196,9 @@ class MeetingRecordingFinishedOutboxPostgresIntegrationTest {
                 org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
         return new MeetingService(
                 meetingRepository, sessionRepository,
-                mock(MeetingActionRepository.class), mock(MeetingDecisionRepository.class),
+                mock(MeetingActionRepository.class),
+                mock(com.example.meeting.repository.MeetingAgendaItemRepository.class),
+                mock(MeetingDecisionRepository.class),
                 outboxRepository, mock(MeetingAnalysisRunRepository.class),
                 mock(com.example.meeting.service.MeetingSessionErasureService.class),
                 authzProvider, false, false);

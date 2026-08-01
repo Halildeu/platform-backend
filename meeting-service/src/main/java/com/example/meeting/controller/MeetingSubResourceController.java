@@ -4,6 +4,9 @@ import com.example.commonauth.openfga.RequireModule;
 import com.example.meeting.dto.v1.admin.MeetingActionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingActionResponse;
 import com.example.meeting.dto.v1.admin.MeetingActionUpdateRequest;
+import com.example.meeting.dto.v1.admin.MeetingAgendaItemCreateRequest;
+import com.example.meeting.dto.v1.admin.MeetingAgendaItemResponse;
+import com.example.meeting.dto.v1.admin.MeetingAgendaItemUpdateRequest;
 import com.example.meeting.dto.v1.admin.MeetingDecisionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingDecisionResponse;
 import com.example.meeting.dto.v1.admin.MeetingDecisionUpdateRequest;
@@ -33,7 +36,7 @@ import java.util.UUID;
 
 /**
  * Sub-resource admin REST surface for a meeting — Faz 24 (#410). Sessions,
- * actions, and decisions all hang off {@code /meetings/{meetingId}/...}
+ * agenda items, actions, and decisions all hang off {@code /meetings/{meetingId}/...}
  * and reuse the {@code module:meeting} can_view / can_manage gate.
  *
  * <pre>
@@ -116,6 +119,52 @@ public class MeetingSubResourceController {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
         meetingService.deleteSession(tenant, meetingId, sessionId);
         return ResponseEntity.accepted().build();
+    }
+
+    // ───────────────────────────── Agenda ─────────────────────────────
+
+    @GetMapping("/agenda-items")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.VIEWER)
+    public List<MeetingAgendaItemResponse> listAgendaItems(@PathVariable UUID meetingId) {
+        AdminTenantContext tenant = tenantContextResolver.resolveRequired();
+        return meetingService.listAgendaItems(tenant, meetingId);
+    }
+
+    @GetMapping("/agenda-items/{agendaItemId}")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.VIEWER)
+    public MeetingAgendaItemResponse getAgendaItem(
+            @PathVariable UUID meetingId, @PathVariable UUID agendaItemId) {
+        AdminTenantContext tenant = tenantContextResolver.resolveRequired();
+        return meetingService.getAgendaItem(tenant, meetingId, agendaItemId);
+    }
+
+    @PostMapping("/agenda-items")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
+    public ResponseEntity<MeetingAgendaItemResponse> createAgendaItem(
+            @PathVariable UUID meetingId,
+            @Valid @RequestBody MeetingAgendaItemCreateRequest request) {
+        AdminTenantContext tenant = tenantContextResolver.resolveRequired();
+        MeetingAgendaItemResponse created = meetingService.createAgendaItem(tenant, meetingId, request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    @PutMapping("/agenda-items/{agendaItemId}")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
+    public MeetingAgendaItemResponse updateAgendaItem(
+            @PathVariable UUID meetingId,
+            @PathVariable UUID agendaItemId,
+            @Valid @RequestBody MeetingAgendaItemUpdateRequest request) {
+        AdminTenantContext tenant = tenantContextResolver.resolveRequired();
+        return meetingService.updateAgendaItem(tenant, meetingId, agendaItemId, request);
+    }
+
+    @DeleteMapping("/agenda-items/{agendaItemId}")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
+    public ResponseEntity<Void> deleteAgendaItem(
+            @PathVariable UUID meetingId, @PathVariable UUID agendaItemId) {
+        AdminTenantContext tenant = tenantContextResolver.resolveRequired();
+        meetingService.deleteAgendaItem(tenant, meetingId, agendaItemId);
+        return ResponseEntity.noContent().build();
     }
 
     // ───────────────────────────── Actions ─────────────────────────────

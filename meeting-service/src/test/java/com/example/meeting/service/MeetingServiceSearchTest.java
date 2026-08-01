@@ -10,6 +10,7 @@ import com.example.meeting.dto.v1.admin.MeetingSearchCriteria;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAgendaItemRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.example.meeting.repository.MeetingRepository;
@@ -41,6 +42,7 @@ class MeetingServiceSearchTest {
     @Mock private MeetingRepository meetingRepository;
     @Mock private MeetingSessionRepository sessionRepository;
     @Mock private MeetingActionRepository actionRepository;
+    @Mock private MeetingAgendaItemRepository agendaItemRepository;
     @Mock private MeetingDecisionRepository decisionRepository;
     @Mock private MeetingEventOutboxRepository eventOutboxRepository;
     @Mock private com.example.meeting.repository.MeetingAnalysisRunRepository analysisRunRepository;
@@ -55,6 +57,7 @@ class MeetingServiceSearchTest {
                 meetingRepository,
                 sessionRepository,
                 actionRepository,
+                agendaItemRepository,
                 decisionRepository,
                 eventOutboxRepository,
                 analysisRunRepository,
