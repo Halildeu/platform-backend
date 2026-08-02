@@ -47,6 +47,7 @@ public class EthicsService {
     private final UserDirectoryClient directory;
     private final com.example.ethics.intake.IntakeChannelGate intakeChannel;
     private final com.example.ethics.intake.ReportModePolicy reportModes;
+    private final RetaliationMonitoringService retaliationMonitoring;
     private final com.example.ethics.identity.ReporterIdentityService reporterIdentities;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
@@ -63,11 +64,13 @@ public class EthicsService {
             com.example.ethics.repository.CaseWaitingReasonRepository waits,
             com.example.ethics.intake.IntakeChannelGate intakeChannel,
             com.example.ethics.intake.ReportModePolicy reportModes,
+            RetaliationMonitoringService retaliationMonitoring,
             com.example.ethics.identity.ReporterIdentityService reporterIdentities) {
         this.sla=sla;
         this.waits=waits;
         this.intakeChannel=intakeChannel;
         this.reportModes=reportModes;
+        this.retaliationMonitoring=retaliationMonitoring;
         this.reporterIdentities=reporterIdentities;
         this.handles=handles;
         this.directory=directory;
@@ -380,6 +383,24 @@ public class EthicsService {
             item.transitionTo(to,outcome,Instant.now());
         }
         cases.saveAndFlush(item);
+        if(CaseLifecycle.CLOSED.equals(item.getStatus()) && item.getClosedAt()!=null) {
+            // ES-213 (#3375). The duty to the reporter outlives the investigation: art. 19
+            // prohibits retaliation and art. 21 sets out the protection owed, and neither
+            // stops when a finding is filed. Opening the three checks here rather than
+            // leaving it to whoever remembers is the whole point — a monitoring duty
+            // discharged from memory is discharged for the cases people feel bad about and
+            // forgotten for the rest.
+            //
+            // Dated from the case's own closedAt, not from now, so a backfilled or
+            // late-reconciled closure still owes three, six and twelve months from the day
+            // it actually ended. Idempotent, so a retried close does not produce six checks
+            // and inflate every "outstanding monitoring" number the programme reports.
+            //
+            // Reopening does not remove existing checks. The reporter was exposed during
+            // the period the case was closed, and deleting that schedule would erase the
+            // only record that anyone was supposed to be watching.
+            retaliationMonitoring.openScheduleFor(caseId, item.getOrgId(), item.getClosedAt());
+        }
         if(closingMessage!=null) {
             // After the case is saved, not before: writing the message stamps the
             // acknowledgement, and that statement clears the persistence context — which
