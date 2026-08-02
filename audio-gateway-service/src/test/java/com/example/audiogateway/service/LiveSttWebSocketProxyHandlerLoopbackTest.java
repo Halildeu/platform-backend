@@ -590,16 +590,71 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         final WebSocketMessage terminal = textFrame(
                 factory,
                 "{\"message\":\"EndOfStream\",\"last_seq_no\":1}");
+        final WebSocketMessage ping = new WebSocketMessage(
+                WebSocketMessage.Type.PING,
+                factory.wrap(new byte[0]));
 
         StepVerifier.create(LiveSttWebSocketProxyHandler.completeSpeechmaticsUpload(
                         Flux.concat(Flux.just(audio, marker), Flux.never()),
-                        Mono.just(terminal)))
+                        LiveSttWebSocketProxyHandler.speechmaticsTerminalMessages(
+                                Mono.just(terminal), Mono.just(ping))))
+                .expectNext(audio, terminal, ping)
+                .verifyComplete();
+    }
+
+    @Test
+    void speechmaticsUploadCompletionDoesNotDependOnTerminalMessageType() {
+        final NettyDataBufferFactory factory =
+                new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
+        final WebSocketMessage audio = binaryFrame(factory, 0L);
+        final WebSocketMessage marker = textFrame(
+                factory,
+                LiveSttWebSocketProxyHandler.SPEECHMATICS_UPLOAD_TERMINAL_MARKER);
+        final WebSocketMessage terminal = binaryFrame(factory, 1L);
+
+        StepVerifier.create(LiveSttWebSocketProxyHandler.completeSpeechmaticsUpload(
+                        Flux.concat(Flux.just(audio, marker), Flux.never()),
+                        Flux.just(terminal)))
                 .expectNext(audio, terminal)
                 .verifyComplete();
     }
 
     @Test
-    void speechmaticsOutboundPingsAfterProviderTerminalThenCompletesForTransportFlush() {
+    void speechmaticsTerminalMessagesFailClosedWithoutEofAndDoNotSubscribeFlush() {
+        final AtomicBoolean flushSubscribed = new AtomicBoolean();
+
+        StepVerifier.create(LiveSttWebSocketProxyHandler.speechmaticsTerminalMessages(
+                        Mono.empty(),
+                        Mono.<WebSocketMessage>never()
+                                .doOnSubscribe(ignored -> flushSubscribed.set(true))))
+                .expectError(LiveSttWebSocketProxyHandler.TerminalDrainException.class)
+                .verify();
+
+        assertThat(flushSubscribed).isFalse();
+    }
+
+    @Test
+    void speechmaticsTerminalFailurePropagatesWithoutWaitingForOpenClientReceive() {
+        final NettyDataBufferFactory factory =
+                new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
+        final WebSocketMessage audio = binaryFrame(factory, 0L);
+        final WebSocketMessage marker = textFrame(
+                factory,
+                LiveSttWebSocketProxyHandler.SPEECHMATICS_UPLOAD_TERMINAL_MARKER);
+
+        StepVerifier.create(LiveSttWebSocketProxyHandler.completeSpeechmaticsUpload(
+                        Flux.concat(Flux.just(audio, marker), Flux.never()),
+                        Flux.error(new SpeechmaticsLiveProtocolAdapter
+                                .SpeechmaticsAudioAcknowledgementException(
+                                "fixture acknowledgement timeout"))))
+                .expectNext(audio)
+                .expectError(SpeechmaticsLiveProtocolAdapter
+                        .SpeechmaticsAudioAcknowledgementException.class)
+                .verify();
+    }
+
+    @Test
+    void speechmaticsOutboundKeepsInlineTerminalOrderAfterOpenClientReceive() {
         final NettyDataBufferFactory factory =
                 new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
         final WebSocketMessage start = textFrame(
@@ -618,10 +673,11 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         final Flux<WebSocketMessage> completedUpload =
                 LiveSttWebSocketProxyHandler.completeSpeechmaticsUpload(
                         Flux.concat(Flux.just(audio, marker), Flux.never()),
-                        Mono.just(terminal));
+                        LiveSttWebSocketProxyHandler.speechmaticsTerminalMessages(
+                                Mono.just(terminal), Mono.just(ping)));
 
         StepVerifier.create(LiveSttWebSocketProxyHandler.speechmaticsOutbound(
-                        Mono.just(start), completedUpload, Mono.just(ping)))
+                        Mono.just(start), completedUpload))
                 .expectNext(start, audio, terminal, ping)
                 .verifyComplete();
     }

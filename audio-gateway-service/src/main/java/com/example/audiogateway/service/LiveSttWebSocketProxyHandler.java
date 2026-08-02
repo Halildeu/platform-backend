@@ -368,18 +368,31 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         ? frames.takeUntil(message -> eofSent.get())
                         : completeSpeechmaticsUpload(
                                 frames,
-                                Mono.defer(() -> speechmatics.endMessageWhenAcknowledged(
+                                speechmaticsTerminalMessages(
+                                        Mono.defer(() -> speechmatics.endMessageWhenAcknowledged(
                                                 speechmaticsFrameCount.get(),
                                                 Duration.ofMillis(properties.getDirectStt()
                                                         .getSpeechmatics()
-                                                        .getAudioAckTimeoutMs()))
+                                                        .getAudioAckTimeoutMs())))
                                         .doOnNext(ignored -> log.info(
                                                 "Speechmatics EOF dispatched sessionId={} "
                                                         + "frames={} acknowledged={}",
                                                 record.sessionId(),
                                                 speechmaticsFrameCount.get(),
                                                 speechmatics.lastAcknowledgedAudioSequence()))
-                                        .map(upstream::textMessage))))
+                                        .map(upstream::textMessage)
+                                        .doOnError(error -> log.warn(
+                                                "Speechmatics EOF creation failed err={} "
+                                                        + "sessionId={} frames={}",
+                                                error.getClass().getSimpleName(),
+                                                record.sessionId(),
+                                                speechmaticsFrameCount.get())),
+                                        Mono.defer(() -> speechmaticsTerminalFlush(upstream)
+                                                .doOnNext(ignored -> log.info(
+                                                        "Speechmatics terminal flush dispatched "
+                                                                + "sessionId={} frames={}",
+                                                        record.sessionId(),
+                                                        speechmaticsFrameCount.get()))))))
                 .doFinally(signal -> clientControlEvents.tryEmitComplete())
                 // The AI endpoint can spend minutes loading pinned models. Do not admit,
                 // account or forward any desktop audio until it proves the exact source
@@ -432,20 +445,41 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 : speechmaticsOutbound(
                         Mono.just(upstream.textMessage(
                                 speechmatics.startMessage(record.sampleRateHz()))),
-                        framesToUpstream,
-                        Mono.defer(() -> eofSent.get()
-                                ? speechmaticsTerminalFlush(upstream)
-                                        .doOnNext(ignored -> log.info(
-                                                "Speechmatics terminal flush dispatched "
-                                                        + "sessionId={} frames={}",
-                                                record.sessionId(),
-                                                speechmaticsFrameCount.get()))
-                                : Mono.empty()));
-        final Mono<Void> upload = upstream.send(outbound)
+                        framesToUpstream);
+        final Mono<Void> upstreamWrite = speechmatics == null
+                ? upstream.send(outbound)
+                : upstream.send(outbound)
+                .doOnSuccess(ignored -> {
+                    if (eofSent.get()) {
+                        log.info(
+                                "Speechmatics terminal upload flushed sessionId={} frames={}",
+                                record.sessionId(),
+                                speechmaticsFrameCount.get());
+                    }
+                })
+                .doOnError(error -> {
+                    if (eofSent.get()) {
+                        log.warn(
+                                "Speechmatics terminal upload failed err={} sessionId={} frames={}",
+                                error.getClass().getSimpleName(),
+                                record.sessionId(),
+                                speechmaticsFrameCount.get());
+                    }
+                })
+                .doOnCancel(() -> {
+                    if (eofSent.get()) {
+                        log.warn(
+                                "Speechmatics terminal upload cancelled before flush "
+                                        + "sessionId={} frames={}",
+                                record.sessionId(),
+                                speechmaticsFrameCount.get());
+                    }
+                });
+        final Mono<Void> upload = upstreamWrite
                 .then(Mono.defer(() -> eofSent.get()
-                        // The RFC 6455 ping is application-inert; its separate write cycle
-                        // flushes the preceding provider EOF before send completion. The upload
-                        // leg must remain unable to win before receive relays drained.
+                        // The RFC 6455 ping is application-inert and follows EndOfStream in the
+                        // same serialized marker expansion. The upload leg remains unable to win
+                        // before the receive leg relays the provider-authoritative drained event.
                         ? drainedRelayed.asMono()
                                 .timeout(
                                         drainTimeout,
@@ -474,20 +508,32 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
 
     static Flux<WebSocketMessage> completeSpeechmaticsUpload(
             final Flux<WebSocketMessage> frames,
-            final Mono<WebSocketMessage> terminalMessage) {
-        final AtomicBoolean terminalEmitted = new AtomicBoolean();
+            final Flux<WebSocketMessage> terminalMessages) {
+        final Sinks.One<Void> terminalCompleted = Sinks.one();
         return frames
                 .concatMap(message -> isSpeechmaticsUploadTerminalMarker(message)
-                        ? terminalMessage.doOnNext(ignored -> terminalEmitted.set(true))
+                        ? terminalMessages.concatWith(Mono.defer(() -> {
+                            terminalCompleted.emitEmpty(Sinks.EmitFailureHandler.FAIL_FAST);
+                            return Mono.empty();
+                        }))
                         : Mono.just(message), 1)
-                .takeUntil(ignored -> terminalEmitted.get());
+                // Terminal completion, rather than a message type, cuts the still-open desktop
+                // receive source after every terminal frame has entered this serialized upload.
+                .takeUntilOther(terminalCompleted.asMono());
+    }
+
+    static Flux<WebSocketMessage> speechmaticsTerminalMessages(
+            final Mono<WebSocketMessage> eofMessage,
+            final Mono<WebSocketMessage> terminalFlush) {
+        return eofMessage
+                .switchIfEmpty(Mono.error(new TerminalDrainException()))
+                .flatMapMany(message -> Flux.concat(Mono.just(message), terminalFlush));
     }
 
     static Flux<WebSocketMessage> speechmaticsOutbound(
             final Mono<WebSocketMessage> startMessage,
-            final Flux<WebSocketMessage> completedUpload,
-            final Mono<WebSocketMessage> terminalFlush) {
-        return Flux.concat(startMessage, completedUpload, terminalFlush);
+            final Flux<WebSocketMessage> completedUpload) {
+        return Flux.concat(startMessage, completedUpload);
     }
 
     static Mono<WebSocketMessage> speechmaticsTerminalFlush(
@@ -969,7 +1015,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         }
     }
 
-    private static final class TerminalDrainException extends RuntimeException {
+    static final class TerminalDrainException extends RuntimeException {
         private TerminalDrainException() {
             super("live STT terminal drain did not complete");
         }
