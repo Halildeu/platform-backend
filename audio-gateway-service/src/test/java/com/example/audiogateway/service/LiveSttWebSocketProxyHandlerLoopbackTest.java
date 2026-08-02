@@ -627,14 +627,30 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     }
 
     @Test
-    void speechmaticsEofKeepsProviderSocketOpenUntilDelayedTerminal() {
+    void speechmaticsTerminalFlushIsAvailableWithoutSchedulerDelay() {
+        final NettyDataBufferFactory factory =
+                new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
+        final WebSocketMessage ping = new WebSocketMessage(
+                WebSocketMessage.Type.PING,
+                factory.wrap(new byte[0]));
+        final WebSocketSession upstream = mock(WebSocketSession.class);
+        when(upstream.pingMessage(any())).thenReturn(ping);
+
+        StepVerifier.withVirtualTime(() ->
+                        LiveSttWebSocketProxyHandler.speechmaticsTerminalFlush(upstream))
+                .expectNext(ping)
+                .expectComplete()
+                .verify(Duration.ofSeconds(5L));
+        verify(upstream).pingMessage(any());
+    }
+
+    @Test
+    void speechmaticsEofFlushesThenKeepsProviderSocketOpenUntilTerminal() {
         final ObjectMapper mapper = new ObjectMapper();
         final AtomicLong audioSequence = new AtomicLong();
         final AtomicLong terminalSequence = new AtomicLong(-1L);
         final AtomicBoolean terminalFlushObserved = new AtomicBoolean();
         final AtomicBoolean terminalFlushAfterEofObserved = new AtomicBoolean();
-        final AtomicLong terminalDispatchedNanos = new AtomicLong(-1L);
-        final AtomicLong terminalFlushNanos = new AtomicLong(-1L);
         upstreamServer = HttpServer.create()
                 .host("127.0.0.1")
                 .port(0)
@@ -649,7 +665,6 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                             if (frame instanceof PingWebSocketFrame) {
                                 terminalFlushObserved.set(true);
                                 terminalFlushAfterEofObserved.set(terminalSequence.get() >= 0L);
-                                terminalFlushNanos.set(System.nanoTime());
                                 return Flux.concat(
                                         Flux.just(new PongWebSocketFrame(Unpooled.EMPTY_BUFFER)),
                                         Mono.delay(Duration.ofSeconds(3L))
@@ -672,7 +687,6 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                             }
                             if ("EndOfStream".equals(type)) {
                                 terminalSequence.set(control.path("last_seq_no").asLong(-1L));
-                                terminalDispatchedNanos.set(System.nanoTime());
                                 return Flux.empty();
                             }
                             return Flux.empty();
@@ -739,8 +753,6 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         assertThat(terminalSequence).hasValue(32L);
         assertThat(terminalFlushObserved).isTrue();
         assertThat(terminalFlushAfterEofObserved).isTrue();
-        assertThat(terminalFlushNanos.get() - terminalDispatchedNanos.get())
-                .isGreaterThanOrEqualTo(Duration.ofMillis(10L).toNanos());
         assertThat(relayedText).anyMatch(event -> event.contains("\"type\":\"ready\""));
         assertThat(relayedText).contains(
                 audioAcknowledgement(0L),
