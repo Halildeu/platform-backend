@@ -125,7 +125,7 @@ class SpeechmaticsRealtimeTranscriptionClientTest {
         assertThat(start.path("audio_format").path("sample_rate").asInt()).isEqualTo(16_000);
         assertThat(start.path("transcription_config").path("language").asText())
                 .isEqualTo("tr");
-        assertThat(mapper.readTree(controls.get(1)).path("last_seq_no").asInt()).isEqualTo(1);
+        assertThat(mapper.readTree(controls.get(1)).path("last_seq_no").asInt()).isZero();
     }
 
     @Test

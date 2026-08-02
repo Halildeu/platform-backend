@@ -67,6 +67,16 @@ class SpeechmaticsLiveProtocolAdapterTest {
                 "{\"type\":\"drained\"}");
     }
 
+    @Test
+    void endsWithTheZeroBasedSequenceOfTheLastAudioFrame() throws Exception {
+        final SpeechmaticsLiveProtocolAdapter adapter = adapter();
+
+        assertThat(objectMapper.readTree(adapter.endMessage(1L)).path("last_seq_no").asLong())
+                .isZero();
+        assertThat(objectMapper.readTree(adapter.endMessage(131L)).path("last_seq_no").asLong())
+                .isEqualTo(130L);
+    }
+
     private SpeechmaticsLiveProtocolAdapter adapter() {
         final AudioGatewayProperties.DirectStt.Speechmatics config =
                 new AudioGatewayProperties.DirectStt.Speechmatics();

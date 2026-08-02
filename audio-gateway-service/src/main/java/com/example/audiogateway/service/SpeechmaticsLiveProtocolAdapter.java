@@ -62,8 +62,12 @@ final class SpeechmaticsLiveProtocolAdapter {
     String endMessage(final long audioFrameCount) {
         final ObjectNode root = objectMapper.createObjectNode();
         root.put("message", "EndOfStream");
-        root.put("last_seq_no", audioFrameCount);
+        root.put("last_seq_no", lastAudioSequence(audioFrameCount));
         return encode(root);
+    }
+
+    private static long lastAudioSequence(final long audioFrameCount) {
+        return Math.max(0L, audioFrameCount - 1L);
     }
 
     List<String> translate(final String value, final long acceptedSamples) {
