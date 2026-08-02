@@ -218,11 +218,24 @@ public class EthicsService {
         if (identity == null) {
             return "none";
         }
-        return secrets.sha256(canonicalField(identity.fullName())
-                + canonicalField(identity.email())
-                + canonicalField(identity.phone())
-                + canonicalField(identity.unit())
-                + canonicalField(identity.note()));
+        // Every field but the name is optional, so most of these arrive null. canonicalField
+        // dereferences its argument, which made a confidential report carrying only a name
+        // — the ordinary case — throw before it reached any validation.
+        //
+        // A null and an empty string must not hash alike: "e-posta verilmedi" and "e-posta
+        // boş gönderildi" are different submissions, and collapsing them would let a retry
+        // that dropped a field replay as the original instead of conflicting.
+        return secrets.sha256(canonicalOptional(identity.fullName())
+                + canonicalOptional(identity.email())
+                + canonicalOptional(identity.phone())
+                + canonicalOptional(identity.unit())
+                + canonicalOptional(identity.note()));
+    }
+
+    /** {@link #canonicalField} for a field that may be absent. "-" cannot collide with a
+     *  length-prefixed value, so absent and empty stay distinguishable. */
+    private static String canonicalOptional(String value) {
+        return value == null ? "-" : canonicalField(value);
     }
 
     private static String canonicalField(String value) {
