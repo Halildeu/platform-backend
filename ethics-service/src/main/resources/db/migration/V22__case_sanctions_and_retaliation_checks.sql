@@ -83,9 +83,11 @@ CREATE TABLE ethics_case_sanctions (
 );
 
 CREATE INDEX ix_sanctions_case ON ethics_case_sanctions (case_id);
--- The read behind "what has been decided but not yet carried out".
-CREATE INDEX ix_sanctions_pending ON ethics_case_sanctions (org_id, applied_at)
-    WHERE applied_at IS NULL;
+-- The read behind "what has been decided but not yet carried out". The partial form
+-- (WHERE applied_at IS NULL) is Postgres-only and lives in db/vendor/postgresql; H2 backs
+-- the fast test slices and rejects the syntax outright, so the portable index goes here
+-- and the narrower one is added where it is supported.
+CREATE INDEX ix_sanctions_pending ON ethics_case_sanctions (org_id, applied_at);
 
 -- ---------------------------------------------------------------------------
 -- 2. Retaliation checks
@@ -136,9 +138,8 @@ CREATE TABLE ethics_retaliation_checks (
 );
 
 CREATE INDEX ix_retaliation_case ON ethics_retaliation_checks (case_id);
--- The sweeper read: what is due and not yet concluded.
-CREATE INDEX ix_retaliation_due ON ethics_retaliation_checks (org_id, due_at)
-    WHERE closed_at IS NULL;
+-- The sweeper read: what is due and not yet concluded. Partial form in db/vendor/postgresql.
+CREATE INDEX ix_retaliation_due ON ethics_retaliation_checks (org_id, due_at);
 
 -- ---------------------------------------------------------------------------
 -- 3. What retaliation actually looks like
