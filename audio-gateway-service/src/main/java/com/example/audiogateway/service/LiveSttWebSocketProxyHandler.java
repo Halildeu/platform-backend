@@ -385,6 +385,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         eofAckObserved,
                         drainedObserved,
                         errorObserved,
+                        speechmaticsFrameCount,
                         transcriptWindow), 1)
                 .takeUntil(RelayedEvent::terminal)
                 // Admit desktop audio only after the validated ready event has entered
@@ -418,13 +419,29 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                                 Duration.ofMillis(properties.getDirectStt()
                                                         .getSpeechmatics()
                                                         .getAudioAckTimeoutMs()))
+                                        .doOnNext(ignored -> log.info(
+                                                "Speechmatics EOF dispatched sessionId={} "
+                                                        + "frames={} acknowledged={}",
+                                                record.sessionId(),
+                                                speechmaticsFrameCount.get(),
+                                                speechmatics.lastAcknowledgedAudioSequence()))
                                         .map(upstream::textMessage)
-                                : Mono.empty()));
+                                : Mono.empty()),
+                        Flux.defer(() -> eofSent.get()
+                                // Keep the provider send publisher subscribed after EndOfStream.
+                                // Completing it here lets a real provider close before its delayed
+                                // EndOfTranscript reaches the receive leg. Once drained has reached
+                                // the desktop, the download leg wins and cancels this pending tail.
+                                ? drainedRelayed.asMono()
+                                        .timeout(
+                                                drainTimeout,
+                                                Mono.error(new TerminalDrainException()))
+                                        .thenMany(Flux.never())
+                                : Flux.empty()));
         final Mono<Void> upload = upstream.send(outbound)
-                .then(Mono.defer(() -> eofSent.get()
-                        // Once drained has been relayed, keep this leg pending so the download
-                        // leg wins only after client.send(...) has completed. Without EOF, normal
-                        // client disconnect keeps the original first-completion cleanup behavior.
+                .then(Mono.defer(() -> speechmatics == null && eofSent.get()
+                        // The internal provider sends EOF through framesToUpstream, so its
+                        // send publisher may complete before the receive leg relays drained.
                         ? drainedRelayed.asMono().timeout(drainTimeout).then(Mono.never())
                         : Mono.empty()));
         final Mono<Void> download = client.send(relayedEvents.map(RelayedEvent::message))
@@ -482,6 +499,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             final AtomicBoolean eofAckObserved,
             final AtomicBoolean drainedObserved,
             final AtomicBoolean errorObserved,
+            final AtomicLong speechmaticsFrameCount,
             final LiveTranscriptWindowAccumulator transcriptWindow) {
         if (message instanceof CopiedUpstreamMessage.Text textMessage) {
             final String event = textMessage.value();
@@ -517,6 +535,10 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     return Mono.error(new IllegalArgumentException(
                             "live STT eof_ack violates terminal event order"));
                 }
+                log.info(
+                        "Speechmatics terminal acknowledged sessionId={} frames={}",
+                        record.sessionId(),
+                        speechmaticsFrameCount.get());
             }
             if (parsed instanceof UpstreamEvent.Partial) {
                 if (!readyObserved.get() || eofAckObserved.get() || drainedObserved.get()
@@ -582,6 +604,10 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     return Mono.error(new IllegalArgumentException(
                             "live STT drained violates terminal event order"));
                 }
+                log.info(
+                        "Speechmatics terminal drained sessionId={} frames={}",
+                        record.sessionId(),
+                        speechmaticsFrameCount.get());
             }
             return Mono.just(new RelayedEvent(
                     client.textMessage(event), drained, parsed instanceof UpstreamEvent.Ready, false));
