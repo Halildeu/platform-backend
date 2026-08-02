@@ -17,8 +17,11 @@ import com.example.audiogateway.dto.AudioFormat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.netty.buffer.Unpooled;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.PingWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.PongWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -59,6 +62,7 @@ import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 import reactor.netty.DisposableServer;
 import reactor.netty.http.server.HttpServer;
+import reactor.netty.http.server.WebsocketServerSpec;
 
 /**
  * Real reactor-netty client + server loopback regression guard for the Faz 24 #184
@@ -595,7 +599,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     }
 
     @Test
-    void speechmaticsOutboundCompletesAfterProviderTerminalForTransportFlush() {
+    void speechmaticsOutboundPingsAfterProviderTerminalThenCompletesForTransportFlush() {
         final NettyDataBufferFactory factory =
                 new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
         final WebSocketMessage start = textFrame(
@@ -608,14 +612,17 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         final WebSocketMessage terminal = textFrame(
                 factory,
                 "{\"message\":\"EndOfStream\",\"last_seq_no\":1}");
+        final WebSocketMessage ping = new WebSocketMessage(
+                WebSocketMessage.Type.PING,
+                factory.wrap(new byte[0]));
         final Flux<WebSocketMessage> completedUpload =
                 LiveSttWebSocketProxyHandler.completeSpeechmaticsUpload(
                         Flux.concat(Flux.just(audio, marker), Flux.never()),
                         Mono.just(terminal));
 
         StepVerifier.create(LiveSttWebSocketProxyHandler.speechmaticsOutbound(
-                        Mono.just(start), completedUpload))
-                .expectNext(start, audio, terminal)
+                        Mono.just(start), completedUpload, Mono.just(ping)))
+                .expectNext(start, audio, terminal, ping)
                 .verifyComplete();
     }
 
@@ -624,6 +631,10 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         final ObjectMapper mapper = new ObjectMapper();
         final AtomicLong audioSequence = new AtomicLong();
         final AtomicLong terminalSequence = new AtomicLong(-1L);
+        final AtomicBoolean terminalFlushObserved = new AtomicBoolean();
+        final AtomicBoolean terminalFlushAfterEofObserved = new AtomicBoolean();
+        final AtomicLong terminalDispatchedNanos = new AtomicLong(-1L);
+        final AtomicLong terminalFlushNanos = new AtomicLong(-1L);
         upstreamServer = HttpServer.create()
                 .host("127.0.0.1")
                 .port(0)
@@ -634,6 +645,16 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                                 return Flux.just(new TextWebSocketFrame(
                                         "{\"message\":\"AudioAdded\",\"seq_no\":"
                                                 + sequence + "}"));
+                            }
+                            if (frame instanceof PingWebSocketFrame) {
+                                terminalFlushObserved.set(true);
+                                terminalFlushAfterEofObserved.set(terminalSequence.get() >= 0L);
+                                terminalFlushNanos.set(System.nanoTime());
+                                return Flux.concat(
+                                        Flux.just(new PongWebSocketFrame(Unpooled.EMPTY_BUFFER)),
+                                        Mono.delay(Duration.ofSeconds(3L))
+                                                .map(ignored -> new TextWebSocketFrame(
+                                                        "{\"message\":\"EndOfTranscript\"}")));
                             }
                             if (!(frame instanceof TextWebSocketFrame text)) {
                                 return Flux.empty();
@@ -651,12 +672,11 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                             }
                             if ("EndOfStream".equals(type)) {
                                 terminalSequence.set(control.path("last_seq_no").asLong(-1L));
-                                return Mono.delay(Duration.ofSeconds(3L))
-                                        .map(ignored -> new TextWebSocketFrame(
-                                                "{\"message\":\"EndOfTranscript\"}"));
+                                terminalDispatchedNanos.set(System.nanoTime());
+                                return Flux.empty();
                             }
                             return Flux.empty();
-                        }))))
+                        })), WebsocketServerSpec.builder().handlePing(true).build()))
                 .bindNow();
 
         final AudioGatewayProperties properties = new AudioGatewayProperties();
@@ -717,6 +737,10 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
 
         assertThat(audioSequence).hasValue(32L);
         assertThat(terminalSequence).hasValue(32L);
+        assertThat(terminalFlushObserved).isTrue();
+        assertThat(terminalFlushAfterEofObserved).isTrue();
+        assertThat(terminalFlushNanos.get() - terminalDispatchedNanos.get())
+                .isGreaterThanOrEqualTo(Duration.ofMillis(10L).toNanos());
         assertThat(relayedText).anyMatch(event -> event.contains("\"type\":\"ready\""));
         assertThat(relayedText).contains(
                 audioAcknowledgement(0L),
