@@ -575,7 +575,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     }
 
     @Test
-    void speechmaticsEofUsesTheProviderAcknowledgedAudioSequence() {
+    void speechmaticsEofKeepsProviderSocketOpenUntilDelayedTerminal() {
         final ObjectMapper mapper = new ObjectMapper();
         final AtomicLong audioSequence = new AtomicLong();
         final AtomicLong terminalSequence = new AtomicLong(-1L);
@@ -606,8 +606,9 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                             }
                             if ("EndOfStream".equals(type)) {
                                 terminalSequence.set(control.path("last_seq_no").asLong(-1L));
-                                return Flux.just(new TextWebSocketFrame(
-                                        "{\"message\":\"EndOfTranscript\"}"));
+                                return Mono.delay(Duration.ofSeconds(3L))
+                                        .map(ignored -> new TextWebSocketFrame(
+                                                "{\"message\":\"EndOfTranscript\"}"));
                             }
                             return Flux.empty();
                         }))))

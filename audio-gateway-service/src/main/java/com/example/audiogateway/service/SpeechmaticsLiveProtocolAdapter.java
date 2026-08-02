@@ -95,6 +95,10 @@ final class SpeechmaticsLiveProtocolAdapter {
                         "Speechmatics did not acknowledge all audio before EndOfStream")));
     }
 
+    long lastAcknowledgedAudioSequence() {
+        return lastAcknowledgedAudioSequence.get();
+    }
+
     List<String> translate(final String value, final long acceptedSamples) {
         final JsonNode event;
         try {
