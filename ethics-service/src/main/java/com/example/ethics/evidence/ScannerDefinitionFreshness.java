@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -37,7 +37,16 @@ import org.springframework.stereotype.Component;
  * precisely in the quiet system where staleness is most dangerous.
  */
 @Component
-@ConditionalOnBean(ClamAvScanner.class)
+// Mirrors ClamAvScanner's OWN condition instead of @ConditionalOnBean(ClamAvScanner.class).
+// @ConditionalOnBean is order-sensitive and only reliable inside auto-configuration: on a
+// component-scanned bean it is evaluated during scanning, before ClamAvScanner is registered,
+// so it silently skips this component. Measured on 2026-08-02 — the image rolled out, the pod
+// went Ready, every other ethics_evidence_* metric appeared, and this gauge was simply absent
+// with no error anywhere. That is precisely the silent-degradation shape this gauge exists to
+// make visible, so it had no business having one of its own.
+@ConditionalOnExpression(
+        "'${ethics.evidence.processor.mode:disabled}' == 'clamav-reference'"
+        + " or '${ethics.evidence.processor.mode:disabled}' == 'pdf-cdr'")
 public class ScannerDefinitionFreshness {
 
     private static final Logger log = LoggerFactory.getLogger(ScannerDefinitionFreshness.class);

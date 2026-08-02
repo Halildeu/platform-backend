@@ -103,4 +103,20 @@ class ScannerDefinitionFreshnessTest {
                         meter.getId().getName().equals("ethics.evidence.scanner.definition.age.seconds")),
                 "the metric must exist so a PrometheusRule can alert on it");
     }
+
+    @Test
+    @DisplayName("the gauge is active under exactly the same condition as the scanner it measures")
+    void activationConditionMatchesTheScanner() {
+        var scannerCondition = ClamAvScanner.class.getAnnotation(
+                org.springframework.boot.autoconfigure.condition.ConditionalOnExpression.class);
+        var gaugeCondition = ScannerDefinitionFreshness.class.getAnnotation(
+                org.springframework.boot.autoconfigure.condition.ConditionalOnExpression.class);
+
+        assertTrue(scannerCondition != null && gaugeCondition != null,
+                "both beans must gate on an expression; @ConditionalOnBean is order-sensitive on "
+                        + "component-scanned classes and silently drops the bean");
+        assertEquals(scannerCondition.value(), gaugeCondition.value(),
+                "a scanner that runs without its freshness gauge is the exact silent state this "
+                        + "metric exists to expose — the two must switch on together");
+    }
 }
