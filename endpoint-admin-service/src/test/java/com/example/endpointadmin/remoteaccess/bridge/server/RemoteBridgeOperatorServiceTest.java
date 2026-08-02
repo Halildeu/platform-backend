@@ -168,6 +168,14 @@ class RemoteBridgeOperatorServiceTest {
         }
     }
 
+    private static void registerHelloReady(ControlStreamRegistry registry,
+                                           PeerIdentity peer,
+                                           ControlStreamHandle handle) {
+        registry.register(peer, handle);
+        assertTrue(registry.absorbAgentHello(peer, handle, () -> { }),
+                "the test transport must model a validated AgentHello before operator traffic");
+    }
+
     private static final class RecordingAuditSink implements RemoteBridgeAuditSink {
         final List<String> eventTypes = new ArrayList<>();
 
@@ -240,7 +248,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-policy", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         TrustEvidenceAssembler evidence = mock(TrustEvidenceAssembler.class);
         when(evidence.peerSupportsFeature(peer.transportPeerKey(),
                 RemoteViewSessionPolicyResolver.AGENT_FEATURE, NOW)).thenReturn(false);
@@ -266,7 +274,7 @@ class RemoteBridgeOperatorServiceTest {
         CapturingObserver observer = new CapturingObserver();
         RecordingAuditSink audit = new RecordingAuditSink();
         PeerIdentity peer = new PeerIdentity("peer-policy", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         TrustEvidenceAssembler evidence = mock(TrustEvidenceAssembler.class);
         when(evidence.peerSupportsFeature(peer.transportPeerKey(),
                 RemoteViewSessionPolicyResolver.AGENT_FEATURE, NOW)).thenReturn(true);
@@ -300,7 +308,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
                 assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
                 120_000L, new DeviceKeyChallengeStore(), new TpmDeviceKeySessionEvidenceStore(), true, 120_000L);
@@ -323,7 +331,7 @@ class RemoteBridgeOperatorServiceTest {
         CapturingObserver observer = new CapturingObserver();
         RecordingAuditSink audit = new RecordingAuditSink();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         DeviceKeyChallengeStore challengeStore = new DeviceKeyChallengeStore();
         TpmDeviceKeySessionEvidenceStore evidenceStore = new TpmDeviceKeySessionEvidenceStore();
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
@@ -355,7 +363,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         SessionDuressSignalStore duressStore = new SessionDuressSignalStore(120_000L);
         LatchingNonBlankAuditSink audit = new LatchingNonBlankAuditSink();
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
@@ -392,7 +400,7 @@ class RemoteBridgeOperatorServiceTest {
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
         // a registered-but-dead stream: isConnected passes the pre-guard, but the challenge send fails →
         // kill + evict + reject, exactly like an undelivered consent prompt (no orphan CONSENT_PENDING session)
-        registry.register(peer, new ControlStreamHandle(throwingObserver()));
+        registerHelloReady(registry, peer, new ControlStreamHandle(throwingObserver()));
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
                 assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
                 120_000L, new DeviceKeyChallengeStore(), new TpmDeviceKeySessionEvidenceStore(), true, 120_000L);
@@ -412,7 +420,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         // the 7-arg ctor = device-key issuance DISABLED (the non-REAL default): no challenge is emitted
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
                 assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
@@ -437,7 +445,7 @@ class RemoteBridgeOperatorServiceTest {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         ControlStreamRegistry registry = new ControlStreamRegistry();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
+        registerHelloReady(registry, peer, new ControlStreamHandle(new CapturingObserver()));
         DeviceKeyChallengeStore challengeStore = new DeviceKeyChallengeStore();
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
                 assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
@@ -503,8 +511,8 @@ class RemoteBridgeOperatorServiceTest {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
-        registry.register(new PeerIdentity("peer-1", Optional.of("dev-1"), List.of()),
-                new ControlStreamHandle(observer));
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
         LatchingNonBlankAuditSink deviceTrustAudits = new LatchingNonBlankAuditSink();
 
@@ -542,7 +550,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
         SessionDuressSignalStore duressStore = new SessionDuressSignalStore(120_000L);
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
@@ -567,7 +575,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
         SessionDuressSignalStore duressStore = new SessionDuressSignalStore(120_000L);
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
@@ -593,7 +601,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         RemoteBridgeSession deniedSession = activeSession(store, "s1", "peer-1",
                 Set.of(RemoteSessionCapability.VIEW_ONLY));
 
@@ -626,7 +634,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         RemoteBridgeSession session =
                 activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
         observer.monitoredSession = session;
@@ -667,7 +675,7 @@ class RemoteBridgeOperatorServiceTest {
 
         // A killed CONTROL stream reconnects before the next attended session. Model that real transport lifecycle
         // explicitly rather than reusing the terminated observer as if it were still connected.
-        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
+        registerHelloReady(registry, peer, new ControlStreamHandle(new CapturingObserver()));
 
         SessionOpenOutcome reopened = service.openSession(
                 new SessionRequest("s2", "dev-1", "operator@x", "retry support",
@@ -690,7 +698,7 @@ class RemoteBridgeOperatorServiceTest {
             CapturingObserver observer = new CapturingObserver();
             PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
             ControlStreamHandle handle = new ControlStreamHandle(observer);
-            registry.register(peer, handle);
+            registerHelloReady(registry, peer, handle);
             activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
 
             RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
@@ -757,7 +765,7 @@ class RemoteBridgeOperatorServiceTest {
                     scheduler, slowCloseAudit, now::get, 5_000L, 30_000L);
             CapturingObserver observer = new CapturingObserver();
             PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-            registry.register(peer, new ControlStreamHandle(observer));
+            registerHelloReady(registry, peer, new ControlStreamHandle(observer));
             activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
             RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
                     assembler((sid, at) -> DuressSignal.NONE), broker(), registry, slowCloseAudit,
@@ -787,7 +795,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
         observer.killEntered = new CountDownLatch(1);
         observer.releaseKill = new CountDownLatch(1);
@@ -821,7 +829,7 @@ class RemoteBridgeOperatorServiceTest {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         ControlStreamRegistry registry = new ControlStreamRegistry();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
+        registerHelloReady(registry, peer, new ControlStreamHandle(new CapturingObserver()));
         activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
         RemoteBridgeAuditSink throwingAudit = event -> {
             throw new RuntimeException("durable audit unavailable");
@@ -875,7 +883,7 @@ class RemoteBridgeOperatorServiceTest {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         ControlStreamRegistry registry = new ControlStreamRegistry();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
+        registerHelloReady(registry, peer, new ControlStreamHandle(new CapturingObserver()));
         store.open(new SessionRequest("s1", "dev-1", "operator@x", "support",
                         Set.of(RemoteSessionCapability.VIEW_ONLY)),
                 peer, TENANT, "Operator X", NOW + 60_000L, NOW);
@@ -901,7 +909,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
                 assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW, 120_000L);
 
@@ -955,7 +963,7 @@ class RemoteBridgeOperatorServiceTest {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(observer));
+        registerHelloReady(registry, peer, new ControlStreamHandle(observer));
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
                 assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW, 120_000L);
 
@@ -975,7 +983,7 @@ class RemoteBridgeOperatorServiceTest {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         ControlStreamRegistry registry = new ControlStreamRegistry();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
+        registerHelloReady(registry, peer, new ControlStreamHandle(new CapturingObserver()));
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
                 assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW, 120_000L);
 

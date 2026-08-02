@@ -33,6 +33,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.hamcrest.Matchers.contains;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -709,18 +710,40 @@ class RemoteBridgeOperatorControllerTest {
         PeerIdentity peer = new PeerIdentity("peer-new", Optional.of("dev"), List.of());
         when(deviceResolver.resolveConnectedPeer(any(), any(), any())).thenReturn(Optional.of(peer));
         when(operatorService.openSession(any(), any(), any(), any()))
-                .thenReturn(new SessionOpenOutcome("s-new", true, null));
+                .thenAnswer(invocation -> new SessionOpenOutcome(
+                        ((SessionRequest) invocation.getArgument(0)).sessionId(), true, null));
 
         mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
                 .content(openBody("s-new", DEVICE_UUID)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.sessionId").value("s-new"))
                 .andExpect(jsonPath("$.consentPromptSent").value(true));
 
         ArgumentCaptor<SessionRequest> captor = ArgumentCaptor.forClass(SessionRequest.class);
         verify(operatorService).openSession(captor.capture(), eq(peer), eq(TENANT), eq(OWNER));
         assertEquals(OWNER, captor.getValue().operatorSubject(), "operatorSubject must come from the AUTH identity");
         assertEquals(DEVICE_UUID, captor.getValue().deviceId());
+        assertFalse("s-new".equals(captor.getValue().sessionId()),
+                "the caller correlation id must not become the consent incarnation");
+        assertEquals(captor.getValue().sessionId(), UUID.fromString(captor.getValue().sessionId()).toString());
+    }
+
+    @Test
+    void repeatedCallerCorrelationIdStillProducesFreshServerSessionIds() throws Exception {
+        PeerIdentity peer = new PeerIdentity("peer-new", Optional.of("dev"), List.of());
+        when(deviceResolver.resolveConnectedPeer(any(), any(), any())).thenReturn(Optional.of(peer));
+        when(operatorService.openSession(any(), any(), any(), any()))
+                .thenAnswer(invocation -> new SessionOpenOutcome(
+                        ((SessionRequest) invocation.getArgument(0)).sessionId(), true, null));
+
+        mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content(openBody("caller-retry", DEVICE_UUID))).andExpect(status().isOk());
+        mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content(openBody("caller-retry", DEVICE_UUID))).andExpect(status().isOk());
+
+        ArgumentCaptor<SessionRequest> captor = ArgumentCaptor.forClass(SessionRequest.class);
+        verify(operatorService, org.mockito.Mockito.times(2))
+                .openSession(captor.capture(), eq(peer), eq(TENANT), eq(OWNER));
+        assertFalse(captor.getAllValues().get(0).sessionId().equals(captor.getAllValues().get(1).sessionId()));
     }
 
     @Test

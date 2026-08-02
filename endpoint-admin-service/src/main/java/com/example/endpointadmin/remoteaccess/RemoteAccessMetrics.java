@@ -112,6 +112,13 @@ public final class RemoteAccessMetrics {
      */
     public static final String BRIDGE_DATA_HANDLER_ERRORS = "remote_access_bridge_data_handler_errors_total";
     /**
+     * Valid in-flight CONTROL frames ignored while the exact generation is quarantined for its operator KILL ACK.
+     * This counter has no tags and never includes peer/session data; it avoids putting best-effort audit I/O on the
+     * only inbound path that can return the terminal acknowledgement.
+     */
+    public static final String BRIDGE_CONTROL_KILL_QUARANTINE_REFUSALS =
+            "remote_access_bridge_control_kill_quarantine_refusals_total";
+    /**
      * Non-prod heartbeat-loss acceptance probes, tagged only with the bounded outcome set
      * (refused-session / refused-incarnation / refused-peer-or-capacity / refused-clock /
      * cancelled-explicit-terminal / terminal-observed / terminal-timeout). No peer, session, operator, or probe

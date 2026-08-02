@@ -25,6 +25,7 @@ import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_DEFECTS;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_FRAMES;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_HANDLER_ERRORS;
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_CONTROL_KILL_QUARANTINE_REFUSALS;
 
 /**
  * Faz 22.6 T-2b (Codex 019eb9fb) — the {@code RemoteBridge} bidi service: Connect = CONTROL, Data = DATA.
@@ -118,22 +119,23 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         // inbound callbacks, but the outbound heartbeat scheduler can discover a dead transport concurrently;
         // without this guard, a late AgentHello/consent/device-key response could repopulate state after cleanup.
         Object lifecycleLock = new Object();
-        registry.register(peer, handle);
-        // Whichever path closes the handle also conditionally vacates the registry slot. Only the handle that
-        // still owns the slot reports transport loss: replacement installs the successor BEFORE closing the old
-        // handle, and broker KILL removes the entry BEFORE sendAndClose, so neither can kill a new/already-
-        // terminal session through a late callback.
+        // Whichever path closes the handle also conditionally vacates the registry slot. An ordinary live-handle
+        // loss cleans up immediately; replacement/shutdown explicitly mark the removed predecessor so its cleanup
+        // still runs before successor Hello. Broker KILL removes an already-terminal session without that mark and
+        // therefore cannot report a second transport-loss terminal through its close callback.
         handle.attachOnClose(() -> {
             try {
-                synchronized (lifecycleLock) {
-                    registry.unregister(peer, handle, () -> controlPlane.onControlStreamClosed(peer));
-                }
+                // Registry generation fencing already serializes this callback with every accepted inbound
+                // mutation. Taking lifecycleLock here would invert lifecycleLock -> generationLock in onNext
+                // against generationLock -> close callback in broker KILL paths.
+                registry.unregister(peer, handle, () -> controlPlane.onControlStreamClosed(peer));
             } catch (RuntimeException cleanupFailure) {
                 // Keep the transport terminal and do not escape the gRPC/scheduler close path. The registry
                 // guarantees callback failures cannot retain its dead slot; other failures remain visible here.
                 log.error("remote-bridge control-stream loss cleanup failed; transport remains closed", cleanupFailure);
             }
         });
+        registry.register(peer, handle);
         handle.attachHeartbeat(scheduleHeartbeat(handle));
         return new StreamObserver<>() {
             private long nextSeq = 0;
@@ -149,8 +151,21 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
                         handle.sendAndClose(errorEnvelope(ChannelType.CONTROL, defect));
                         return;
                     }
+                    if (!dispatchControl(peer, handle, envelope)) {
+                        if (registry.isPendingOperatorKillGeneration(peer, handle)) {
+                            // A valid in-flight application frame may race the operator-close KILL. It carries no
+                            // authority in quarantine, but must not tear down the only transport allowed to return
+                            // the exact AGENT_KILL_APPLIED acknowledgement.
+                            // Do not put best-effort durable audit I/O on the only callback path that can carry the
+                            // exact terminal ACK. This bounded metric contains no peer/session-controlled identity.
+                            meters.counter(BRIDGE_CONTROL_KILL_QUARANTINE_REFUSALS).increment();
+                            nextSeq = envelope.getFrameSeq() + 1;
+                            return;
+                        }
+                        refuseCurrentControlGeneration(peer, handle, envelope);
+                        return;
+                    }
                     nextSeq = envelope.getFrameSeq() + 1;
-                    dispatchControl(peer, envelope);
                 }
             }
 
@@ -192,9 +207,10 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
             case AGENT_HELLO -> agentHelloDefect(envelope, peer);
             case CONSENT_RESULT -> RemoteBridgeProtoAdapter.decode(envelope.getConsentResult()).rejectReason();
             case AUDIT_EVENT -> RemoteBridgeProtoAdapter.decode(envelope.getAuditEvent()).rejectReason();
+            case ERROR -> RemoteBridgeProtoAdapter.decode(envelope.getSessionId(), envelope.getError()).rejectReason();
             case DEVICE_KEY_ATTESTATION_RESPONSE ->
                     RemoteBridgeProtoAdapter.decode(envelope.getDeviceKeyAttestationResponse()).rejectReason();
-            default -> null; // HEARTBEAT/ERROR content already validated by validateEnvelope
+            default -> null; // HEARTBEAT content is fully validated by validateEnvelope
         };
     }
 
@@ -212,23 +228,57 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         return null;
     }
 
-    private void dispatchControl(PeerIdentity peer, Envelope envelope) {
-        switch (envelope.getPayloadCase()) {
-            case AGENT_HELLO -> RemoteBridgeProtoAdapter.decode(envelope.getAgentHello())
-                    .ifOk(hello -> controlPlane.onAgentHello(peer, hello));
-            case CONSENT_RESULT -> RemoteBridgeProtoAdapter.decode(envelope.getConsentResult())
-                    .ifOk(result -> controlPlane.onConsentResult(peer, result));
-            case AUDIT_EVENT -> RemoteBridgeProtoAdapter.decode(envelope.getAuditEvent())
-                    .ifOk(event -> controlPlane.onAuditEvent(peer, event));
-            case DEVICE_KEY_ATTESTATION_RESPONSE -> RemoteBridgeProtoAdapter.decode(
-                            envelope.getDeviceKeyAttestationResponse())
-                    .ifOk(response -> controlPlane.onDeviceKeyAttestationResponse(peer, response));
-            case HEARTBEAT -> controlPlane.onHeartbeat(peer);
-            case ERROR -> RemoteBridgeProtoAdapter.decode(envelope.getSessionId(), envelope.getError())
-                    .ifOk(error -> controlPlane.onAgentErrorFrame(peer, error));
-            default -> {
-                // Directional allowlist already refused broker-originated control payloads.
+    private boolean dispatchControl(PeerIdentity peer, ControlStreamHandle handle, Envelope envelope) {
+        return switch (envelope.getPayloadCase()) {
+            case AGENT_HELLO -> {
+                RemoteBridgeMessages.AgentHello hello = RemoteBridgeProtoAdapter.decode(envelope.getAgentHello())
+                        .orElseThrow();
+                yield registry.absorbPreparedAgentHello(peer, handle,
+                        () -> controlPlane.prepareAgentHello(peer, hello));
             }
+            case CONSENT_RESULT -> {
+                RemoteBridgeMessages.ConsentResult result = RemoteBridgeProtoAdapter
+                        .decode(envelope.getConsentResult()).orElseThrow();
+                yield registry.dispatchPreparedConsentIfCurrentHelloObserved(peer, handle,
+                        () -> controlPlane.prepareConsentResult(peer, result));
+            }
+            case AUDIT_EVENT -> {
+                RemoteBridgeMessages.AuditEvent event = RemoteBridgeProtoAdapter.decode(envelope.getAuditEvent())
+                        .orElseThrow();
+                Runnable dispatch = () -> controlPlane.onAuditEvent(peer, event);
+                yield ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED.equals(event.eventType())
+                        ? registry.dispatchPendingOperatorKillAcknowledgement(peer, handle, event, dispatch)
+                        : registry.dispatchIfCurrentHelloObserved(peer, handle, dispatch);
+            }
+            case DEVICE_KEY_ATTESTATION_RESPONSE -> {
+                RemoteBridgeMessages.DeviceKeyAttestationResponse response = RemoteBridgeProtoAdapter.decode(
+                        envelope.getDeviceKeyAttestationResponse()).orElseThrow();
+                yield registry.dispatchIfCurrentHelloObserved(peer, handle,
+                        () -> controlPlane.onDeviceKeyAttestationResponse(peer, response));
+            }
+            case HEARTBEAT -> registry.dispatchPreparedHeartbeatIfCurrentHelloObserved(peer, handle,
+                    () -> controlPlane.prepareHeartbeat(peer));
+            case ERROR -> {
+                RemoteBridgeMessages.AgentErrorFrame error = RemoteBridgeProtoAdapter
+                        .decode(envelope.getSessionId(), envelope.getError()).orElseThrow();
+                yield registry.dispatchIfCurrentHelloObserved(peer, handle,
+                        () -> controlPlane.onAgentErrorFrame(peer, error));
+            }
+            // Directional allowlist already refused every other payload before dispatch.
+            default -> false;
+        };
+    }
+
+    private void refuseCurrentControlGeneration(PeerIdentity peer, ControlStreamHandle handle, Envelope envelope) {
+        String reason = envelope.getPayloadCase() == Envelope.PayloadCase.AGENT_HELLO
+                ? "control-hello-generation-refused"
+                : "control-generation-not-ready";
+        // Revoke physical transport authority before best-effort audit, which may block or fail.
+        handle.sendAndClose(errorEnvelope(ChannelType.CONTROL, reason));
+        try {
+            controlPlane.onControlFrameRefused(peer, reason);
+        } catch (RuntimeException auditFailure) {
+            log.warn("remote-bridge control refusal audit failed; transport is already closed: {}", reason);
         }
     }
 

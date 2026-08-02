@@ -26,6 +26,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -62,6 +63,27 @@ class ControlStreamRegistryTest {
         }
     }
 
+    private static final class BlockingKillObserver implements StreamObserver<Envelope> {
+        final CountDownLatch killWriteEntered = new CountDownLatch(1);
+        final CountDownLatch releaseKillWrite = new CountDownLatch(1);
+
+        @Override
+        public void onNext(Envelope value) {
+            if (value.hasKill()) {
+                killWriteEntered.countDown();
+                await(releaseKillWrite);
+            }
+        }
+
+        @Override
+        public void onError(Throwable t) {
+        }
+
+        @Override
+        public void onCompleted() {
+        }
+    }
+
     private static PeerIdentity peer(String key) {
         return new PeerIdentity(key, Optional.empty(), List.<X509Certificate>of());
     }
@@ -69,6 +91,16 @@ class ControlStreamRegistryTest {
     private static PeerIdentity peerByAdComputer(String key, UUID objectGuid) {
         return new PeerIdentity(key, Optional.empty(), Optional.of(objectGuid.toString()),
                 List.<X509Certificate>of());
+    }
+
+    private static ControlStreamHandle registerReady(ControlStreamRegistry registry,
+                                                     String peerKey,
+                                                     StreamObserver<Envelope> observer) {
+        PeerIdentity identity = peer(peerKey);
+        ControlStreamHandle handle = new ControlStreamHandle(observer);
+        registry.register(identity, handle);
+        assertTrue(registry.absorbAgentHello(identity, handle, () -> { }));
+        return handle;
     }
 
     private static OperationPermit permit(String sessionId, String operationId) {
@@ -104,10 +136,104 @@ class ControlStreamRegistryTest {
     }
 
     @Test
+    void emergencyKillCannotDeadlockAgainstInboundGenerationDispatch() throws Exception {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity identity = peer("peer-1");
+        BlockingKillObserver observer = new BlockingKillObserver();
+        ControlStreamHandle handle = registerReady(registry, "peer-1", observer);
+        Object lifecycleLock = new Object();
+        handle.attachOnClose(() -> {
+            synchronized (lifecycleLock) {
+                registry.unregister(identity, handle);
+            }
+        });
+
+        Thread kill = Thread.ofVirtual().start(() ->
+                registry.killPeer("peer-1", "sess-1", "DURESS", 1_000L));
+        assertTrue(observer.killWriteEntered.await(2, TimeUnit.SECONDS));
+
+        CountDownLatch inboundEntered = new CountDownLatch(1);
+        Thread inbound = Thread.ofVirtual().start(() -> {
+            synchronized (lifecycleLock) {
+                inboundEntered.countDown();
+                registry.dispatchIfCurrentHelloObserved(identity, handle, () -> { });
+            }
+        });
+        assertTrue(inboundEntered.await(2, TimeUnit.SECONDS));
+        observer.releaseKillWrite.countDown();
+
+        kill.join(2_000L);
+        inbound.join(2_000L);
+        assertFalse(kill.isAlive(), "emergency KILL must not wait on lifecycle/generation lock inversion");
+        assertFalse(inbound.isAlive(), "inbound dispatch must not wait on lifecycle/generation lock inversion");
+        assertFalse(registry.isConnected("peer-1"));
+    }
+
+    @Test
+    void replacementWaitsForHeartbeatFaultCleanupBeforeSuccessorHello() throws Exception {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, event -> { }, () -> 1_000L, 5_000L, 30_000L);
+            PeerIdentity identity = peer("peer-1");
+            ControlStreamHandle first = registerReady(registry, "peer-1", new CapturingObserver());
+            assertTrue(registry.suppressHeartbeats("peer-1", "probe-1", 1_000L, 2_000L).isPresent());
+            CountDownLatch cleanupEntered = new CountDownLatch(1);
+            CountDownLatch releaseCleanup = new CountDownLatch(1);
+            AtomicInteger cleanupCount = new AtomicInteger();
+            first.attachOnClose(() -> {
+                cleanupEntered.countDown();
+                await(releaseCleanup);
+                registry.unregister(identity, first, cleanupCount::incrementAndGet);
+            });
+            Thread close = Thread.ofVirtual().start(first::close);
+            assertTrue(cleanupEntered.await(2, TimeUnit.SECONDS));
+
+            ControlStreamHandle successor = new ControlStreamHandle(new CapturingObserver());
+            Thread replacement = Thread.ofVirtual().start(() -> registry.register(identity, successor));
+            Thread.sleep(50L);
+            assertTrue(replacement.isAlive(), "successor registration must await prior terminal cleanup");
+            assertFalse(registry.absorbAgentHello(identity, successor, () -> { }),
+                    "successor Hello cannot cross prior generation cleanup");
+
+            releaseCleanup.countDown();
+            close.join(2_000L);
+            replacement.join(2_000L);
+            assertFalse(close.isAlive());
+            assertFalse(replacement.isAlive());
+            assertEquals(1, cleanupCount.get());
+            assertTrue(registry.absorbAgentHello(identity, successor, () -> { }));
+            assertTrue(registry.isConnected("peer-1"));
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    private static int peerStripe(String peerKey) {
+        int hash = peerKey.hashCode();
+        hash ^= hash >>> 16;
+        return hash & 255;
+    }
+
+    private static String collidingPeerKey(String peerKey) {
+        int wanted = peerStripe(peerKey);
+        for (int index = 0; index < 100_000; index++) {
+            String candidate = "colliding-peer-" + index;
+            if (!candidate.equals(peerKey) && peerStripe(candidate) == wanted) {
+                return candidate;
+            }
+        }
+        throw new AssertionError("no peer-lock stripe collision found");
+    }
+
+    @Test
     void sendsOperationPermitOnControlToTheLivePeer() {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
-        registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+        PeerIdentity peer = peer("peer-1");
+        ControlStreamHandle handle = new ControlStreamHandle(observer);
+        registry.register(peer, handle);
+        assertTrue(registry.absorbAgentHello(peer, handle, () -> { }));
 
         boolean sent = registry.sendOperationPermit("peer-1", permit("sess-1", "op-1"), 9_000L);
 
@@ -125,7 +251,10 @@ class ControlStreamRegistryTest {
     void sendsOperationDispatchOnControlToTheLivePeer() {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
-        registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+        PeerIdentity peer = peer("peer-1");
+        ControlStreamHandle handle = new ControlStreamHandle(observer);
+        registry.register(peer, handle);
+        assertTrue(registry.absorbAgentHello(peer, handle, () -> { }));
 
         boolean sent = registry.sendOperationDispatch("peer-1",
                 new RemoteBridgeMessages.OperationDispatch(permit("sess-1", "op-1"), "hostname"), 9_000L);
@@ -157,7 +286,10 @@ class ControlStreamRegistryTest {
     void sendsConsentPromptOnControlToTheLivePeer() {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
-        registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+        PeerIdentity peer = peer("peer-1");
+        ControlStreamHandle handle = new ControlStreamHandle(observer);
+        registry.register(peer, handle);
+        assertTrue(registry.absorbAgentHello(peer, handle, () -> { }));
 
         boolean sent = registry.sendConsentPrompt("peer-1", prompt("sess-1"), 9_000L);
 
@@ -173,7 +305,10 @@ class ControlStreamRegistryTest {
     void sendsDeviceKeyChallengeOnControlToTheLivePeerCarryingTheSessionId() {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
-        registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+        PeerIdentity peer = peer("peer-1");
+        ControlStreamHandle handle = new ControlStreamHandle(observer);
+        registry.register(peer, handle);
+        assertTrue(registry.absorbAgentHello(peer, handle, () -> { }));
 
         boolean sent = registry.sendDeviceKeyChallenge("peer-1", "sess-1", deviceKeyChallenge("peer-1"), 9_000L);
 
@@ -206,6 +341,31 @@ class ControlStreamRegistryTest {
     }
 
     @Test
+    void replacementCannotReceiveOutboundAuthorityUntilItsOwnHelloIsAbsorbed() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity peer = peer("peer-1");
+        ControlStreamHandle first = new ControlStreamHandle(new CapturingObserver());
+        registry.register(peer, first);
+        assertTrue(registry.absorbAgentHello(peer, first, () -> { }));
+
+        CapturingObserver successorObserver = new CapturingObserver();
+        ControlStreamHandle successor = new ControlStreamHandle(successorObserver);
+        registry.register(peer, successor);
+
+        assertFalse(registry.sendOperationPermit("peer-1", permit("sess-1", "op-1"), 2_000L));
+        assertFalse(registry.sendOperationDispatch("peer-1",
+                new RemoteBridgeMessages.OperationDispatch(permit("sess-1", "op-1"), "hostname"), 2_000L));
+        assertFalse(registry.sendConsentPrompt("peer-1", prompt("sess-1"), 2_000L));
+        assertFalse(registry.sendDeviceKeyChallenge(
+                "peer-1", "sess-1", deviceKeyChallenge("peer-1"), 2_000L));
+        assertTrue(successorObserver.sent.isEmpty());
+
+        assertTrue(registry.absorbAgentHello(peer, successor, () -> { }));
+        assertTrue(registry.sendConsentPrompt("peer-1", prompt("sess-1"), 2_001L));
+        assertEquals(1, successorObserver.sent.size());
+    }
+
+    @Test
     void aNullPayloadFailsClosed() {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
@@ -222,11 +382,37 @@ class ControlStreamRegistryTest {
     void connectedPeerIsThePeerWhileRegisteredAndEmptyOtherwise() {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         PeerIdentity p = peer("peer-1");
-        registry.register(p, new ControlStreamHandle(new CapturingObserver()));
+        ControlStreamHandle handle = new ControlStreamHandle(new CapturingObserver());
+        registry.register(p, handle);
 
+        assertTrue(registry.connectedPeer("peer-1").isEmpty(), "transport alone is not product-ready");
+        assertTrue(registry.absorbAgentHello(p, handle, () -> { }));
         assertEquals(p, registry.connectedPeer("peer-1").orElseThrow());
         assertTrue(registry.connectedPeer("ghost").isEmpty());
         assertTrue(registry.connectedPeer(null).isEmpty());
+    }
+
+    @Test
+    void preHelloTransportIsNotConnectedAndCannotEnterAckBearingOperatorClose() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, event -> { }, () -> 1_000L, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            PeerIdentity identity = peer("peer-1");
+            ControlStreamHandle handle = new ControlStreamHandle(observer);
+            registry.register(identity, handle);
+
+            assertFalse(registry.isConnected("peer-1"));
+            assertTrue(registry.connectedPeer("peer-1").isEmpty());
+            assertFalse(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 1_000L));
+            assertTrue(observer.sent.isEmpty());
+
+            assertTrue(registry.absorbAgentHello(identity, handle, () -> { }));
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 1_001L));
+        } finally {
+            scheduler.shutdownNow();
+        }
     }
 
     @Test
@@ -236,6 +422,7 @@ class ControlStreamRegistryTest {
         PeerIdentity p = peerByAdComputer("peer-1", objectGuid);
         ControlStreamHandle handle = new ControlStreamHandle(new CapturingObserver());
         registry.register(p, handle);
+        assertTrue(registry.absorbAgentHello(p, handle, () -> { }));
 
         assertEquals(p, registry.connectedPeerByAdComputerId(objectGuid.toString()).orElseThrow());
         assertEquals(p, registry.connectedPeerByAdComputerId(objectGuid.toString().toUpperCase()).orElseThrow());
@@ -275,9 +462,33 @@ class ControlStreamRegistryTest {
         ControlStreamHandle second = new ControlStreamHandle(new CapturingObserver());
         registry.register(p, first);
         registry.register(p, second); // replace
+        assertTrue(registry.absorbAgentHello(p, second, () -> { }));
+        assertFalse(registry.absorbAgentHello(p, first, () -> { }),
+                "a stale handle must not ready its successor");
 
         registry.unregister(p, first); // stale handle
         assertTrue(registry.connectedPeer("peer-1").isPresent(), "the successor stream must survive a stale unregister");
+    }
+
+    @Test
+    void normalReplacementRunsPredecessorCleanupOnceBeforeSuccessorHello() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        ControlStreamHandle first = new ControlStreamHandle(new CapturingObserver());
+        ControlStreamHandle successor = new ControlStreamHandle(new CapturingObserver());
+        AtomicInteger cleanups = new AtomicInteger();
+        registry.register(p, first);
+        first.attachOnClose(() -> registry.unregister(p, first, cleanups::incrementAndGet));
+
+        registry.register(p, successor);
+
+        assertTrue(first.isClosed());
+        assertEquals(1, cleanups.get(), "replacement must retire predecessor session/trust state exactly once");
+        assertTrue(registry.absorbAgentHello(p, successor, () -> { }));
+        assertEquals(p, registry.connectedPeer("peer-1").orElseThrow());
+        registry.unregister(p, first, cleanups::incrementAndGet);
+        assertEquals(1, cleanups.get(), "a late predecessor callback cannot repeat terminal cleanup");
+        assertEquals(p, registry.connectedPeer("peer-1").orElseThrow());
     }
 
     @Test
@@ -306,6 +517,7 @@ class ControlStreamRegistryTest {
 
         Thread reconnect = Thread.ofPlatform().start(() -> {
             registry.register(p, successor);
+            registry.absorbAgentHello(p, successor, () -> { });
             successorRegistered.countDown();
         });
         assertFalse(successorRegistered.await(100, TimeUnit.MILLISECONDS),
@@ -319,6 +531,175 @@ class ControlStreamRegistryTest {
         assertFalse(reconnect.isAlive());
         assertEquals(0, successorRegistered.getCount());
         assertEquals(p, registry.connectedPeer("peer-1").orElseThrow());
+    }
+
+    @Test
+    void inboundMutationCompletesBeforeSamePeerReconnectCanReplaceItsHandle() throws Exception {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        ControlStreamHandle first = new ControlStreamHandle(new CapturingObserver());
+        ControlStreamHandle successor = new ControlStreamHandle(new CapturingObserver());
+        registry.register(p, first);
+        assertTrue(registry.absorbAgentHello(p, first, () -> { }));
+
+        CountDownLatch mutationEntered = new CountDownLatch(1);
+        CountDownLatch releaseMutation = new CountDownLatch(1);
+        CountDownLatch successorRegistered = new CountDownLatch(1);
+        Thread inbound = Thread.ofPlatform().start(() -> registry.dispatchIfCurrentHelloObserved(p, first, () -> {
+            mutationEntered.countDown();
+            await(releaseMutation);
+        }));
+        assertTrue(mutationEntered.await(2, TimeUnit.SECONDS));
+
+        Thread reconnect = Thread.ofPlatform().start(() -> {
+            registry.register(p, successor);
+            successorRegistered.countDown();
+        });
+        assertFalse(successorRegistered.await(100, TimeUnit.MILLISECONDS),
+                "same-peer replacement must wait for the current generation's inbound mutation");
+
+        releaseMutation.countDown();
+        inbound.join(2_000);
+        reconnect.join(2_000);
+
+        assertFalse(inbound.isAlive());
+        assertFalse(reconnect.isAlive());
+        assertEquals(0, successorRegistered.getCount());
+        assertTrue(registry.connectedPeer("peer-1").isEmpty(),
+                "the successor remains unready until it supplies its own AgentHello");
+        assertFalse(registry.dispatchIfCurrentHelloObserved(p, first, () -> {
+            throw new AssertionError("stale mutation dispatched");
+        }));
+    }
+
+    @Test
+    void aThirdReconnectCannotReplaceAnInitializingSuccessor() throws Exception {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        ControlStreamHandle first = new ControlStreamHandle(new CapturingObserver());
+        ControlStreamHandle second = new ControlStreamHandle(new CapturingObserver());
+        ControlStreamHandle third = new ControlStreamHandle(new CapturingObserver());
+        registry.register(p, first);
+        assertTrue(registry.absorbAgentHello(p, first, () -> { }));
+
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        CountDownLatch releaseCleanup = new CountDownLatch(1);
+        first.attachOnClose(() -> {
+            cleanupEntered.countDown();
+            await(releaseCleanup);
+        });
+
+        CountDownLatch secondRegistered = new CountDownLatch(1);
+        Thread secondReconnect = Thread.ofPlatform().start(() -> {
+            registry.register(p, second);
+            secondRegistered.countDown();
+        });
+        assertTrue(cleanupEntered.await(2, TimeUnit.SECONDS));
+
+        CountDownLatch thirdRegistered = new CountDownLatch(1);
+        Thread thirdReconnect = Thread.ofPlatform().start(() -> {
+            registry.register(p, third);
+            thirdRegistered.countDown();
+        });
+        assertFalse(thirdRegistered.await(100, TimeUnit.MILLISECONDS),
+                "a third reconnect must not replace a successor whose predecessor cleanup is incomplete");
+        assertFalse(registry.absorbAgentHello(p, third, () -> { }));
+
+        releaseCleanup.countDown();
+        secondReconnect.join(2_000L);
+        thirdReconnect.join(2_000L);
+
+        assertFalse(secondReconnect.isAlive());
+        assertFalse(thirdReconnect.isAlive());
+        assertEquals(0, secondRegistered.getCount());
+        assertEquals(0, thirdRegistered.getCount());
+        assertTrue(second.isClosed(), "the serialized third reconnect replaces the fully initialized second handle");
+        assertFalse(registry.absorbAgentHello(p, second, () -> { }));
+        assertTrue(registry.absorbAgentHello(p, third, () -> { }));
+        assertEquals(p, registry.connectedPeer("peer-1").orElseThrow());
+    }
+
+    @Test
+    void outboundAuthorityCannotCrossAConcurrentGenerationReplacement() throws Exception {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity identity = peer("peer-1");
+        CountDownLatch outboundEntered = new CountDownLatch(1);
+        CountDownLatch releaseOutbound = new CountDownLatch(1);
+        List<Envelope> oldDeliveries = new ArrayList<>();
+        StreamObserver<Envelope> blockingObserver = new StreamObserver<>() {
+            @Override
+            public void onNext(Envelope value) {
+                outboundEntered.countDown();
+                await(releaseOutbound);
+                oldDeliveries.add(value);
+            }
+
+            @Override public void onError(Throwable failure) { }
+            @Override public void onCompleted() { }
+        };
+        ControlStreamHandle first = registerReady(registry, "peer-1", blockingObserver);
+
+        AtomicReference<Boolean> sent = new AtomicReference<>();
+        Thread outbound = Thread.ofPlatform().start(() ->
+                sent.set(registry.sendConsentPrompt("peer-1", prompt("sess-1"), 2_000L)));
+        assertTrue(outboundEntered.await(2, TimeUnit.SECONDS));
+
+        CapturingObserver successorObserver = new CapturingObserver();
+        ControlStreamHandle successor = new ControlStreamHandle(successorObserver);
+        CountDownLatch replacementFinished = new CountDownLatch(1);
+        Thread replacement = Thread.ofPlatform().start(() -> {
+            registry.register(identity, successor);
+            replacementFinished.countDown();
+        });
+        assertFalse(replacementFinished.await(100, TimeUnit.MILLISECONDS),
+                "replacement must not cross an in-flight authority delivery for the old generation");
+
+        releaseOutbound.countDown();
+        outbound.join(2_000L);
+        replacement.join(2_000L);
+
+        assertEquals(Boolean.TRUE, sent.get());
+        assertEquals(1, oldDeliveries.size());
+        assertTrue(first.isClosed());
+        assertTrue(successorObserver.sent.isEmpty());
+        assertFalse(registry.sendConsentPrompt("peer-1", prompt("sess-2"), 2_001L),
+                "the successor remains authority-ineligible until its own Hello is absorbed");
+    }
+
+    @Test
+    void stalledPeerCallbackCannotDelayEmergencyKillForACollidingPeerStripe() throws Exception {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        String firstKey = "peer-1";
+        String secondKey = collidingPeerKey(firstKey);
+        assertEquals(peerStripe(firstKey), peerStripe(secondKey));
+
+        PeerIdentity firstPeer = peer(firstKey);
+        ControlStreamHandle firstHandle = registerReady(registry, firstKey, new CapturingObserver());
+        CapturingObserver secondObserver = new CapturingObserver();
+        registerReady(registry, secondKey, secondObserver);
+
+        CountDownLatch callbackEntered = new CountDownLatch(1);
+        CountDownLatch releaseCallback = new CountDownLatch(1);
+        Thread blockedCallback = Thread.ofPlatform().start(() ->
+                registry.dispatchIfCurrentHelloObserved(firstPeer, firstHandle, () -> {
+                    callbackEntered.countDown();
+                    await(releaseCallback);
+                }));
+        assertTrue(callbackEntered.await(2, TimeUnit.SECONDS));
+
+        AtomicReference<Boolean> killed = new AtomicReference<>();
+        Thread emergencyKill = Thread.ofPlatform().start(() ->
+                killed.set(registry.killPeer(secondKey, "sess-2", "DURESS", 3_000L)));
+        emergencyKill.join(500L);
+
+        assertFalse(emergencyKill.isAlive(),
+                "an unrelated peer sharing the legacy stripe cannot delay emergency termination");
+        assertEquals(Boolean.TRUE, killed.get());
+        assertTrue(secondObserver.completed);
+
+        releaseCallback.countDown();
+        blockedCallback.join(2_000L);
+        assertFalse(blockedCallback.isAlive());
     }
 
     @Test
@@ -399,6 +780,7 @@ class ControlStreamRegistryTest {
 
         ControlStreamHandle successor = new ControlStreamHandle(new CapturingObserver());
         registry.register(p, successor);
+        assertTrue(registry.absorbAgentHello(p, successor, () -> { }));
         successor.attachOnClose(() -> registry.unregister(p, successor, terminalCleanups::incrementAndGet));
 
         assertTrue(first.isClosed());
@@ -434,8 +816,7 @@ class ControlStreamRegistryTest {
             ControlStreamRegistry registry = new ControlStreamRegistry(
                     scheduler, audits::add, now::get, 5_000L, 30_000L);
             CapturingObserver observer = new CapturingObserver();
-            ControlStreamHandle handle = new ControlStreamHandle(observer);
-            registry.register(peer("peer-1"), handle);
+            ControlStreamHandle handle = registerReady(registry, "peer-1", observer);
             handle.attachOnClose(() -> registry.unregister(peer("peer-1"), handle));
 
             assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 1_000L));
@@ -467,7 +848,7 @@ class ControlStreamRegistryTest {
             ControlStreamRegistry registry = new ControlStreamRegistry(
                     scheduler, event -> { }, () -> 5_000L, 5_000L, 30_000L);
             CapturingObserver observer = new CapturingObserver();
-            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            registerReady(registry, "peer-1", observer);
             assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 1_000L));
 
             assertFalse(registry.isConnected("peer-1"));
@@ -493,7 +874,7 @@ class ControlStreamRegistryTest {
             ControlStreamRegistry registry = new ControlStreamRegistry(
                     scheduler, audits::add, () -> 6_000L, 5_000L, 30_000L);
             CapturingObserver observer = new CapturingObserver();
-            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            registerReady(registry, "peer-1", observer);
             assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 1_000L));
 
             assertTrue(registry.killPeer("peer-1", "sess-1", "DURESS", 6_000L));
@@ -520,7 +901,7 @@ class ControlStreamRegistryTest {
                 await(releaseAudit);
             }, () -> 7_000L, 5_000L, 30_000L);
             CapturingObserver observer = new CapturingObserver();
-            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            registerReady(registry, "peer-1", observer);
             assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 1_000L));
             AtomicReference<Boolean> delivered = new AtomicReference<>();
 
@@ -553,7 +934,7 @@ class ControlStreamRegistryTest {
             ControlStreamRegistry registry = new ControlStreamRegistry(
                     scheduler, audits::add, now::get, 5_000L, 30_000L);
             CapturingObserver observer = new CapturingObserver();
-            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            registerReady(registry, "peer-1", observer);
             assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 10_000L));
 
             assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_NO_PENDING,
@@ -590,7 +971,7 @@ class ControlStreamRegistryTest {
                 recorded.countDown();
             }, now::get, 25L, 30_000L);
             CapturingObserver observer = new CapturingObserver();
-            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            registerReady(registry, "peer-1", observer);
 
             assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 20_000L));
             assertTrue(recorded.await(2, TimeUnit.SECONDS));
@@ -605,6 +986,32 @@ class ControlStreamRegistryTest {
     }
 
     @Test
+    void operatorKillAckTimeoutClosesTheHandleBeforeDurableAuditCanBlock() throws Exception {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        CountDownLatch releaseAudit = new CountDownLatch(1);
+        try {
+            CountDownLatch auditEntered = new CountDownLatch(1);
+            ControlStreamRegistry registry = new ControlStreamRegistry(scheduler, event -> {
+                auditEntered.countDown();
+                await(releaseAudit);
+            }, () -> 25_100L, 25L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            ControlStreamHandle handle = registerReady(registry, "peer-1", observer);
+            handle.attachOnClose(() -> registry.unregister(peer("peer-1"), handle));
+
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 25_000L));
+            assertTrue(auditEntered.await(2, TimeUnit.SECONDS));
+
+            assertTrue(handle.isClosed(), "timeout must close the exact handle before durable audit I/O");
+            assertTrue(observer.completed);
+            assertFalse(registry.isConnected("peer-1"));
+        } finally {
+            releaseAudit.countDown();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
     void reconnectFailsPendingAckButNeverClosesTheSuccessor() {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         try {
@@ -613,11 +1020,11 @@ class ControlStreamRegistryTest {
             ControlStreamRegistry registry = new ControlStreamRegistry(
                     scheduler, audits::add, now::get, 5_000L, 30_000L);
             CapturingObserver oldObserver = new CapturingObserver();
-            registry.register(peer("peer-1"), new ControlStreamHandle(oldObserver));
+            registerReady(registry, "peer-1", oldObserver);
             assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 30_000L));
 
             CapturingObserver successorObserver = new CapturingObserver();
-            registry.register(peer("peer-1"), new ControlStreamHandle(successorObserver));
+            registerReady(registry, "peer-1", successorObserver);
 
             assertTrue(oldObserver.completed);
             assertFalse(successorObserver.completed);
@@ -633,6 +1040,43 @@ class ControlStreamRegistryTest {
     }
 
     @Test
+    void reconnectClosesThePredecessorBeforeStreamReplacedAuditCanBlock() throws Exception {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        CountDownLatch releaseAudit = new CountDownLatch(1);
+        try {
+            CountDownLatch auditEntered = new CountDownLatch(1);
+            ControlStreamRegistry registry = new ControlStreamRegistry(scheduler, event -> {
+                auditEntered.countDown();
+                await(releaseAudit);
+            }, () -> 35_010L, 5_000L, 30_000L);
+            CapturingObserver oldObserver = new CapturingObserver();
+            ControlStreamHandle oldHandle = registerReady(registry, "peer-1", oldObserver);
+            oldHandle.attachOnClose(() -> registry.unregister(peer("peer-1"), oldHandle));
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 35_000L));
+
+            CapturingObserver successorObserver = new CapturingObserver();
+            ControlStreamHandle successor = new ControlStreamHandle(successorObserver);
+            Thread reconnect = Thread.ofPlatform().start(() -> registry.register(peer("peer-1"), successor));
+            assertTrue(auditEntered.await(2, TimeUnit.SECONDS));
+
+            assertTrue(oldHandle.isClosed(), "replacement must close the predecessor before durable audit I/O");
+            assertTrue(oldObserver.completed);
+            assertTrue(reconnect.isAlive(), "only the durable audit is intentionally blocked");
+            assertTrue(registry.connectedPeer("peer-1").isEmpty(),
+                    "the successor cannot publish authority while replacement audit is blocked");
+
+            releaseAudit.countDown();
+            reconnect.join(2_000L);
+            assertFalse(reconnect.isAlive());
+            assertTrue(registry.absorbAgentHello(peer("peer-1"), successor, () -> { }));
+            assertFalse(successorObserver.completed);
+        } finally {
+            releaseAudit.countDown();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
     void durableAckAuditFailureNeverLeavesTheTransportOrPendingClaimOpen() {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         try {
@@ -640,7 +1084,7 @@ class ControlStreamRegistryTest {
                 throw new IllegalStateException("durable recorder unavailable");
             }, () -> 40_010L, 5_000L, 30_000L);
             CapturingObserver observer = new CapturingObserver();
-            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            registerReady(registry, "peer-1", observer);
             assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 40_000L));
 
             assertEquals(ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED_AUDIT_FAILED,
@@ -657,6 +1101,47 @@ class ControlStreamRegistryTest {
     }
 
     @Test
+    void acknowledgedKillClosesTheExactHandleBeforeDurableAuditCanBlock() throws Exception {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        CountDownLatch releaseAudit = new CountDownLatch(1);
+        try {
+            CountDownLatch auditEntered = new CountDownLatch(1);
+            ControlStreamRegistry registry = new ControlStreamRegistry(scheduler, event -> {
+                auditEntered.countDown();
+                await(releaseAudit);
+            }, () -> 45_010L, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            ControlStreamHandle handle = registerReady(registry, "peer-1", observer);
+            handle.attachOnClose(() -> registry.unregister(peer("peer-1"), handle));
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 45_000L));
+            AtomicReference<ControlStreamRegistry.OperatorKillAckResult> result = new AtomicReference<>();
+
+            Thread acknowledgement = Thread.ofPlatform().start(() -> result.set(
+                    registry.acceptOperatorKillAcknowledgement(
+                            peer("peer-1"), killAck("sess-1", 45_010L), 45_010L)));
+            assertTrue(auditEntered.await(2, TimeUnit.SECONDS),
+                    () -> "ACK did not reach audit: result=" + result.get()
+                            + " threadState=" + acknowledgement.getState()
+                            + " handleClosed=" + handle.isClosed());
+
+            assertTrue(handle.isClosed(), "the consumed ACK generation must close before durable audit I/O");
+            assertTrue(observer.completed);
+            assertFalse(registry.isConnected("peer-1"));
+            assertFalse(registry.killPeer("peer-1", "sess-1", "DURESS", 45_011L),
+                    "no unregistered live CONTROL handle may survive the blocked audit");
+            assertTrue(acknowledgement.isAlive(), "only the durable audit is intentionally blocked");
+
+            releaseAudit.countDown();
+            acknowledgement.join(2_000L);
+            assertFalse(acknowledgement.isAlive());
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED, result.get());
+        } finally {
+            releaseAudit.countDown();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
     void failedOperatorKillWriteCannotLeaveAClosedHandleOrPendingAckRegistered() {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         try {
@@ -668,7 +1153,7 @@ class ControlStreamRegistryTest {
                 @Override public void onError(Throwable t) { }
                 @Override public void onCompleted() { }
             };
-            registry.register(peer("peer-1"), new ControlStreamHandle(deadObserver));
+            registerReady(registry, "peer-1", deadObserver);
 
             assertFalse(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 50_000L));
 
@@ -697,6 +1182,7 @@ class ControlStreamRegistryTest {
             };
             ControlStreamHandle handle = new ControlStreamHandle(deadObserver);
             registry.register(p, handle);
+            assertTrue(registry.absorbAgentHello(p, handle, () -> { }));
             handle.attachOnClose(() -> registry.unregister(p, handle));
 
             assertFalse(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 55_000L));
@@ -717,7 +1203,7 @@ class ControlStreamRegistryTest {
             ControlStreamRegistry registry = new ControlStreamRegistry(
                     scheduler, audits::add, () -> 60_010L, 5_000L, 30_000L);
             CapturingObserver observer = new CapturingObserver();
-            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            registerReady(registry, "peer-1", observer);
 
             assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 60_000L));
             assertFalse(registry.killPeerAwaitingOperatorAck("peer-1", "sess-2", 60_001L));
@@ -741,7 +1227,7 @@ class ControlStreamRegistryTest {
             CapturingObserver observer = new CapturingObserver();
             ControlStreamRegistry registry = new ControlStreamRegistry(
                     scheduler, audits::add, () -> 70_010L, 5_000L, 30_000L);
-            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            registerReady(registry, "peer-1", observer);
             assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 70_000L));
 
             registry.completeAll();
@@ -758,6 +1244,113 @@ class ControlStreamRegistryTest {
     }
 
     @Test
+    void serverShutdownClosesEveryControlHandleBeforePendingAuditCanBlock() throws Exception {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        CountDownLatch releaseAudit = new CountDownLatch(1);
+        try {
+            CountDownLatch auditEntered = new CountDownLatch(1);
+            ControlStreamRegistry registry = new ControlStreamRegistry(scheduler, event -> {
+                auditEntered.countDown();
+                await(releaseAudit);
+            }, () -> 75_010L, 5_000L, 30_000L);
+            CapturingObserver pendingObserver = new CapturingObserver();
+            CapturingObserver ordinaryObserver = new CapturingObserver();
+            registerReady(registry, "peer-1", pendingObserver);
+            registerReady(registry, "peer-2", ordinaryObserver);
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 75_000L));
+
+            Thread shutdown = Thread.ofPlatform().start(registry::completeAll);
+            assertTrue(auditEntered.await(2, TimeUnit.SECONDS));
+
+            assertTrue(pendingObserver.completed);
+            assertTrue(ordinaryObserver.completed,
+                    "a blocked pending audit cannot keep an unrelated CONTROL stream open");
+            assertEquals(0, registry.connectedCount());
+            assertTrue(shutdown.isAlive(), "the test must observe the recorder blocking after transport cleanup");
+            assertFalse(registry.sendConsentPrompt("peer-2", prompt("sess-late"), 75_011L),
+                    "server shutdown must fence every new application-control send");
+            assertEquals(0, ordinaryObserver.sent.size());
+
+            CapturingObserver lateObserver = new CapturingObserver();
+            registry.register(peer("peer-late"), new ControlStreamHandle(lateObserver));
+            assertTrue(lateObserver.completed,
+                    "an already-accepted inbound call cannot publish a CONTROL generation after the shutdown fence");
+            assertEquals(0, registry.connectedCount());
+
+            releaseAudit.countDown();
+            shutdown.join(2_000L);
+            assertFalse(shutdown.isAlive());
+        } finally {
+            releaseAudit.countDown();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void serverShutdownClosesEveryTransportBeforeBrokerCleanupCanBlock() throws Exception {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity firstPeer = peer("peer-1");
+        PeerIdentity secondPeer = peer("peer-2");
+        CapturingObserver firstObserver = new CapturingObserver();
+        CapturingObserver secondObserver = new CapturingObserver();
+        ControlStreamHandle first = registerReady(registry, "peer-1", firstObserver);
+        ControlStreamHandle second = registerReady(registry, "peer-2", secondObserver);
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        CountDownLatch releaseCleanup = new CountDownLatch(1);
+        AtomicInteger firstCleanups = new AtomicInteger();
+        AtomicInteger secondCleanups = new AtomicInteger();
+        first.attachOnClose(() -> registry.unregister(firstPeer, first, () -> {
+            firstCleanups.incrementAndGet();
+            cleanupEntered.countDown();
+            await(releaseCleanup);
+        }));
+        second.attachOnClose(() -> registry.unregister(secondPeer, second, secondCleanups::incrementAndGet));
+
+        Thread shutdown = Thread.ofPlatform().start(registry::completeAll);
+        assertTrue(cleanupEntered.await(2, TimeUnit.SECONDS));
+
+        assertTrue(firstObserver.completed);
+        assertTrue(secondObserver.completed,
+                "an earlier broker cleanup cannot keep another CONTROL transport open");
+        assertEquals(0, registry.connectedCount());
+
+        releaseCleanup.countDown();
+        shutdown.join(2_000L);
+        assertFalse(shutdown.isAlive());
+        assertEquals(1, firstCleanups.get());
+        assertEquals(1, secondCleanups.get());
+    }
+
+    @Test
+    void shutdownFenceDropsPreparedConsentBeforeItsGenerationCommit() throws Exception {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        ControlStreamHandle handle = registerReady(registry, "peer-1", observer);
+        CountDownLatch preparationEntered = new CountDownLatch(1);
+        CountDownLatch releasePreparation = new CountDownLatch(1);
+        AtomicBoolean committed = new AtomicBoolean();
+        AtomicReference<Boolean> dispatched = new AtomicReference<>();
+
+        Thread consent = Thread.ofPlatform().start(() -> dispatched.set(
+                registry.dispatchPreparedConsentIfCurrentHelloObserved(peer("peer-1"), handle, () -> {
+                    preparationEntered.countDown();
+                    await(releasePreparation);
+                    return () -> committed.set(true);
+                })));
+        assertTrue(preparationEntered.await(2, TimeUnit.SECONDS));
+
+        registry.completeAll();
+        releasePreparation.countDown();
+        consent.join(2_000L);
+
+        assertFalse(consent.isAlive());
+        assertEquals(false, dispatched.get());
+        assertFalse(committed.get(), "shutdown must fence a prepared mutation before its generation commit");
+        assertTrue(observer.completed);
+        assertEquals(0, registry.connectedCount());
+    }
+
+    @Test
     void unavailableAckSchedulerFallsBackToImmediateFailClosedKillWithDurableReason() {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         scheduler.shutdownNow();
@@ -765,7 +1358,7 @@ class ControlStreamRegistryTest {
         CapturingObserver observer = new CapturingObserver();
         ControlStreamRegistry registry = new ControlStreamRegistry(
                 scheduler, audits::add, () -> 80_000L, 5_000L, 30_000L);
-        registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+        registerReady(registry, "peer-1", observer);
 
         assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 80_000L));
 
@@ -786,7 +1379,7 @@ class ControlStreamRegistryTest {
                 ControlStreamRegistry registry = new ControlStreamRegistry(
                         scheduler, audits::add, now::get, 5_000L, 30_000L);
                 CapturingObserver oldObserver = new CapturingObserver();
-                registry.register(peer("peer-1"), new ControlStreamHandle(oldObserver));
+                registerReady(registry, "peer-1", oldObserver);
                 assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", base));
 
                 CapturingObserver successorObserver = new CapturingObserver();
@@ -802,7 +1395,7 @@ class ControlStreamRegistryTest {
                 Thread reconnect = Thread.ofPlatform().start(() -> {
                     ready.countDown();
                     await(start);
-                    registry.register(peer("peer-1"), new ControlStreamHandle(successorObserver));
+                    registerReady(registry, "peer-1", successorObserver);
                 });
                 assertTrue(ready.await(2, TimeUnit.SECONDS));
                 start.countDown();

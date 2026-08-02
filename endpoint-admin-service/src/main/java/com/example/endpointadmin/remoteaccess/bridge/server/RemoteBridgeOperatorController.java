@@ -155,9 +155,10 @@ public class RemoteBridgeOperatorController {
      * Open an ATTENDED session to a device the operator's OWN tenant owns: resolve the verified connected peer
      * ({@link ConnectedDeviceResolver}), then drive the broker's consent flow. The operator subject AND tenant
      * come from the AUTHENTICATED identity, never the body — the body only names the target device + reason +
-     * capabilities. This is the path-LESS create (no {@code {sessionId}}); the operator-supplied sessionId is
-     * the new session's id — a duplicate is REFUSED (not idempotent-success), and it cannot target another
-     * operator's session.
+     * capabilities. This is the path-LESS create (no {@code {sessionId}}). The body sessionId remains a bounded
+     * request correlation value for backward-compatible validation, but it is never the authority-bearing session
+     * incarnation: the broker generates a fresh UUID for every accepted create. A broker restart therefore cannot
+     * make an old consent result address a later session through a caller-reused id.
      *
      * <p><b>Full request-shape validation BEFORE the resolver (Codex REVISE):</b> every malformed input (a bad
      * subject, a non-canonical/invalid id, a missing/non-pilot/null capability) is rejected before
@@ -186,6 +187,9 @@ public class RemoteBridgeOperatorController {
         if (body == null) {
             return ResponseEntity.badRequest().build();
         }
+        if (!WireContract.isValidId(body.sessionId())) {
+            return ResponseEntity.badRequest().build();
+        }
         UUID deviceId = parseUuidOrNull(body.deviceId());
         if (deviceId == null) {
             return ResponseEntity.badRequest().build(); // a missing/blank/malformed client deviceId is a bad request
@@ -198,7 +202,8 @@ public class RemoteBridgeOperatorController {
         }
         // build with the AUTHENTICATED subject + the CANONICAL device id (never the raw body id), then validate
         // the WHOLE request-shape before the resolver so a malformed request can never probe device state
-        SessionRequest sessionRequest = new SessionRequest(body.sessionId(), deviceId.toString(),
+        String serverSessionId = UUID.randomUUID().toString();
+        SessionRequest sessionRequest = new SessionRequest(serverSessionId, deviceId.toString(),
                 identity.operatorSubject(), body.reason(), capabilities);
         if (!WireContract.isValid(sessionRequest)) {
             return ResponseEntity.badRequest().build(); // invalid sessionId / shape — fail-closed before the resolver

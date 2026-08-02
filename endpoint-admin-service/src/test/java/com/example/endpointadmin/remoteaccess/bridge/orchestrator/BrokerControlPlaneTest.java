@@ -23,6 +23,11 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Faz 22.6 T-4a-i (Codex 019ebbfa) — the inbound orchestration slice: peer trust is verifier-produced and
  * freshness-bound; a session's lifecycle is machine-driven only; consent binds to the broker's own prompt
- * window (the agent can shorten, never extend); LOCAL_ABORT always kills; nothing in this slice issues
+ * window (the agent echoes the exact prompt expiry); LOCAL_ABORT always kills; nothing in this slice issues
  * authority (no prompts pushed, no permits — T-4a-ii).
  */
 class BrokerControlPlaneTest {
@@ -172,6 +177,28 @@ class BrokerControlPlaneTest {
     }
 
     @Test
+    void liveClockRejectsACertificateThatExpiresDuringTrustVerification() {
+        AtomicLong clock = new AtomicLong(NOW);
+        CertTrustEvaluator expiringCertificate = (cert, verifiedAt) ->
+                verifiedAt.toEpochMilli() < NOW + 500L
+                        ? CertTrustEvaluator.TrustDecision.ALLOW
+                        : CertTrustEvaluator.TrustDecision.EXPIRED;
+        AttestationVerifier slowAttestation = (evidence, verifiedAt) -> {
+            clock.set(NOW + 1_000L);
+            return AttestationVerifier.AttestationDecision.VERIFIED;
+        };
+        PeerTrustLedger ledger = new PeerTrustLedger(expiringCertificate, slowAttestation,
+                untrustingDeviceVerifier(), presentingParser(), 30_000L);
+
+        PeerTrustLedger.PeerTrust trust = ledger.evaluate(PEER, hello(), clock::get);
+
+        assertFalse(trust.certTrusted(), "certificate expiry during another verifier must fail closed");
+        assertTrue(trust.attestationVerified());
+        assertEquals(NOW + 1_000L, trust.recordedAtEpochMillis(),
+                "freshness starts when the full verifier composition completes");
+    }
+
+    @Test
     void freshnessTtlExpiresTheLedgerEntry() {
         PeerTrustLedger ledger = ledger(presentingParser(), true,
                 AttestationVerifier.AttestationDecision.VERIFIED);
@@ -271,6 +298,98 @@ class BrokerControlPlaneTest {
                 .count();
         assertEquals(1L, sessionScoped, "exactly one session-scoped HELLO_VERIFIED per accepted consent");
         assertTrue(sink.has("CONSENT_REFUSED:not-pending"));
+    }
+
+    @Test
+    void killedSessionCannotPublishItsEvaluatedTrustIntoASuccessorSession() throws Exception {
+        CountDownLatch evaluationStarted = new CountDownLatch(1);
+        CountDownLatch releaseEvaluation = new CountDownLatch(1);
+        AtomicLong evaluationCount = new AtomicLong();
+        PeerEvidenceParser blockingParser = (peer, hello) -> {
+            if (evaluationCount.incrementAndGet() == 1L) {
+                return presentingParser().parse(peer, hello);
+            }
+            evaluationStarted.countDown();
+            try {
+                assertTrue(releaseEvaluation.await(2, TimeUnit.SECONDS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+            return presentingParser().parse(peer, hello);
+        };
+        PeerTrustLedger ledger = ledger(blockingParser, true,
+                AttestationVerifier.AttestationDecision.VERIFIED);
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession first = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = new BrokerControlPlane(ledger, store, sink, () -> NOW + 1_000L);
+        plane.onAgentHello(PEER, hello());
+        ledger.forget(PEER.transportPeerKey());
+
+        Thread staleConsent = Thread.ofVirtual().start(() -> plane.onConsentResult(PEER,
+                new RemoteBridgeMessages.ConsentResult(
+                        "sess-1", true, "Console", NOW + 1_000L, PROMPT_EXPIRY)));
+        assertTrue(evaluationStarted.await(2, TimeUnit.SECONDS));
+
+        assertTrue(first.transition(Event.KILL).accepted(),
+                "KILL must not wait for side-effect-free consent verification");
+        store.evictIfTerminal(first.sessionId());
+        RemoteBridgeSession successor = ((RemoteBridgeSessionStore.Opened) store.open(
+                request("sess-2"), PEER, TENANT, "Op Erator", PROMPT_EXPIRY, NOW)).session();
+
+        releaseEvaluation.countDown();
+        staleConsent.join(2_000L);
+        assertFalse(staleConsent.isAlive());
+
+        assertEquals(State.CONSENT_PENDING, successor.state());
+        assertTrue(ledger.fresh(PEER.transportPeerKey(), NOW + 1_000L).isEmpty(),
+                "the killed incarnation must not publish trust visible to its successor");
+        assertTrue(sink.has("CONSENT_REFUSED:not-pending"));
+        assertFalse(sink.has("CONSENT_TRUST_REFRESHED"));
+    }
+
+    @Test
+    void consentThatExpiresDuringTrustVerificationCannotPublishOrActivate() throws Exception {
+        CountDownLatch evaluationStarted = new CountDownLatch(1);
+        CountDownLatch releaseEvaluation = new CountDownLatch(1);
+        AtomicLong evaluationCount = new AtomicLong();
+        AtomicLong clock = new AtomicLong(NOW + 1_000L);
+        PeerEvidenceParser blockingParser = (peer, hello) -> {
+            if (evaluationCount.incrementAndGet() > 1L) {
+                evaluationStarted.countDown();
+                try {
+                    assertTrue(releaseEvaluation.await(2, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }
+            return presentingParser().parse(peer, hello);
+        };
+        PeerTrustLedger ledger = ledger(blockingParser, true,
+                AttestationVerifier.AttestationDecision.VERIFIED);
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = new BrokerControlPlane(ledger, store, sink, clock::get);
+        plane.onAgentHello(PEER, hello());
+        ledger.forget(PEER.transportPeerKey());
+
+        Thread consent = Thread.ofVirtual().start(() -> plane.onConsentResult(PEER,
+                new RemoteBridgeMessages.ConsentResult(
+                        "sess-1", true, "Console", NOW + 1_000L, PROMPT_EXPIRY)));
+        assertTrue(evaluationStarted.await(2, TimeUnit.SECONDS));
+        clock.set(PROMPT_EXPIRY + 1L);
+        releaseEvaluation.countDown();
+        consent.join(2_000L);
+
+        assertFalse(consent.isAlive());
+        assertEquals(State.CONSENT_PENDING, session.state());
+        assertFalse(session.lease().granted());
+        assertTrue(ledger.fresh(PEER.transportPeerKey(), PROMPT_EXPIRY + 1L).isEmpty());
+        assertTrue(sink.has("CONSENT_REFUSED:expired-during-verification"));
+        assertFalse(sink.has("CONSENT_TRUST_REFRESHED"));
     }
 
     // --- RemoteBridgeSessionStore -------------------------------------------
@@ -386,25 +505,89 @@ class BrokerControlPlaneTest {
     // --- consent flow ---------------------------------------------------------
 
     private BrokerControlPlane plane(RemoteBridgeSessionStore store, RecordingSinkStub sink) {
-        return new BrokerControlPlane(
+        BrokerControlPlane plane = new BrokerControlPlane(
                 ledger(PeerEvidenceParser.FAIL_CLOSED, false, AttestationVerifier.AttestationDecision.MISSING),
                 store, sink, () -> NOW + 1000);
+        plane.onAgentHello(PEER, hello());
+        return plane;
     }
 
     @Test
-    void grantedConsentIsClampedToTheBrokerPromptWindow() {
+    void grantedConsentWithoutAnObservedAgentHelloStaysPending() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = new BrokerControlPlane(
+                ledger(PeerEvidenceParser.FAIL_CLOSED, false, AttestationVerifier.AttestationDecision.MISSING),
+                store, sink, () -> NOW + 1000);
+
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                "sess-1", true, "Console", NOW + 1000, PROMPT_EXPIRY));
+
+        assertEquals(State.CONSENT_PENDING, session.state());
+        assertFalse(session.lease().granted());
+        assertTrue(sink.hasExact("CONSENT_REFUSED:peer-hello-unavailable"));
+        assertFalse(sink.has("CONSENT_GRANTED"));
+    }
+
+    @Test
+    void aGrantFromAnEarlierSessionIncarnationIsRefused() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         RemoteBridgeSession session = opened(store, "sess-1");
         RecordingSinkStub sink = new RecordingSinkStub();
         BrokerControlPlane plane = plane(store, sink);
 
-        // the agent claims a YEAR of consent — the broker clamps to its own prompt window
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                "sess-1", true, "Console", NOW - 30_001, PROMPT_EXPIRY));
+
+        assertEquals(State.CONSENT_PENDING, session.state());
+        assertFalse(session.lease().granted());
+        assertTrue(sink.hasExact("CONSENT_REFUSED:invalid-grant-time"));
+    }
+
+    @Test
+    void aFutureDatedGrantIsRefused() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(store, sink);
+
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                "sess-1", true, "Console", NOW + 31_001, PROMPT_EXPIRY));
+
+        assertEquals(State.CONSENT_PENDING, session.state());
+        assertFalse(session.lease().granted());
+        assertTrue(sink.hasExact("CONSENT_REFUSED:invalid-grant-time"));
+    }
+
+    @Test
+    void boundedEndpointClockSkewDoesNotRefuseAttendedConsent() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(store, sink);
+
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                "sess-1", true, "Console", NOW - 29_000, PROMPT_EXPIRY));
+
+        assertEquals(State.ACTIVE, session.state());
+        assertTrue(session.lease().granted());
+        assertFalse(sink.hasExact("CONSENT_REFUSED:invalid-grant-time"));
+    }
+
+    @Test
+    void aConsentResultCannotReplaceTheBrokerPromptExpiry() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(store, sink);
+
+        // The prompt expiry is the available broker-owned incarnation binding, not an agent-selected lease.
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
                 NOW + 1000, NOW + 365L * 24 * 3600 * 1000));
-        assertEquals(State.ACTIVE, session.state()); // D10.1: a granted consent activates the session
-        assertTrue(session.lease().granted());
-        assertEquals(PROMPT_EXPIRY, session.lease().expiryEpochMillis());
-        assertTrue(sink.has("CONSENT_GRANTED"));
+        assertEquals(State.CONSENT_PENDING, session.state());
+        assertFalse(session.lease().granted());
+        assertTrue(sink.hasExact("CONSENT_REFUSED:prompt-binding"));
     }
 
     @Test
@@ -422,16 +605,6 @@ class BrokerControlPlaneTest {
     }
 
     @Test
-    void anAgentMayShortenItsOwnConsentWindow() {
-        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
-        RemoteBridgeSession session = opened(store, "sess-1");
-        BrokerControlPlane plane = plane(store, new RecordingSinkStub());
-        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
-                NOW + 1000, NOW + 5_000));
-        assertEquals(NOW + 5_000, session.lease().expiryEpochMillis());
-    }
-
-    @Test
     void consentRefusalsAreFailClosed() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         RemoteBridgeSession session = opened(store, "sess-1");
@@ -441,19 +614,175 @@ class BrokerControlPlaneTest {
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("ghost", true, "Console",
                 NOW, PROMPT_EXPIRY));
         assertTrue(sink.has("CONSENT_REFUSED:unknown-session"));
+        assertTrue(sink.events.stream().anyMatch(event -> event.sessionId().equals("ledger")
+                && event.eventType().equals("CONSENT_REFUSED:unknown-session")));
+        assertFalse(sink.events.stream().anyMatch(event -> event.sessionId().equals("ghost")
+                && event.eventType().equals("CONSENT_REFUSED:unknown-session")));
 
         plane.onConsentResult(OTHER_PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
                 NOW, PROMPT_EXPIRY));
         assertTrue(sink.has("CONSENT_REFUSED:wrong-peer"));
+        assertTrue(sink.events.stream().anyMatch(event -> event.sessionId().equals("ledger")
+                && event.eventType().equals("CONSENT_REFUSED:wrong-peer")));
+        assertFalse(sink.events.stream().anyMatch(event -> event.sessionId().equals("sess-1")
+                && event.eventType().equals("CONSENT_REFUSED:wrong-peer")));
         assertEquals(State.CONSENT_PENDING, session.state()); // untouched by the foreign peer
 
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
-                NOW, PROMPT_EXPIRY));
+                NOW + 1000, PROMPT_EXPIRY));
         assertEquals(State.ACTIVE, session.state()); // D10.1: a granted consent activates the session
         // a DUPLICATE grant replay is refused by the machine (no longer CONSENT_PENDING)
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
-                NOW, PROMPT_EXPIRY));
+                NOW + 1000, PROMPT_EXPIRY));
         assertTrue(sink.has("CONSENT_REFUSED:not-pending"));
+    }
+
+    @Test
+    void aTerminalSessionIdCannotBeReissuedWhileItsOldPromptCouldStillBeValid() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession first = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(store, sink);
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                "sess-1", false, "Console", NOW, PROMPT_EXPIRY));
+        assertTrue(first.isTerminal());
+
+        RemoteBridgeSessionStore.OpenResult reopened = store.open(
+                request("sess-1"), PEER, TENANT, "Op Erator",
+                PROMPT_EXPIRY, NOW + 1_000L);
+        assertTrue(reopened instanceof RemoteBridgeSessionStore.Refused);
+        assertEquals("duplicate-session-id", ((RemoteBridgeSessionStore.Refused) reopened).reason());
+        assertTrue(store.bySessionId("sess-1").isEmpty());
+
+        RemoteBridgeSessionStore.OpenResult afterExpiry = store.open(
+                request("sess-1"), PEER, TENANT, "Op Erator",
+                PROMPT_EXPIRY + 10_000L, PROMPT_EXPIRY + 1L);
+        assertTrue(afterExpiry instanceof RemoteBridgeSessionStore.Refused,
+                "proto-default explicit denial has no timestamp binding, so an issued id must remain one-use");
+        assertEquals("duplicate-session-id", ((RemoteBridgeSessionStore.Refused) afterExpiry).reason());
+    }
+
+    @Test
+    void issuedSessionIdTombstonesEvictOnlyTheOldestTerminalIdAtCapacity() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore(2);
+        RemoteBridgeSession first = opened(store, "sess-1");
+        assertTrue(first.transition(Event.KILL).accepted());
+        store.evictIfTerminal("sess-1");
+        RemoteBridgeSession second = opened(store, "sess-2");
+        assertTrue(second.transition(Event.KILL).accepted());
+        store.evictIfTerminal("sess-2");
+
+        RemoteBridgeSessionStore.OpenResult atCapacity = store.open(
+                request("sess-3"), PEER, TENANT, "Op Erator", PROMPT_EXPIRY, NOW);
+        assertTrue(atCapacity instanceof RemoteBridgeSessionStore.Opened,
+                "capacity evicts the oldest terminal tombstone instead of permanently disabling opens");
+
+        RemoteBridgeSessionStore.OpenResult recentReplay = store.open(
+                request("sess-2"), OTHER_PEER, TENANT, "Op Erator",
+                PROMPT_EXPIRY + 10_000L, PROMPT_EXPIRY + 1L);
+        assertTrue(recentReplay instanceof RemoteBridgeSessionStore.Refused,
+                "the newest terminal incarnation remains replay-protected");
+        assertEquals("duplicate-session-id", ((RemoteBridgeSessionStore.Refused) recentReplay).reason());
+    }
+
+    @Test
+    void anExplicitDenialWithProtoDefaultGrantFieldsStillTerminatesTheSession() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(store, sink);
+
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                "sess-1", false, "Console", 0L, 0L));
+
+        assertTrue(session.isTerminal());
+        assertTrue(store.bySessionId("sess-1").isEmpty());
+        assertTrue(sink.hasExact("CONSENT_DENIED"));
+
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                "sess-1", true, "Console", NOW + 1_000L, PROMPT_EXPIRY));
+        assertTrue(session.isTerminal(), "a later grant cannot revive an explicitly denied session");
+    }
+
+    @Test
+    void aRefusedControlFrameCannotSelectAnySessionAuditIdentity() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(store, sink);
+
+        plane.onControlFrameRefused(OTHER_PEER, "control-generation-not-ready");
+        assertTrue(sink.events.stream().anyMatch(event -> event.sessionId().equals("ledger")
+                && event.eventType().equals("CONTROL_FRAME_REFUSED:control-generation-not-ready")));
+        assertFalse(sink.events.stream().anyMatch(event -> event.sessionId().equals("sess-1")),
+                "an authenticated peer cannot select another session's audit identity");
+
+        plane.onControlFrameRefused(PEER, "control-generation-not-ready");
+        assertEquals(2L, sink.events.stream().filter(event -> event.sessionId().equals("ledger")
+                && event.eventType().equals("CONTROL_FRAME_REFUSED:control-generation-not-ready")).count());
+        assertFalse(sink.events.stream().anyMatch(event -> event.sessionId().equals("sess-1")),
+                "even the owning peer cannot route a refused frame into its accepted session audit chain");
+    }
+
+    @Test
+    void evictDoesNotWaitForTheTerminalSessionsMonitor() throws Exception {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession first = opened(store, "sess-1");
+        assertTrue(first.transition(Event.KILL).accepted());
+        AtomicReference<Thread> eviction = new AtomicReference<>();
+
+        synchronized (first) {
+            eviction.set(Thread.ofVirtual().start(() -> store.evictIfTerminal("sess-1")));
+            eviction.get().join(500L);
+            assertFalse(eviction.get().isAlive(),
+                    "store coordination must not acquire the session monitor while holding its own lock");
+        }
+        assertTrue(store.bySessionId("sess-1").isEmpty());
+    }
+
+    @Test
+    void concurrentTerminalEvictionAndSameIdentityReopenCannotOrphanTheSuccessor() throws Exception {
+        for (int iteration = 0; iteration < 500; iteration++) {
+            int currentIteration = iteration;
+            RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+            RemoteBridgeSession first = opened(store, "sess-1");
+            assertTrue(first.transition(Event.KILL).accepted());
+            CountDownLatch ready = new CountDownLatch(2);
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicReference<RemoteBridgeSessionStore.OpenResult> reopen = new AtomicReference<>();
+
+            Thread eviction = Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                await(ready, start);
+                store.evictIfTerminal("sess-1");
+            });
+            String successorSessionId = "sess-successor-" + currentIteration;
+            Thread opening = Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                await(ready, start);
+                reopen.set(store.open(request(successorSessionId), PEER, TENANT, "Op Erator",
+                        PROMPT_EXPIRY, NOW));
+            });
+            assertTrue(ready.await(2, TimeUnit.SECONDS));
+            start.countDown();
+            eviction.join();
+            opening.join();
+
+            if (reopen.get() instanceof RemoteBridgeSessionStore.Opened opened) {
+                assertEquals(opened.session(), store.bySessionId(successorSessionId).orElseThrow());
+                assertEquals(opened.session(), store.liveByPeer(PEER.transportPeerKey()).orElseThrow());
+            }
+        }
+    }
+
+    private static void await(CountDownLatch ready, CountDownLatch start) {
+        try {
+            assertTrue(ready.await(2, TimeUnit.SECONDS));
+            assertTrue(start.await(2, TimeUnit.SECONDS));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(interrupted);
+        }
     }
 
     @Test
@@ -504,6 +833,33 @@ class BrokerControlPlaneTest {
         assertFalse(session.lease().granted());
     }
 
+    @Test
+    void endpointMayShortenConsentLeaseButCannotExtendTheBrokerPromptWindow() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession shortened = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(store, sink);
+        long shortenedExpiry = PROMPT_EXPIRY - 10_000L;
+
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                "sess-1", true, "Console", NOW + 1_000L, shortenedExpiry));
+
+        assertEquals(State.ACTIVE, shortened.state());
+        assertTrue(shortened.lease().granted());
+        assertEquals(shortenedExpiry, shortened.lease().expiryEpochMillis());
+
+        RemoteBridgeSessionStore secondStore = new RemoteBridgeSessionStore();
+        RemoteBridgeSession extended = opened(secondStore, "sess-2");
+        RecordingSinkStub secondSink = new RecordingSinkStub();
+        BrokerControlPlane secondPlane = plane(secondStore, secondSink);
+        secondPlane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                "sess-2", true, "Console", NOW + 1_000L, PROMPT_EXPIRY + 1L));
+
+        assertEquals(State.CONSENT_PENDING, extended.state());
+        assertFalse(extended.lease().granted());
+        assertTrue(secondSink.has("CONSENT_REFUSED:prompt-binding"));
+    }
+
     // --- inbound audit ---------------------------------------------------------
 
     @Test
@@ -513,7 +869,7 @@ class BrokerControlPlaneTest {
         RecordingSinkStub sink = new RecordingSinkStub();
         BrokerControlPlane plane = plane(store, sink);
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
-                NOW, PROMPT_EXPIRY));
+                NOW + 1000, PROMPT_EXPIRY));
 
         plane.onAuditEvent(PEER, new RemoteBridgeMessages.AuditEvent("sess-1",
                 BrokerControlPlane.EVENT_LOCAL_ABORT, "", NOW + 2000));
@@ -530,7 +886,7 @@ class BrokerControlPlaneTest {
         RecordingSinkStub sink = new RecordingSinkStub();
         BrokerControlPlane plane = plane(store, sink);
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
-                NOW, PROMPT_EXPIRY));
+                NOW + 1000, PROMPT_EXPIRY));
 
         // the user can no longer SEE that support is active — the lease contract treats this as an abort
         plane.onAuditEvent(PEER, new RemoteBridgeMessages.AuditEvent("sess-1",
@@ -567,7 +923,7 @@ class BrokerControlPlaneTest {
         ViewOnlyViewerRegistry viewers = new ViewOnlyViewerRegistry(1);
         plane.configureViewOnlyLifecycle(new ViewOnlySessionLifecycle(authz, viewers));
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
-                NOW, PROMPT_EXPIRY));
+                NOW + 1000, PROMPT_EXPIRY));
 
         Object incarnation = new Object();
         authz.beginSession("sess-1", incarnation);
@@ -605,7 +961,7 @@ class BrokerControlPlaneTest {
         plane.configureViewOnlyLifecycle(new ViewOnlySessionLifecycle(authz, viewers));
         // drive the session to ACTIVE
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
-                NOW, PROMPT_EXPIRY));
+                NOW + 1000, PROMPT_EXPIRY));
 
         // an authorized VIEW_ONLY screen stream + a subscribed operator viewer, bound to this peer
         Object incarnation = new Object();
@@ -669,9 +1025,14 @@ class BrokerControlPlaneTest {
     void aForeignPeerCannotLocalAbortAnotherDevicesSession() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         RemoteBridgeSession session = opened(store, "sess-1");
-        plane(store, new RecordingSinkStub()).onAuditEvent(OTHER_PEER,
+        RecordingSinkStub sink = new RecordingSinkStub();
+        plane(store, sink).onAuditEvent(OTHER_PEER,
                 new RemoteBridgeMessages.AuditEvent("sess-1", BrokerControlPlane.EVENT_LOCAL_ABORT, "", NOW));
         assertFalse(session.isTerminal());
+        assertTrue(sink.events.stream().noneMatch(event -> event.sessionId().equals("sess-1")),
+                "a foreign peer cannot select the victim's audit chain");
+        assertTrue(sink.events.stream().anyMatch(event -> event.sessionId().equals("ledger")
+                && event.eventType().equals("AGENT_AUDIT_REFUSED:wrong-session")));
     }
 
     @Test
@@ -683,18 +1044,39 @@ class BrokerControlPlaneTest {
                 "ALLOW_DECISION:op-9", "", NOW)); // broker-shaped authority from an agent — refused
         assertTrue(sink.has("AGENT_AUDIT_REFUSED"));
         assertFalse(sink.has("AGENT:ALLOW_DECISION"));
+        assertTrue(sink.events.stream().allMatch(event -> event.sessionId().equals("ledger")));
     }
 
     @Test
     void agentErrorFramesAreRecordedAsMetadataOnly() {
         RecordingSinkStub sink = new RecordingSinkStub();
-        BrokerControlPlane plane = plane(new RemoteBridgeSessionStore(), sink);
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        opened(store, "sess-1");
+        BrokerControlPlane plane = plane(store, sink);
 
         plane.onAgentErrorFrame(PEER, new RemoteBridgeMessages.AgentErrorFrame("sess-1",
                 "operation-dispatch-failed", false, "contains local details but is not persisted"));
 
         assertTrue(sink.has("AGENT_ERROR:operation-dispatch-failed:retryable=false"));
         assertFalse(sink.events.stream().anyMatch(e -> e.eventType().contains("local details")));
+    }
+
+    @Test
+    void aForeignAgentErrorCannotSelectAnotherSessionsAuditOrProbeIdentity() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        RemoteBridgeAgentErrorLedger errorLedger = new RemoteBridgeAgentErrorLedger(16);
+        BrokerControlPlane plane = new BrokerControlPlane(
+                ledger(PeerEvidenceParser.FAIL_CLOSED, false, AttestationVerifier.AttestationDecision.MISSING),
+                store, sink, () -> NOW, errorLedger);
+
+        plane.onAgentErrorFrame(OTHER_PEER, new RemoteBridgeMessages.AgentErrorFrame(
+                "sess-1", "operation-dispatch-failed", false, "redacted"));
+
+        assertTrue(sink.events.stream().allMatch(event -> event.sessionId().equals("ledger")));
+        assertTrue(errorLedger.findAfter("sess-1", OTHER_PEER.transportPeerKey(),
+                "operation-dispatch-failed", NOW).isEmpty());
     }
 
     @Test
@@ -706,11 +1088,12 @@ class BrokerControlPlaneTest {
         BrokerControlPlane plane = new BrokerControlPlane(
                 ledger(PeerEvidenceParser.FAIL_CLOSED, false, AttestationVerifier.AttestationDecision.MISSING),
                 store, sink, () -> NOW + 1000, errorLedger);
+        plane.onAgentHello(PEER, hello());
         ViewOnlyStreamAuthorizationRegistry authz = new ViewOnlyStreamAuthorizationRegistry();
         ViewOnlyViewerRegistry viewers = new ViewOnlyViewerRegistry(1);
         plane.configureViewOnlyLifecycle(new ViewOnlySessionLifecycle(authz, viewers));
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
-                "sess-1", true, "Console", NOW, PROMPT_EXPIRY));
+                "sess-1", true, "Console", NOW + 1000, PROMPT_EXPIRY));
         Object incarnation = new Object();
         authz.beginSession("sess-1", incarnation);
         authz.authorize(incarnation, new ViewOnlyStreamAuthorizationRegistry.Authorization(
@@ -755,7 +1138,7 @@ class BrokerControlPlaneTest {
             BrokerControlPlane plane = plane(store, new RecordingSinkStub());
             if (variant.active()) {
                 plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
-                        "sess-1", true, "Console", NOW, PROMPT_EXPIRY));
+                        "sess-1", true, "Console", NOW + 1000, PROMPT_EXPIRY));
             }
 
             plane.onAgentErrorFrame(variant.peer(), new RemoteBridgeMessages.AgentErrorFrame(
@@ -770,7 +1153,7 @@ class BrokerControlPlaneTest {
             RemoteBridgeSession session = opened(store, "sess-1");
             BrokerControlPlane plane = plane(store, new RecordingSinkStub());
             plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
-                    "sess-1", true, "Console", NOW, PROMPT_EXPIRY));
+                    "sess-1", true, "Console", NOW + 1000, PROMPT_EXPIRY));
 
             plane.onAgentErrorFrame(PEER, new RemoteBridgeMessages.AgentErrorFrame(
                     invalidSessionId, BrokerControlPlane.ERROR_SCREEN_VIEW_PERMIT_EXPIRED,
@@ -791,6 +1174,35 @@ class BrokerControlPlaneTest {
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", false, "Console",
                 NOW, PROMPT_EXPIRY));
         assertTrue(session.isTerminal()); // the denial still lands — fail-safe beats audit
+    }
+
+    @Test
+    void aStalledAuditSinkCannotHoldTheInboundControlCallback() throws Exception {
+        CountDownLatch auditEntered = new CountDownLatch(1);
+        CountDownLatch releaseAudit = new CountDownLatch(1);
+        ExecutorService auditExecutor = Executors.newSingleThreadExecutor();
+        try {
+            BrokerControlPlane plane = new BrokerControlPlane(
+                    ledger(PeerEvidenceParser.FAIL_CLOSED, false, AttestationVerifier.AttestationDecision.MISSING),
+                    new RemoteBridgeSessionStore(), event -> {
+                        auditEntered.countDown();
+                        try {
+                            releaseAudit.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }, () -> NOW, new RemoteBridgeAgentErrorLedger(0), null, null, auditExecutor);
+
+            Thread inbound = Thread.ofPlatform().start(() ->
+                    plane.onControlFrameRefused(PEER, "control-generation-not-ready"));
+            inbound.join(500L);
+
+            assertFalse(inbound.isAlive(), "best-effort audit I/O must run outside the inbound generation callback");
+            assertTrue(auditEntered.await(2, TimeUnit.SECONDS));
+        } finally {
+            releaseAudit.countDown();
+            auditExecutor.shutdownNow();
+        }
     }
 
     // --- session primitives ------------------------------------------------------

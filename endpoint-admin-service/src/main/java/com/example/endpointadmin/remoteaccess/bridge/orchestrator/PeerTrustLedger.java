@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongSupplier;
 
 /**
  * Faz 22.6 T-4a-i (Codex 019ebbfa P3) — per-authenticated-peer verifier outcomes. On every AgentHello the
@@ -75,48 +76,88 @@ public final class PeerTrustLedger {
      * (never skipped-as-true); a verifier throwing records FALSE for that dimension (fail-closed, total).
      */
     public PeerTrust record(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello, long nowEpochMillis) {
+        PeerTrust trust = evaluate(peer, hello, nowEpochMillis);
+        publish(peer, trust);
+        return trust;
+    }
+
+    /**
+     * Run the verifier composition without publishing a peer-wide trust record. Consent handling uses this
+     * two-phase form so verifier work does not block a session KILL, while publication can still be committed
+     * atomically with that same session incarnation's CONSENT_GRANTED transition.
+     */
+    PeerTrust evaluate(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello, long nowEpochMillis) {
+        return evaluate(peer, hello, () -> nowEpochMillis);
+    }
+
+    /**
+     * Evaluate against a live clock. Verification can include bounded certificate/attestation lookups, so using a
+     * timestamp captured before parsing would allow evidence that expires during those lookups to be recorded as
+     * current. Each verifier receives a fresh timestamp and the resulting record is dated at completion.
+     */
+    PeerTrust evaluate(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello, LongSupplier clock) {
+        if (clock == null) {
+            throw new IllegalArgumentException("clock is required");
+        }
+        long startedAtEpochMillis = clock.getAsLong();
         PeerEvidenceParser.ParsedEvidence parsed;
         try {
             parsed = parser.parse(peer, hello);
         } catch (RuntimeException e) {
             parsed = PeerEvidenceParser.ParsedEvidence.empty(); // a non-total parser still fails CLOSED here
         }
-        Instant now = Instant.ofEpochMilli(nowEpochMillis);
-        boolean cert = parsed.certRef().map(ref -> {
-            try {
-                return certTrustEvaluator.evaluate(ref, now).isValid();
-            } catch (RuntimeException e) {
-                return false;
-            }
-        }).orElse(false);
         boolean attestation = parsed.attestation().map(evidence -> {
             try {
-                return attestationVerifier.verify(evidence, now).isVerified();
+                return attestationVerifier.verify(evidence, Instant.ofEpochMilli(clock.getAsLong())).isVerified();
             } catch (RuntimeException e) {
                 return false;
             }
         }).orElse(false);
         boolean device = parsed.deviceKey().map(key -> {
             try {
-                return deviceIdentityVerifier.verify(key, now).isTrusted();
+                return deviceIdentityVerifier.verify(key, Instant.ofEpochMilli(clock.getAsLong())).isTrusted();
             } catch (RuntimeException e) {
                 return false;
             }
         }).orElse(false);
+        // Certificate validity is the shortest-lived transport trust dimension and is intentionally checked last,
+        // after potentially slower attestation/device verification, so an expiry during verification fails closed.
+        boolean cert = parsed.certRef().map(ref -> {
+            try {
+                return certTrustEvaluator.evaluate(ref, Instant.ofEpochMilli(clock.getAsLong())).isValid();
+            } catch (RuntimeException e) {
+                return false;
+            }
+        }).orElse(false);
+        long completedAtEpochMillis = clock.getAsLong();
+        if (completedAtEpochMillis < startedAtEpochMillis
+                || completedAtEpochMillis - startedAtEpochMillis > freshnessTtlMillis) {
+            cert = false;
+            attestation = false;
+            device = false;
+        }
         PeerTrust trust = new PeerTrust(cert, attestation, device, peer.certBoundDeviceId(),
-                hello.deviceId(), nowEpochMillis, hello.supportedFeatures());
-        byPeer.put(peer.transportPeerKey(), trust);
+                hello.deviceId(), completedAtEpochMillis, hello.supportedFeatures());
         return trust;
+    }
+
+    /** Publish a previously evaluated result for this exact authenticated peer. */
+    void publish(PeerIdentity peer, PeerTrust trust) {
+        byPeer.put(peer.transportPeerKey(), trust);
     }
 
     /** The peer's trust record ONLY while fresh — stale (or absent) verification is no verification. */
     public Optional<PeerTrust> fresh(String transportPeerKey, long nowEpochMillis) {
         PeerTrust trust = byPeer.get(transportPeerKey);
-        if (trust == null || nowEpochMillis - trust.recordedAtEpochMillis() > freshnessTtlMillis
-                || nowEpochMillis < trust.recordedAtEpochMillis()) {
+        if (!isFresh(trust, nowEpochMillis)) {
             return Optional.empty();
         }
         return Optional.of(trust);
+    }
+
+    boolean isFresh(PeerTrust trust, long nowEpochMillis) {
+        return trust != null && nowEpochMillis >= trust.recordedAtEpochMillis()
+                && nowEpochMillis - trust.recordedAtEpochMillis() <= freshnessTtlMillis;
     }
 
     public void forget(String transportPeerKey) {

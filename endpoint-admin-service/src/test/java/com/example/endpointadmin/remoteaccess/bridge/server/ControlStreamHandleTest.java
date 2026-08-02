@@ -194,6 +194,7 @@ class ControlStreamHandleTest {
         ControlStreamHandle handle = new ControlStreamHandle(throwingObserver());
         registry.register(peer, handle);
         handle.attachOnClose(() -> registry.unregister(peer, handle));
+        assertTrue(registry.absorbAgentHello(peer, handle, () -> { }));
         assertTrue(registry.isConnected("peer-fp-x"));
 
         assertFalse(handle.send(HEARTBEAT)); // the heartbeat task's write path
@@ -214,6 +215,7 @@ class ControlStreamHandleTest {
         ControlStreamHandle second = new ControlStreamHandle(quietObserver());
         registry.register(peer, second); // closes first → first's on-close runs → remove(key, first) no-ops
         second.attachOnClose(() -> registry.unregister(peer, second));
+        assertTrue(registry.absorbAgentHello(peer, second, () -> { }));
 
         assertTrue(first.isClosed());
         assertTrue(registry.isConnected("peer-fp-x"));

@@ -72,8 +72,13 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import java.security.PrivateKey;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_CONTROL_STREAMS_CONNECTED;
 
@@ -226,6 +231,16 @@ public class RemoteBridgeServerConfig {
                 event.sessionId(), event.eventType(), event.epochMillis());
     }
 
+    @Bean(destroyMethod = "shutdownNow")
+    public ExecutorService remoteBridgeInboundAuditExecutor() {
+        return new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(1_024), runnable -> {
+                    Thread thread = new Thread(runnable, "remote-bridge-inbound-audit");
+                    thread.setDaemon(true);
+                    return thread;
+                }, new ThreadPoolExecutor.AbortPolicy());
+    }
+
     @Bean
     public RemoteBridgeAgentErrorLedger remoteBridgeAgentErrorLedger(
             @Value("${remote-bridge.agent-error-ledger.max-entries:256}") int maxEntries) {
@@ -243,6 +258,8 @@ public class RemoteBridgeServerConfig {
                                                        RemoteBridgeSessionStore store,
                                                        @Qualifier("remoteBridgeInboundAuditSink")
                                                        RemoteBridgeAuditSink auditSink,
+                                                       @Qualifier("remoteBridgeInboundAuditExecutor")
+                                                       Executor auditExecutor,
                                                        RemoteBridgeAgentErrorLedger agentErrorLedger,
                                                        DeviceKeyChallengeStore remoteBridgeDeviceKeyChallengeStore,
                                                        TpmDeviceKeySessionEvidenceStore
@@ -255,7 +272,8 @@ public class RemoteBridgeServerConfig {
         // The device-key stores wire the #548 step-5 consumer; until the step-5b issuance lands no challenge
         // exists to consume, so the path is inert (fail-closed) even though the stores are present.
         BrokerControlPlane controlPlane = new BrokerControlPlane(ledger, store, auditSink, System::currentTimeMillis,
-                agentErrorLedger, remoteBridgeDeviceKeyChallengeStore, remoteBridgeDeviceKeySessionEvidenceStore);
+                agentErrorLedger, remoteBridgeDeviceKeyChallengeStore, remoteBridgeDeviceKeySessionEvidenceStore,
+                auditExecutor);
         // #1580 — agent-driven terminals (consent-denied / local-abort / indicator-lost) must also terminate the
         // VIEW_ONLY surface, so a stale authorization never keeps fanning frames out after the user pulls consent.
         controlPlane.configureViewOnlyLifecycle(remoteBridgeViewOnlySessionLifecycle);

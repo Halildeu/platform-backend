@@ -1,5 +1,6 @@
 package com.example.endpointadmin.remoteaccess.bridge.server;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointMachineCert;
@@ -30,6 +31,7 @@ import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.security.KeyPairGenerator;
@@ -129,7 +131,10 @@ class RemoteBridgeOperatorRestE2ETest {
 
         // the live agent peer, keyed by a canonical-64hex transport key (== the device's enrolled cert thumbprint)
         CapturingObserver agent = new CapturingObserver();
-        registry.register(new PeerIdentity(THUMBPRINT, Optional.of("dev-1"), List.of()), new ControlStreamHandle(agent));
+        PeerIdentity peer = new PeerIdentity(THUMBPRINT, Optional.of("dev-1"), List.of());
+        ControlStreamHandle handle = new ControlStreamHandle(agent);
+        registry.register(peer, handle);
+        registry.absorbAgentHello(peer, handle, () -> { });
 
         OperatorStepUpHandler stepUp = new OperatorStepUpHandler(
                 new InMemoryOperatorStepUpVerifier(MethodStrength.WEBAUTHN_USER_VERIFICATION, ORIGIN), store, ORIGIN, 120_000L);
@@ -140,23 +145,28 @@ class RemoteBridgeOperatorRestE2ETest {
         String auth = "Bearer " + TOKEN;
 
         // 1) openSession via REST → the resolver finds the live peer → a REAL consent prompt is pushed to the agent
-        mvc.perform(post("/internal/remote-bridge/operator/sessions").header("Authorization", auth)
+        MvcResult openResult = mvc.perform(post("/internal/remote-bridge/operator/sessions").header("Authorization", auth)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"sessionId\":\"s1\",\"deviceId\":\"" + DEVICE + "\",\"reason\":\"support\","
                         + "\"capabilities\":[\"VIEW_ONLY\"]}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.sessionId").value("s1"))
-                .andExpect(jsonPath("$.consentPromptSent").value(true));
+                .andExpect(jsonPath("$.sessionId").isNotEmpty())
+                .andExpect(jsonPath("$.consentPromptSent").value(true))
+                .andReturn();
+        String sessionId = new ObjectMapper().readTree(openResult.getResponse().getContentAsString())
+                .path("sessionId").asText();
+        assertTrue(!"s1".equals(sessionId), "the caller correlation id must not become session authority");
 
         assertTrue(agent.sent.stream().anyMatch(Envelope::hasConsentPrompt),
                 "the agent received the consent prompt on its live CONTROL stream (resolver → service → registry)");
-        RemoteBridgeSession session = store.bySessionId("s1").orElseThrow();
+        RemoteBridgeSession session = store.bySessionId(sessionId).orElseThrow();
         assertEquals(State.CONSENT_PENDING, session.state());
         assertEquals(TENANT.toString(), session.operatorTenantId(), "the session is pinned to the AUTHENTICATED tenant");
         assertEquals(OPERATOR, session.operatorSubject());
 
         // 2) step-up challenge via REST for the operator's OWN (tenant+subject) session → issued
-        mvc.perform(post("/internal/remote-bridge/operator/sessions/s1/step-up/challenge").header("Authorization", auth))
+        mvc.perform(post("/internal/remote-bridge/operator/sessions/" + sessionId + "/step-up/challenge")
+                .header("Authorization", auth))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.challengeB64").isNotEmpty())
                 .andExpect(jsonPath("$.expectedOrigin").value(ORIGIN));
@@ -164,7 +174,8 @@ class RemoteBridgeOperatorRestE2ETest {
         // 3) an operation via REST routes through the REAL broker. With no device PKI / no verified step-up, the
         //    honest verdict on a not-yet-active session is DENY — nothing is forged (No Fake Work).
         int beforeOperation = agent.sent.size();
-        mvc.perform(post("/internal/remote-bridge/operator/sessions/s1/operations").header("Authorization", auth)
+        mvc.perform(post("/internal/remote-bridge/operator/sessions/" + sessionId + "/operations")
+                .header("Authorization", auth)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"operationId\":\"op-1\",\"operation\":\"SCREEN_VIEW\"}"))
                 .andExpect(status().isOk())

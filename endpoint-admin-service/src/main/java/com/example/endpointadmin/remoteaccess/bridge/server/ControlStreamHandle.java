@@ -28,9 +28,12 @@ final class ControlStreamHandle {
     private Runnable onClose;
     private Runnable pendingCloseAction;
     private boolean closeActionAttached;
+    private boolean closeActionRunning;
+    private boolean closeActionCompleted;
     private String heartbeatSuppressionProbeId;
     private long heartbeatSuppressedUntilEpochMillis;
-    private boolean heartbeatFaultTerminalClaimed;
+    private boolean transportTerminalCleanupRequired;
+    private boolean transportTerminalCleanupClaimed;
     private boolean operatorKillPending;
     private volatile boolean closed;
 
@@ -78,12 +81,31 @@ final class ControlStreamHandle {
         return sendInternal(envelope, true);
     }
 
+    /**
+     * Serialized write whose close callback is deliberately drained by the registry after it releases the
+     * generation lock. This keeps the generation check and write atomic without allowing registry cleanup to
+     * re-enter a second lifecycle lock in the opposite order.
+     */
+    boolean sendDeferredCleanup(Envelope envelope) {
+        return sendInternal(envelope, true, false);
+    }
+
     /** Application/control authority must not reuse a handle quarantined for an operator-close ACK. */
     boolean sendApplicationControl(Envelope envelope) {
         return sendInternal(envelope, false);
     }
 
+    boolean sendApplicationControlDeferredCleanup(Envelope envelope) {
+        return sendInternal(envelope, false, false);
+    }
+
     private boolean sendInternal(Envelope envelope, boolean allowedDuringOperatorKill) {
+        return sendInternal(envelope, allowedDuringOperatorKill, true);
+    }
+
+    private boolean sendInternal(Envelope envelope,
+                                 boolean allowedDuringOperatorKill,
+                                 boolean drainCleanup) {
         boolean delivered;
         synchronized (this) {
             if (closed || (!allowedDuringOperatorKill && operatorKillPending)) {
@@ -97,7 +119,9 @@ final class ControlStreamHandle {
                 delivered = false;
             }
         }
-        drainCloseAction();
+        if (drainCleanup) {
+            drainCloseAction();
+        }
         return delivered;
     }
 
@@ -112,6 +136,11 @@ final class ControlStreamHandle {
 
     synchronized boolean isApplicationControlAvailable() {
         return !closed && !operatorKillPending;
+    }
+
+    /** The quarantined stream remains inbound-live only for its exact pending operator-kill acknowledgement. */
+    synchronized boolean isOperatorKillAcknowledgementAvailable() {
+        return !closed && operatorKillPending;
     }
 
     /**
@@ -154,7 +183,6 @@ final class ControlStreamHandle {
         }
         heartbeatSuppressionProbeId = probeId;
         heartbeatSuppressedUntilEpochMillis = untilEpochMillis;
-        heartbeatFaultTerminalClaimed = false;
         return new HeartbeatSuppression(probeId, untilEpochMillis, true);
     }
 
@@ -166,16 +194,29 @@ final class ControlStreamHandle {
         String probeId = heartbeatSuppressionProbeId;
         heartbeatSuppressionProbeId = null;
         heartbeatSuppressedUntilEpochMillis = 0L;
-        heartbeatFaultTerminalClaimed = false;
         return probeId;
     }
 
-    /** Exactly one stale-reconnect callback may claim terminal cleanup for an armed heartbeat probe. */
-    synchronized boolean claimHeartbeatFaultTerminalCleanup() {
-        if (heartbeatSuppressionProbeId == null || heartbeatFaultTerminalClaimed) {
+    /** Exactly one callback may retire this transport generation's broker-owned session/trust state. */
+    synchronized boolean claimTransportTerminalCleanup() {
+        if (transportTerminalCleanupClaimed) {
             return false;
         }
-        heartbeatFaultTerminalClaimed = true;
+        transportTerminalCleanupClaimed = true;
+        return true;
+    }
+
+    /** Replacement/shutdown removed this handle before close; its callback must still retire broker state. */
+    synchronized void requireTransportTerminalCleanup() {
+        transportTerminalCleanupRequired = true;
+    }
+
+    /** Claim cleanup only when the registry explicitly retired this handle before its close callback. */
+    synchronized boolean claimRequiredTransportTerminalCleanup() {
+        if (!transportTerminalCleanupRequired || transportTerminalCleanupClaimed) {
+            return false;
+        }
+        transportTerminalCleanupClaimed = true;
         return true;
     }
 
@@ -200,10 +241,33 @@ final class ControlStreamHandle {
 
     /** Terminate the stream: cancel the heartbeat, complete the observer. Idempotent. */
     void close() {
+        closeDeferredCleanup();
+        drainCloseAction();
+    }
+
+    /** Close transport authority now, but let the lifecycle owner drain potentially slow policy cleanup later. */
+    void closeDeferredCleanup() {
         synchronized (this) {
             closeLocked();
         }
-        drainCloseAction();
+    }
+
+    /** Close and wait until an already-attached registry cleanup action has completed. */
+    void closeAndAwaitCleanup() {
+        close();
+        boolean interrupted = false;
+        synchronized (this) {
+            while (closeActionAttached && !closeActionCompleted) {
+                try {
+                    wait();
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     boolean isClosed() {
@@ -231,7 +295,7 @@ final class ControlStreamHandle {
         onClose = null;
     }
 
-    private void drainCloseAction() {
+    void drainCloseAction() {
         // An observer is allowed to synchronously re-enter close() from onNext/onCompleted. Java monitors are
         // reentrant, so leaving close()'s nested synchronized block does not mean the outer send released the
         // lock. Defer until the outermost transport call exits; this preserves serialized observer writes while
@@ -241,13 +305,27 @@ final class ControlStreamHandle {
         }
         Runnable action;
         synchronized (this) {
+            if (closeActionRunning) {
+                return;
+            }
             action = pendingCloseAction;
             pendingCloseAction = null;
+            if (action != null) {
+                closeActionRunning = true;
+            }
         }
         if (action != null) {
             // Registry removal may synchronously trigger broker session cleanup and durable audit. Never execute
             // that work under the stream monitor: doing so would couple transport serialization to policy I/O.
-            action.run();
+            try {
+                action.run();
+            } finally {
+                synchronized (this) {
+                    closeActionRunning = false;
+                    closeActionCompleted = true;
+                    notifyAll();
+                }
+            }
         }
     }
 }

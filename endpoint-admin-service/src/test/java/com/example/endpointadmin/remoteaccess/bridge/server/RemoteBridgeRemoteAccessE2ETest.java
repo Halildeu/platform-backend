@@ -14,6 +14,7 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.State;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.ConsentResult;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AgentHello;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.BrokerControlPlane;
@@ -101,7 +102,7 @@ class RemoteBridgeRemoteAccessE2ETest {
         PeerTrustLedger ledger = ledger();
         ControlStreamRegistry registry = new ControlStreamRegistry();
         RemoteBridgeAuditSink audit = event -> { };
-        BrokerControlPlane controlPlane = new BrokerControlPlane(ledger, store, audit, () -> NOW);
+        BrokerControlPlane controlPlane = new BrokerControlPlane(ledger, store, audit, () -> NOW + 1);
         TrustEvidenceAssembler assembler = new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL,
                 (sid, now) -> DuressSignal.NONE); // clean duress so the chain reaches the policy engine
         RemoteBridgeOperatorService operator = new RemoteBridgeOperatorService(store, assembler, broker(),
@@ -109,7 +110,10 @@ class RemoteBridgeRemoteAccessE2ETest {
 
         CapturingObserver agent = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity(PEER, Optional.of("dev-1"), List.of());
-        registry.register(peer, new ControlStreamHandle(agent));
+        ControlStreamHandle handle = new ControlStreamHandle(agent);
+        registry.register(peer, handle);
+        registry.absorbAgentHello(peer, handle, () -> controlPlane.onAgentHello(peer, new AgentHello(
+                "0.2.3", "dev-1", "ab12", "ZXZpZGVuY2U=", "rb-v1", Set.of())));
 
         // 1) operator opens the attended session → the agent receives a consent prompt on CONTROL
         SessionOpenOutcome open = operator.openSession(
@@ -125,7 +129,8 @@ class RemoteBridgeRemoteAccessE2ETest {
         // 2) the agent reports the end-user's consent → the control plane absorbs it → grants the lease AND
         //    activates the session (D10.1 #634: a granted consent moves the session to ACTIVE automatically —
         //    no manual ACTIVATE step; ACTIVE is transport readiness, not authority)
-        controlPlane.onConsentResult(peer, new ConsentResult("s1", true, "1", NOW, NOW + 300_000L));
+        controlPlane.onConsentResult(peer, new ConsentResult(
+                "s1", true, "1", NOW + 1, session.promptExpiryEpochMillis()));
         assertEquals(State.ACTIVE, session.state());
 
         // 3) the operator issues an operation → broker → transport routing. With no device PKI / step-up wired,

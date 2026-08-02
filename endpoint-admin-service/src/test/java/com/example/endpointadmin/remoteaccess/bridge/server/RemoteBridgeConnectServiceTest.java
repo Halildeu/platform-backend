@@ -30,6 +30,10 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -38,7 +42,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_CONTROL_KILL_QUARANTINE_REFUSALS;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_BYTES;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_DEFECTS;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_FRAMES;
@@ -87,10 +93,17 @@ class RemoteBridgeConnectServiceTest {
         final ConcurrentLinkedQueue<RemoteBridgeMessages.ConsentResult> consents = new ConcurrentLinkedQueue<>();
         final ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
         final ConcurrentLinkedQueue<RemoteBridgeMessages.AgentErrorFrame> errors = new ConcurrentLinkedQueue<>();
+        final ConcurrentLinkedQueue<String> refusedFrames = new ConcurrentLinkedQueue<>();
         final ConcurrentLinkedQueue<PeerIdentity> closedPeers = new ConcurrentLinkedQueue<>();
         final CountDownLatch closeReported = new CountDownLatch(1);
         volatile CountDownLatch helloEntered;
         volatile CountDownLatch releaseHello;
+        volatile CountDownLatch helloPreparationEntered;
+        volatile CountDownLatch releaseHelloPreparation;
+        volatile CountDownLatch heartbeatPreparationEntered;
+        volatile CountDownLatch releaseHeartbeatPreparation;
+        volatile CountDownLatch consentPreparationEntered;
+        volatile CountDownLatch releaseConsentPreparation;
         volatile PeerIdentity lastPeer;
 
         @Override
@@ -111,8 +124,20 @@ class RemoteBridgeConnectServiceTest {
         }
 
         @Override
+        public Runnable prepareAgentHello(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello) {
+            awaitPreparation(helloPreparationEntered, releaseHelloPreparation);
+            return () -> onAgentHello(peer, hello);
+        }
+
+        @Override
         public void onHeartbeat(PeerIdentity peer) {
             heartbeats.add(peer);
+        }
+
+        @Override
+        public Runnable prepareHeartbeat(PeerIdentity peer) {
+            awaitPreparation(heartbeatPreparationEntered, releaseHeartbeatPreparation);
+            return () -> onHeartbeat(peer);
         }
 
         @Override
@@ -122,8 +147,31 @@ class RemoteBridgeConnectServiceTest {
         }
 
         @Override
+        public void onControlFrameRefused(PeerIdentity peer, String reason) {
+            refusedFrames.add(reason);
+        }
+
+        @Override
         public void onConsentResult(PeerIdentity peer, RemoteBridgeMessages.ConsentResult result) {
             consents.add(result);
+        }
+
+        @Override
+        public Runnable prepareConsentResult(PeerIdentity peer, RemoteBridgeMessages.ConsentResult result) {
+            awaitPreparation(consentPreparationEntered, releaseConsentPreparation);
+            return () -> onConsentResult(peer, result);
+        }
+
+        private static void awaitPreparation(CountDownLatch entered, CountDownLatch release) {
+            if (entered != null && release != null) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }
         }
 
         @Override
@@ -231,6 +279,15 @@ class RemoteBridgeConnectServiceTest {
         return Envelope.newBuilder().setHeartbeat(Heartbeat.newBuilder().setHeartbeatIntervalMillis(5000));
     }
 
+    private static String sha256Hex(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
     private static Envelope dataFrame(String streamId, long seq, int bytes) {
         return Envelope.newBuilder().setChannelType(ChannelType.DATA)
                 .setDataFrame(DataFrame.newBuilder().setStreamId(streamId).setFrameSeq(seq)
@@ -302,7 +359,10 @@ class RemoteBridgeConnectServiceTest {
         RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
         ClientSink sink = new ClientSink();
         StreamObserver<Envelope> inbound = stub.connect(sink);
+        assertTrue(registry.connectedPeer(PEER.transportPeerKey()).isEmpty(),
+                "a transport is not operator-resolvable before AgentHello");
         inbound.onNext(control(0, hello("dev-1")));
+        assertEquals(PEER, registry.connectedPeer(PEER.transportPeerKey()).orElseThrow());
         inbound.onNext(control(1, heartbeat()));
         inbound.onNext(control(2, Envelope.newBuilder().setConsentResult(ConsentResult.newBuilder()
                 .setSessionId("sess-1").setGranted(true).setWindowsInteractiveSession("Console")
@@ -324,6 +384,24 @@ class RemoteBridgeConnectServiceTest {
         assertEquals("peer-fp-1", controlPlane.lastPeer.transportPeerKey()); // seam sees the AUTHENTICATED identity
     }
 
+    @Test
+    void postHelloPayloadBeforeHelloClosesAndAuditsInsteadOfDisappearing() throws Exception {
+        RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
+        ClientSink sink = new ClientSink();
+        StreamObserver<Envelope> inbound = stub.connect(sink);
+
+        inbound.onNext(control(0, Envelope.newBuilder().setAuditEvent(AuditEvent.newBuilder()
+                .setSessionId("sess-1").setEventType("LOCAL_ABORT").setEpochMillis(1500))));
+
+        assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
+        assertEquals("control-generation-not-ready", sink.firstError().getError().getCode());
+        assertTrue(controlPlane.audits.isEmpty());
+        assertEquals("control-generation-not-ready", controlPlane.refusedFrames.peek());
+        assertTrue(controlPlane.closeReported.await(2, TimeUnit.SECONDS),
+                "closing the current unready generation must report transport loss");
+        assertFalse(registry.isConnected(PEER.transportPeerKey()));
+    }
+
     // ------------------------------------------------------------------
     // sequencing
     // ------------------------------------------------------------------
@@ -333,7 +411,7 @@ class RemoteBridgeConnectServiceTest {
         RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
         ClientSink sink = new ClientSink();
         StreamObserver<Envelope> inbound = stub.connect(sink);
-        inbound.onNext(control(0, heartbeat()));
+        inbound.onNext(control(0, hello("dev-1")));
         inbound.onNext(control(1, heartbeat()));
         inbound.onNext(control(1, heartbeat())); // replay
         assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
@@ -455,17 +533,184 @@ class RemoteBridgeConnectServiceTest {
     void reconnectReplacesOnlyTheSameAuthenticatedPeersStream() throws Exception {
         RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
         ClientSink first = new ClientSink();
-        stub.connect(first);
+        StreamObserver<Envelope> firstInbound = stub.connect(first);
+        firstInbound.onNext(control(0, hello("dev-1")));
         assertEquals(1, registry.connectedCount());
 
         ClientSink second = new ClientSink();
-        stub.connect(second);
+        StreamObserver<Envelope> secondInbound = stub.connect(second);
+        secondInbound.onNext(control(0, hello("dev-1")));
         // the old stream was completed by the replace; the new one is live
         assertTrue(first.terminated.await(2, TimeUnit.SECONDS));
         assertEquals(1, registry.connectedCount());
         assertTrue(registry.isConnected("peer-fp-1"));
-        assertTrue(controlPlane.closedPeers.isEmpty(),
-                "closing the replaced handle must not report loss of its live successor");
+        assertEquals(List.of(PEER), List.copyOf(controlPlane.closedPeers),
+                "replacement must retire predecessor session/trust state before successor Hello");
+    }
+
+    @Test
+    void replacementCannotDispatchConsentUntilItsOwnHelloIsAbsorbed() throws Exception {
+        RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
+        ClientSink first = new ClientSink();
+        StreamObserver<Envelope> firstInbound = stub.connect(first);
+        firstInbound.onNext(control(0, hello("dev-1")));
+        assertEquals(PEER, registry.connectedPeer(PEER.transportPeerKey()).orElseThrow());
+
+        ClientSink second = new ClientSink();
+        StreamObserver<Envelope> secondInbound = stub.connect(second);
+        assertTrue(first.terminated.await(2, TimeUnit.SECONDS));
+        assertTrue(registry.connectedPeer(PEER.transportPeerKey()).isEmpty(),
+                "the replacement must establish its own hello readiness");
+
+        secondInbound.onNext(control(0, Envelope.newBuilder().setConsentResult(ConsentResult.newBuilder()
+                .setSessionId("sess-1").setGranted(true).setWindowsInteractiveSession("Console")
+                .setGrantedAtEpochMillis(1000).setExpiryEpochMillis(2000))));
+        assertTrue(controlPlane.consents.isEmpty(), "the prior generation's hello must not authorize successor input");
+        assertTrue(second.terminated.await(2, TimeUnit.SECONDS));
+        assertEquals("control-generation-not-ready", second.firstError().getError().getCode());
+
+        ClientSink third = new ClientSink();
+        StreamObserver<Envelope> thirdInbound = stub.connect(third);
+        thirdInbound.onNext(control(0, hello("dev-1")));
+        assertEquals(PEER, registry.connectedPeer(PEER.transportPeerKey()).orElseThrow());
+        assertEquals(2, controlPlane.hellos.size());
+    }
+
+    @Test
+    void consentPreparationCannotDelayKillOrSuccessorRegistrationAndStaleCommitIsDropped() throws Exception {
+        RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
+                dataPlane, meters, null, 0, 1024, System::currentTimeMillis, "rb-v1");
+        ClientSink firstSink = new ClientSink();
+        StreamObserver<Envelope> firstInbound = Context.current()
+                .withValue(PeerIdentityInterceptor.PEER_IDENTITY, PEER)
+                .call(() -> service.connect(firstSink));
+        firstInbound.onNext(control(0, hello("dev-1")));
+        assertTrue(registry.isConnected(PEER.transportPeerKey()));
+
+        controlPlane.consentPreparationEntered = new CountDownLatch(1);
+        controlPlane.releaseConsentPreparation = new CountDownLatch(1);
+        Thread staleConsent = Thread.ofVirtual().start(() -> firstInbound.onNext(control(1,
+                Envelope.newBuilder().setConsentResult(ConsentResult.newBuilder()
+                        .setSessionId("sess-1").setGranted(true).setWindowsInteractiveSession("Console")
+                        .setGrantedAtEpochMillis(1_000L).setExpiryEpochMillis(2_000L)))));
+        assertTrue(controlPlane.consentPreparationEntered.await(2, TimeUnit.SECONDS));
+
+        AtomicReference<Boolean> killed = new AtomicReference<>();
+        Thread kill = Thread.ofVirtual().start(() -> killed.set(registry.killPeer(
+                PEER.transportPeerKey(), "sess-1", "DURESS", 1_500L)));
+        kill.join(500L);
+        assertFalse(kill.isAlive(), "emergency KILL must not wait for consent trust preparation");
+        assertEquals(Boolean.TRUE, killed.get());
+
+        ClientSink successorSink = new ClientSink();
+        AtomicReference<StreamObserver<Envelope>> successorInbound = new AtomicReference<>();
+        Thread reconnect = Thread.ofVirtual().start(() -> {
+            try {
+                successorInbound.set(Context.current()
+                        .withValue(PeerIdentityInterceptor.PEER_IDENTITY, PEER)
+                        .call(() -> service.connect(successorSink)));
+            } catch (Exception failure) {
+                throw new IllegalStateException(failure);
+            }
+        });
+        reconnect.join(500L);
+        assertFalse(reconnect.isAlive(), "successor registration must not wait for stale consent verification");
+        assertNotNull(successorInbound.get());
+        assertEquals(0, registry.connectedCount(), "a pre-Hello successor is not a live application stream");
+
+        controlPlane.releaseConsentPreparation.countDown();
+        staleConsent.join(2_000L);
+        assertFalse(staleConsent.isAlive());
+        assertTrue(controlPlane.consents.isEmpty(), "the replaced generation's prepared consent must not commit");
+    }
+
+    @Test
+    void helloPreparationCannotDelayKillOrReadyItsSuccessor() throws Exception {
+        RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
+                dataPlane, meters, null, 0, 1024, System::currentTimeMillis, "rb-v1");
+        ClientSink firstSink = new ClientSink();
+        StreamObserver<Envelope> firstInbound = Context.current()
+                .withValue(PeerIdentityInterceptor.PEER_IDENTITY, PEER)
+                .call(() -> service.connect(firstSink));
+        firstInbound.onNext(control(0, hello("dev-1")));
+        assertTrue(registry.isConnected(PEER.transportPeerKey()));
+
+        controlPlane.helloPreparationEntered = new CountDownLatch(1);
+        controlPlane.releaseHelloPreparation = new CountDownLatch(1);
+        Thread staleHello = Thread.ofVirtual().start(() -> firstInbound.onNext(control(1, hello("dev-1"))));
+        assertTrue(controlPlane.helloPreparationEntered.await(2, TimeUnit.SECONDS));
+
+        AtomicReference<Boolean> killed = new AtomicReference<>();
+        Thread kill = Thread.ofVirtual().start(() -> killed.set(registry.killPeer(
+                PEER.transportPeerKey(), "sess-hello", "DURESS", 1_500L)));
+        kill.join(500L);
+        assertFalse(kill.isAlive(), "emergency KILL must not wait for Hello trust preparation");
+        assertEquals(Boolean.TRUE, killed.get());
+
+        ClientSink successorSink = new ClientSink();
+        AtomicReference<StreamObserver<Envelope>> successorInbound = new AtomicReference<>();
+        Thread reconnect = Thread.ofVirtual().start(() -> {
+            try {
+                successorInbound.set(Context.current()
+                        .withValue(PeerIdentityInterceptor.PEER_IDENTITY, PEER)
+                        .call(() -> service.connect(successorSink)));
+            } catch (Exception failure) {
+                throw new IllegalStateException(failure);
+            }
+        });
+        reconnect.join(500L);
+        assertFalse(reconnect.isAlive(), "successor registration must not wait for stale Hello verification");
+        assertNotNull(successorInbound.get());
+
+        controlPlane.releaseHelloPreparation.countDown();
+        staleHello.join(2_000L);
+        assertFalse(staleHello.isAlive());
+        assertEquals(1, controlPlane.hellos.size(), "the stale repeated Hello must not commit");
+        assertFalse(registry.isConnected(PEER.transportPeerKey()),
+                "the stale Hello must not mark its pre-Hello successor ready");
+    }
+
+    @Test
+    void heartbeatPreparationCannotDelayKillOrPublishAfterReplacement() throws Exception {
+        RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
+                dataPlane, meters, null, 0, 1024, System::currentTimeMillis, "rb-v1");
+        ClientSink firstSink = new ClientSink();
+        StreamObserver<Envelope> firstInbound = Context.current()
+                .withValue(PeerIdentityInterceptor.PEER_IDENTITY, PEER)
+                .call(() -> service.connect(firstSink));
+        firstInbound.onNext(control(0, hello("dev-1")));
+
+        controlPlane.heartbeatPreparationEntered = new CountDownLatch(1);
+        controlPlane.releaseHeartbeatPreparation = new CountDownLatch(1);
+        Thread staleHeartbeat = Thread.ofVirtual().start(() -> firstInbound.onNext(control(1, heartbeat())));
+        assertTrue(controlPlane.heartbeatPreparationEntered.await(2, TimeUnit.SECONDS));
+
+        AtomicReference<Boolean> killed = new AtomicReference<>();
+        Thread kill = Thread.ofVirtual().start(() -> killed.set(registry.killPeer(
+                PEER.transportPeerKey(), "sess-heartbeat", "DURESS", 1_500L)));
+        kill.join(500L);
+        assertFalse(kill.isAlive(), "emergency KILL must not wait for heartbeat trust preparation");
+        assertEquals(Boolean.TRUE, killed.get());
+
+        ClientSink successorSink = new ClientSink();
+        AtomicReference<StreamObserver<Envelope>> successorInbound = new AtomicReference<>();
+        Thread reconnect = Thread.ofVirtual().start(() -> {
+            try {
+                successorInbound.set(Context.current()
+                        .withValue(PeerIdentityInterceptor.PEER_IDENTITY, PEER)
+                        .call(() -> service.connect(successorSink)));
+            } catch (Exception failure) {
+                throw new IllegalStateException(failure);
+            }
+        });
+        reconnect.join(500L);
+        assertFalse(reconnect.isAlive(), "successor registration must not wait for stale heartbeat verification");
+        assertNotNull(successorInbound.get());
+
+        controlPlane.releaseHeartbeatPreparation.countDown();
+        staleHeartbeat.join(2_000L);
+        assertFalse(staleHeartbeat.isAlive());
+        assertTrue(controlPlane.heartbeats.isEmpty(), "the replaced generation's heartbeat must not commit");
     }
 
     @Test
@@ -473,6 +718,7 @@ class RemoteBridgeConnectServiceTest {
         RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
         ClientSink sink = new ClientSink();
         StreamObserver<Envelope> inbound = stub.connect(sink);
+        inbound.onNext(control(0, hello("dev-1")));
         assertTrue(registry.isConnected("peer-fp-1"));
 
         inbound.onCompleted();
@@ -516,7 +762,8 @@ class RemoteBridgeConnectServiceTest {
     void killOnControlLandsSubSecondWhileDataIsSaturated() throws Exception {
         RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 64 * 1024);
         ClientSink controlSink = new ClientSink();
-        stub.connect(controlSink);
+        StreamObserver<Envelope> controlInbound = stub.connect(controlSink);
+        controlInbound.onNext(control(0, hello("dev-1")));
         assertTrue(registry.isConnected("peer-fp-1"));
 
         // saturate DATA: a writer thread pumping frames as fast as the stream accepts them
@@ -562,6 +809,80 @@ class RemoteBridgeConnectServiceTest {
     @Test
     void killForAnUnknownPeerReturnsFalse() {
         assertFalse(registry.killPeer("nobody", null, "reason", 1000L));
+    }
+
+    @Test
+    void operatorKillAcknowledgementTraversesTheQuarantinedGrpcControlStream() throws Exception {
+        java.util.concurrent.ScheduledExecutorService scheduler =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        try {
+            AtomicLong now = new AtomicLong(1_000L);
+            ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> durableAudits = new ConcurrentLinkedQueue<>();
+            ControlStreamRegistry ackRegistry = new ControlStreamRegistry(
+                    scheduler, durableAudits::add, now::get, 5_000L, 30_000L);
+            AtomicReference<ControlStreamRegistry.OperatorKillAckResult> ackResult = new AtomicReference<>();
+            ControlPlaneHandler ackControlPlane = new ControlPlaneHandler() {
+                @Override
+                public void onAgentHello(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello) {
+                }
+
+                @Override
+                public void onConsentResult(PeerIdentity peer, RemoteBridgeMessages.ConsentResult result) {
+                }
+
+                @Override
+                public void onAuditEvent(PeerIdentity peer, RemoteBridgeMessages.AuditEvent event) {
+                    ackResult.set(ackRegistry.acceptOperatorKillAcknowledgement(peer, event, now.get()));
+                }
+
+                @Override
+                public void onControlFrameRefused(PeerIdentity peer, String reason) {
+                    throw new AssertionError("KILL ACK quarantine must not synchronously call the durable audit seam");
+                }
+            };
+
+            String name = InProcessServerBuilder.generateName();
+            RemoteBridgeConnectService service = new RemoteBridgeConnectService(ackRegistry, ackControlPlane,
+                    dataPlane, meters, null, 0, 1024, now::get, "rb-v1");
+            server = InProcessServerBuilder.forName(name).directExecutor()
+                    .intercept(new InjectIdentity(PEER)).addService(service).build().start();
+            channel = InProcessChannelBuilder.forName(name).directExecutor().build();
+
+            ClientSink sink = new ClientSink();
+            StreamObserver<Envelope> inbound = RemoteBridgeGrpc.newStub(channel).connect(sink);
+            inbound.onNext(control(0, hello("dev-1")));
+            assertTrue(ackRegistry.killPeerAwaitingOperatorAck("peer-fp-1", "sess-1", now.get()));
+            assertTrue(sink.killReceived.await(1, TimeUnit.SECONDS));
+
+            inbound.onNext(control(1, heartbeat()));
+            assertFalse(sink.terminated.await(50, TimeUnit.MILLISECONDS),
+                    "a normal heartbeat during ACK quarantine must be accepted as a no-op");
+
+            inbound.onNext(control(2, Envelope.newBuilder().setAuditEvent(AuditEvent.newBuilder()
+                    .setSessionId("sess-1").setEventType("LOCAL_ABORT").setEpochMillis(1_004L))));
+            assertFalse(sink.terminated.await(50, TimeUnit.MILLISECONDS),
+                    "an in-flight application frame must be ignored without destroying the ACK transport");
+            assertEquals(1.0, meters.get(BRIDGE_CONTROL_KILL_QUARANTINE_REFUSALS).counter().count());
+
+            now.set(1_010L);
+            long acknowledgedAt = 1_005L;
+            String canonical = "sess-1\n" + ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED
+                    + "\n" + acknowledgedAt;
+            inbound.onNext(control(3, Envelope.newBuilder().setAuditEvent(AuditEvent.newBuilder()
+                    .setSessionId("sess-1")
+                    .setEventType(ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED)
+                    .setContentHash(sha256Hex(canonical))
+                    .setEpochMillis(acknowledgedAt))));
+
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED, ackResult.get());
+            assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
+            assertNull(sink.firstError(), "the exact ACK must not be refused as an unavailable generation");
+            assertFalse(ackRegistry.isConnected("peer-fp-1"));
+            assertEquals(List.of("SESSION_CLOSE:AGENT_KILL_APPLIED"),
+                    durableAudits.stream().map(RemoteBridgeMessages.AuditEvent::eventType).toList());
+        } finally {
+            scheduler.shutdownNow();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -622,7 +943,8 @@ class RemoteBridgeConnectServiceTest {
             RemoteBridgeGrpc.RemoteBridgeStub stub = RemoteBridgeGrpc.newStub(channel);
 
             ClientSink first = new ClientSink();
-            stub.connect(first);
+            StreamObserver<Envelope> firstInbound = stub.connect(first);
+            firstInbound.onNext(control(0, hello("dev-1")));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (System.nanoTime() < deadline && first.received.stream()
                     .noneMatch(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT)) {
@@ -632,7 +954,8 @@ class RemoteBridgeConnectServiceTest {
                     .anyMatch(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT));
 
             ClientSink second = new ClientSink();
-            stub.connect(second); // replaces the first stream — must cancel ITS heartbeat task too
+            StreamObserver<Envelope> secondInbound = stub.connect(second);
+            secondInbound.onNext(control(0, hello("dev-1")));
             assertTrue(first.terminated.await(2, TimeUnit.SECONDS));
             int firstCountAfterReplace = first.received.size();
             Thread.sleep(150); // several would-be heartbeat periods
@@ -719,13 +1042,14 @@ class RemoteBridgeConnectServiceTest {
             channel = InProcessChannelBuilder.forName(name).directExecutor().build();
 
             ClientSink sink = new ClientSink();
-            RemoteBridgeGrpc.newStub(channel).connect(sink);
+            StreamObserver<Envelope> inbound = RemoteBridgeGrpc.newStub(channel).connect(sink);
             long firstDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (System.nanoTime() < firstDeadline && sink.received.stream()
                     .noneMatch(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT)) {
                 Thread.sleep(5L);
             }
             long now = System.currentTimeMillis();
+            inbound.onNext(control(0, hello("dev-1")));
             registry.suppressHeartbeats(PEER.transportPeerKey(), "probe-1", now, now + 200L).orElseThrow();
             long countAfterArm = sink.received.stream()
                     .filter(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT).count();
