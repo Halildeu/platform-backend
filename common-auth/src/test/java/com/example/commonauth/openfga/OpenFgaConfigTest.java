@@ -1,5 +1,6 @@
 package com.example.commonauth.openfga;
 
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -56,5 +57,41 @@ class OpenFgaConfigTest {
         props.setModelId(null);
         var client = OpenFgaConfig.createClient(props);
         assertNotNull(client);
+    }
+
+    /**
+     * The defect these guard against is silent: an unset timeout is not a slow call, it is a
+     * call that never ends, and the caller only learns that from a gateway error a minute and
+     * a half later (ES-308, platform-k8s-gitops#2667). Asserting "some finite bound exists"
+     * is the whole point — the exact numbers are tunable, infinity is not.
+     */
+    @Test
+    void defaultsAreFinite() {
+        var props = new OpenFgaProperties();
+        assertNotNull(props.getConnectTimeout());
+        assertNotNull(props.getReadTimeout());
+        assertTrue(props.getConnectTimeout().toMillis() > 0);
+        assertTrue(props.getReadTimeout().toMillis() > 0);
+    }
+
+    @Test
+    void unsetOrNonPositiveTimeoutFallsBackToTheDefault_neverToInfinity() {
+        var fallback = Duration.ofSeconds(7);
+        assertEquals(fallback, OpenFgaConfig.orDefault(null, fallback));
+        assertEquals(fallback, OpenFgaConfig.orDefault(Duration.ZERO, fallback));
+        assertEquals(fallback, OpenFgaConfig.orDefault(Duration.ofSeconds(-1), fallback));
+        assertEquals(Duration.ofSeconds(2), OpenFgaConfig.orDefault(Duration.ofSeconds(2), fallback));
+    }
+
+    @Test
+    void configuredTimeoutsSurviveIntoTheClient() {
+        var props = new OpenFgaProperties();
+        props.setEnabled(true);
+        props.setApiUrl("http://localhost:4000");
+        props.setConnectTimeout(Duration.ofSeconds(2));
+        props.setReadTimeout(Duration.ofSeconds(4));
+        assertNotNull(OpenFgaConfig.createClient(props));
+        assertEquals(Duration.ofSeconds(2), props.getConnectTimeout());
+        assertEquals(Duration.ofSeconds(4), props.getReadTimeout());
     }
 }

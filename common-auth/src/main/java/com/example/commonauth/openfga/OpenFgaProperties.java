@@ -1,5 +1,6 @@
 package com.example.commonauth.openfga;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 
@@ -16,6 +17,26 @@ public class OpenFgaProperties {
 
     /** TTL in seconds for check result cache. Default: 10s. Set to 0 to disable caching. */
     private int checkCacheTtlSeconds = 10;
+
+    /**
+     * Bounds on a single authorization round trip.
+     *
+     * <p>Without these the SDK inherits the JDK default, which is no timeout at all, and a
+     * request that reaches an unreachable OpenFGA over an already-established socket waits
+     * forever. Measured on 2026-08-02 (ES-308 chaos drill, platform-k8s-gitops#2667): with
+     * the authz plane cut, an Etik Speak staff request never returned and the edge gave up
+     * with a 504 after 90 seconds. The gate itself held — no case was disclosed — but the
+     * caller learned that from a gateway error 90 seconds later instead of a prompt denial.
+     *
+     * <p>The defaults are deliberately generous rather than tight. Every caller treats a
+     * failed check as a DENY, so a timeout that fires early does not merely slow someone
+     * down — it locks out a legitimate user. Anything finite beats infinity here; one second
+     * would be its own outage. Tune per service via {@code erp.openfga.connect-timeout} /
+     * {@code erp.openfga.read-timeout} if a deployment needs different bounds.
+     */
+    private Duration connectTimeout = Duration.ofSeconds(3);
+
+    private Duration readTimeout = Duration.ofSeconds(10);
 
     /** Dev/permitAll mode: fallback scope when OpenFGA is disabled. */
     private DevScope devScope = new DevScope();
@@ -42,6 +63,22 @@ public class OpenFgaProperties {
 
     public void setStoreId(String storeId) {
         this.storeId = storeId;
+    }
+
+    public Duration getConnectTimeout() {
+        return connectTimeout;
+    }
+
+    public void setConnectTimeout(Duration connectTimeout) {
+        this.connectTimeout = connectTimeout;
+    }
+
+    public Duration getReadTimeout() {
+        return readTimeout;
+    }
+
+    public void setReadTimeout(Duration readTimeout) {
+        this.readTimeout = readTimeout;
     }
 
     public String getModelId() {

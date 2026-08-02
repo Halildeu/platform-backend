@@ -3,6 +3,7 @@ package com.example.commonauth.openfga;
 import dev.openfga.sdk.api.client.OpenFgaClient;
 import io.micrometer.core.instrument.MeterRegistry;
 import dev.openfga.sdk.api.configuration.ClientConfiguration;
+import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,8 +47,15 @@ public final class OpenFgaConfig {
         }
 
         try {
+            // Bound the call. Unset, the SDK inherits the JDK's "wait forever", and an
+            // unreachable authz plane turns every authorization check into a hang rather
+            // than a denial (ES-308, platform-k8s-gitops#2667). A null here would restore
+            // that, so an explicitly-cleared property falls back to the documented default
+            // instead of silently meaning "no limit".
             var config = new ClientConfiguration()
-                    .apiUrl(properties.getApiUrl());
+                    .apiUrl(properties.getApiUrl())
+                    .connectTimeout(orDefault(properties.getConnectTimeout(), Duration.ofSeconds(3)))
+                    .readTimeout(orDefault(properties.getReadTimeout(), Duration.ofSeconds(10)));
 
             if (properties.getStoreId() != null && !properties.getStoreId().isBlank()) {
                 config.storeId(properties.getStoreId());
@@ -57,13 +65,22 @@ public final class OpenFgaConfig {
             }
 
             var client = new OpenFgaClient(config);
-            log.info("OpenFGA client created: url={}, storeId={}",
-                    properties.getApiUrl(), properties.getStoreId());
+            log.info("OpenFGA client created: url={}, storeId={}, connectTimeout={}, readTimeout={}",
+                    properties.getApiUrl(), properties.getStoreId(),
+                    config.getConnectTimeout(), config.getReadTimeout());
             return client;
         } catch (Exception e) {
             log.error("Failed to create OpenFGA client", e);
             return null;
         }
+    }
+
+    static Duration orDefault(Duration configured, Duration fallback) {
+        // A non-positive value is treated as "unset" rather than "no limit": the SDK reads
+        // zero as infinite, and infinite is the exact behaviour this method exists to remove.
+        return (configured == null || configured.isZero() || configured.isNegative())
+                ? fallback
+                : configured;
     }
 
     /**
