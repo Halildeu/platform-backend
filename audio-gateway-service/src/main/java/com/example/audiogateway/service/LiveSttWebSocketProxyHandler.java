@@ -429,26 +429,21 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
 
         final Flux<WebSocketMessage> outbound = speechmatics == null
                 ? framesToUpstream
-                : Flux.concat(
+                : speechmaticsOutbound(
                         Mono.just(upstream.textMessage(
                                 speechmatics.startMessage(record.sampleRateHz()))),
-                        framesToUpstream,
-                        Flux.defer(() -> eofSent.get()
-                                // Keep the provider send publisher subscribed after EndOfStream.
-                                // Completing it here lets a real provider close before its delayed
-                                // EndOfTranscript reaches the receive leg. Once drained has reached
-                                // the desktop, the download leg wins and cancels this pending tail.
-                                ? drainedRelayed.asMono()
-                                        .timeout(
-                                                drainTimeout,
-                                                Mono.error(new TerminalDrainException()))
-                                        .thenMany(Flux.never())
-                                : Flux.empty()));
+                        framesToUpstream);
         final Mono<Void> upload = upstream.send(outbound)
-                .then(Mono.defer(() -> speechmatics == null && eofSent.get()
-                        // The internal provider sends EOF through framesToUpstream, so its
-                        // send publisher may complete before the receive leg relays drained.
-                        ? drainedRelayed.asMono().timeout(drainTimeout).then(Mono.never())
+                .then(Mono.defer(() -> eofSent.get()
+                        // Completing the send publisher flushes the provider terminal frame.
+                        // Keep the bridge, not the outbound publisher, alive until the receive
+                        // leg relays drained; otherwise upload completion can win the race and
+                        // close the socket before EndOfTranscript reaches the desktop.
+                        ? drainedRelayed.asMono()
+                                .timeout(
+                                        drainTimeout,
+                                        Mono.error(new TerminalDrainException()))
+                                .then(Mono.never())
                         : Mono.empty()));
         final Mono<Void> download = client.send(relayedEvents.map(RelayedEvent::message))
                 .doOnSuccess(ignored -> {
@@ -479,6 +474,12 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         ? terminalMessage.doOnNext(ignored -> terminalEmitted.set(true))
                         : Mono.just(message), 1)
                 .takeUntil(ignored -> terminalEmitted.get());
+    }
+
+    static Flux<WebSocketMessage> speechmaticsOutbound(
+            final Mono<WebSocketMessage> startMessage,
+            final Flux<WebSocketMessage> completedUpload) {
+        return Flux.concat(startMessage, completedUpload);
     }
 
     private static boolean isSpeechmaticsUploadTerminalMarker(
