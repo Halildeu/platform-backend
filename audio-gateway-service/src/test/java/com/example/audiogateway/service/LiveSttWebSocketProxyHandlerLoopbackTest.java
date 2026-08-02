@@ -56,6 +56,7 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import reactor.test.StepVerifier;
 import reactor.netty.DisposableServer;
 import reactor.netty.http.server.HttpServer;
 
@@ -572,6 +573,21 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         assertThat(closeStatus.get()).isNull();
         assertThat(meters.counter("audio_gateway_live_stream_upstream_failures_total").count())
                 .isZero();
+    }
+
+    @Test
+    void speechmaticsUploadMarkerCompletesOpenClientReceiveWithoutLeakingMarker() {
+        final NettyDataBufferFactory factory =
+                new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
+        final WebSocketMessage audio = binaryFrame(factory, 0L);
+        final WebSocketMessage marker = textFrame(
+                factory,
+                LiveSttWebSocketProxyHandler.SPEECHMATICS_UPLOAD_TERMINAL_MARKER);
+
+        StepVerifier.create(LiveSttWebSocketProxyHandler.completeSpeechmaticsUpload(
+                        Flux.concat(Flux.just(audio, marker), Flux.never())))
+                .expectNext(audio)
+                .verifyComplete();
     }
 
     @Test
