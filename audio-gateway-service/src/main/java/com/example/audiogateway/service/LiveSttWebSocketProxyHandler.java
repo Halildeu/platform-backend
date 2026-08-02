@@ -366,7 +366,20 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 // inbound socket open while waiting for final/drained events.
                 .transform(frames -> speechmatics == null
                         ? frames.takeUntil(message -> eofSent.get())
-                        : completeSpeechmaticsUpload(frames))
+                        : completeSpeechmaticsUpload(
+                                frames,
+                                Mono.defer(() -> speechmatics.endMessageWhenAcknowledged(
+                                                speechmaticsFrameCount.get(),
+                                                Duration.ofMillis(properties.getDirectStt()
+                                                        .getSpeechmatics()
+                                                        .getAudioAckTimeoutMs()))
+                                        .doOnNext(ignored -> log.info(
+                                                "Speechmatics EOF dispatched sessionId={} "
+                                                        + "frames={} acknowledged={}",
+                                                record.sessionId(),
+                                                speechmaticsFrameCount.get(),
+                                                speechmatics.lastAcknowledgedAudioSequence()))
+                                        .map(upstream::textMessage))))
                 .doFinally(signal -> clientControlEvents.tryEmitComplete())
                 // The AI endpoint can spend minutes loading pinned models. Do not admit,
                 // account or forward any desktop audio until it proves the exact source
@@ -420,20 +433,6 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         Mono.just(upstream.textMessage(
                                 speechmatics.startMessage(record.sampleRateHz()))),
                         framesToUpstream,
-                        Mono.defer(() -> eofSent.get()
-                                ? speechmatics.endMessageWhenAcknowledged(
-                                                speechmaticsFrameCount.get(),
-                                                Duration.ofMillis(properties.getDirectStt()
-                                                        .getSpeechmatics()
-                                                        .getAudioAckTimeoutMs()))
-                                        .doOnNext(ignored -> log.info(
-                                                "Speechmatics EOF dispatched sessionId={} "
-                                                        + "frames={} acknowledged={}",
-                                                record.sessionId(),
-                                                speechmaticsFrameCount.get(),
-                                                speechmatics.lastAcknowledgedAudioSequence()))
-                                        .map(upstream::textMessage)
-                                : Mono.empty()),
                         Flux.defer(() -> eofSent.get()
                                 // Keep the provider send publisher subscribed after EndOfStream.
                                 // Completing it here lets a real provider close before its delayed
@@ -472,10 +471,14 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
     }
 
     static Flux<WebSocketMessage> completeSpeechmaticsUpload(
-            final Flux<WebSocketMessage> frames) {
+            final Flux<WebSocketMessage> frames,
+            final Mono<WebSocketMessage> terminalMessage) {
+        final AtomicBoolean terminalEmitted = new AtomicBoolean();
         return frames
-                .takeUntil(LiveSttWebSocketProxyHandler::isSpeechmaticsUploadTerminalMarker)
-                .filter(message -> !isSpeechmaticsUploadTerminalMarker(message));
+                .concatMap(message -> isSpeechmaticsUploadTerminalMarker(message)
+                        ? terminalMessage.doOnNext(ignored -> terminalEmitted.set(true))
+                        : Mono.just(message), 1)
+                .takeUntil(ignored -> terminalEmitted.get());
     }
 
     private static boolean isSpeechmaticsUploadTerminalMarker(
