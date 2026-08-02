@@ -117,7 +117,24 @@ public class JwtTenantContextResolver implements TenantContextResolver {
 
         if (canonicalOrg != null) {
             mergeTenantClaims(canonicalOrg, compatibilityTenant, enforceClaimConsistency);
-            mergeTenantClaims(canonicalOrg, companyTenant, enforceClaimConsistency);
+            // `companyTenant` is deliberately NOT compared against the canonical org.
+            //
+            // It is not a rival claim: it is UUID.nameUUIDFromBytes("company:" + legacy
+            // numeric id), a synthetic value in a different identifier namespace. It can
+            // only equal a canonical org UUID in a deployment whose orgs were seeded from
+            // that hash — an assumption stated nowhere and enforced nowhere. Where it does
+            // not hold, every token carrying both claims is rejected forever: this is what
+            // "Conflicting tenant claims" was, on every request to /api/v1/admin/meetings,
+            // for a token whose org_id was correct and whose companyId was "35".
+            //
+            // Nor is the comparison a security control. Both claims are minted by the same
+            // issuer in the same signed token, so anyone able to forge one can forge the
+            // other; the check can only ever catch issuer misconfiguration, and it is the
+            // canonical claim that should win when it does. The org↔tenant_id check above
+            // is kept because those two ARE the same identifier space.
+            //
+            // The company value keeps its job as the fallback below, and keeps being
+            // validated by resolveCompanyAliases (a blank claim is still rejected).
             return canonicalOrg;
         }
         return mergeTenantClaims(compatibilityTenant, companyTenant, true);
