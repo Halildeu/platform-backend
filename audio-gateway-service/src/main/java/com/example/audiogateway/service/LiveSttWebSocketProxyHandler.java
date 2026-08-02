@@ -51,8 +51,6 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
     static final String UPSTREAM_PROTOCOL = "source-ranges-v1";
     static final String SPEECHMATICS_UPLOAD_TERMINAL_MARKER =
             "__gateway_speechmatics_upload_terminal__";
-    private static final Duration SPEECHMATICS_TERMINAL_FLUSH_DELAY =
-            Duration.ofMillis(20L);
     private static final long TERMINAL_TRANSPORT_MARGIN_MS = 1_000L;
     private static final int CLIENT_CONTROL_EVENT_BUFFER_SIZE = 64;
 
@@ -434,27 +432,12 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 : speechmaticsOutbound(
                         Mono.just(upstream.textMessage(
                                 speechmatics.startMessage(record.sampleRateHz()))),
-                        framesToUpstream,
-                        Mono.defer(() -> eofSent.get()
-                                ? Mono.delay(SPEECHMATICS_TERMINAL_FLUSH_DELAY)
-                                        .map(ignored -> upstream.pingMessage(
-                                                factory -> factory.wrap(new byte[0])))
-                                : Mono.empty()),
-                        Flux.defer(() -> eofSent.get()
-                                // EndOfStream is followed by an asynchronous ping so Reactor
-                                // Netty flushes the terminal text frame without completing the
-                                // provider upload. Keep the publisher open until the receive leg
-                                // relays EndOfTranscript as eof_ack + drained to the desktop.
-                                ? drainedRelayed.asMono()
-                                        .timeout(
-                                                drainTimeout,
-                                                Mono.error(new TerminalDrainException()))
-                                        .thenMany(Flux.never())
-                                : Flux.empty()));
+                        framesToUpstream);
         final Mono<Void> upload = upstream.send(outbound)
-                .then(Mono.defer(() -> speechmatics == null && eofSent.get()
-                        // The internal provider sends EOF through framesToUpstream, so its
-                        // send publisher may complete before the receive leg relays drained.
+                .then(Mono.defer(() -> eofSent.get()
+                        // Completing the send publisher flushes the provider EOF. The upload
+                        // leg must still be unable to win firstWithSignal before the receive
+                        // leg relays drained, for both internal and Speechmatics providers.
                         ? drainedRelayed.asMono()
                                 .timeout(
                                         drainTimeout,
@@ -494,10 +477,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
 
     static Flux<WebSocketMessage> speechmaticsOutbound(
             final Mono<WebSocketMessage> startMessage,
-            final Flux<WebSocketMessage> completedUpload,
-            final Mono<WebSocketMessage> terminalFlush,
-            final Flux<WebSocketMessage> terminalHold) {
-        return Flux.concat(startMessage, completedUpload, terminalFlush, terminalHold);
+            final Flux<WebSocketMessage> completedUpload) {
+        return Flux.concat(startMessage, completedUpload);
     }
 
     private static boolean isSpeechmaticsUploadTerminalMarker(

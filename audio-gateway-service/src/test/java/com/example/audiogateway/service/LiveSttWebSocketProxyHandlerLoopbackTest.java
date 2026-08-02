@@ -595,7 +595,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     }
 
     @Test
-    void speechmaticsOutboundFlushesProviderTerminalBeforeHoldingConnectionOpen() {
+    void speechmaticsOutboundCompletesAfterProviderTerminalForTransportFlush() {
         final NettyDataBufferFactory factory =
                 new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
         final WebSocketMessage start = textFrame(
@@ -608,17 +608,14 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         final WebSocketMessage terminal = textFrame(
                 factory,
                 "{\"message\":\"EndOfStream\",\"last_seq_no\":1}");
-        final WebSocketMessage flush = new WebSocketMessage(
-                WebSocketMessage.Type.PING,
-                factory.wrap(new byte[0]));
         final Flux<WebSocketMessage> completedUpload =
                 LiveSttWebSocketProxyHandler.completeSpeechmaticsUpload(
                         Flux.concat(Flux.just(audio, marker), Flux.never()),
                         Mono.just(terminal));
 
         StepVerifier.create(LiveSttWebSocketProxyHandler.speechmaticsOutbound(
-                        Mono.just(start), completedUpload, Mono.just(flush), Flux.empty()))
-                .expectNext(start, audio, terminal, flush)
+                        Mono.just(start), completedUpload))
+                .expectNext(start, audio, terminal)
                 .verifyComplete();
     }
 
