@@ -653,7 +653,14 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
 
         handleSubscription = handler.handle(client)
                 .subscribe(ignored -> { }, error -> { }, () -> completed.set(true));
-        clientInbound.emitNext(binaryFrame(clientFactory, 0L), Sinks.EmitFailureHandler.FAIL_FAST);
+        clientInbound.emitNext(
+                textFrame(clientFactory, "{\"type\":\"context\",\"terms\":[\"Speechmatics\"]}"),
+                Sinks.EmitFailureHandler.FAIL_FAST);
+        for (long sequence = 0L; sequence < 32L; sequence++) {
+            clientInbound.emitNext(
+                    binaryFrame(clientFactory, sequence),
+                    Sinks.EmitFailureHandler.FAIL_FAST);
+        }
         clientInbound.emitNext(
                 textFrame(clientFactory, LiveStreamControlFrame.CANONICAL_EOF),
                 Sinks.EmitFailureHandler.FAIL_FAST);
@@ -663,11 +670,12 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
             sleepQuietly();
         }
 
-        assertThat(audioSequence).hasValue(1L);
-        assertThat(terminalSequence).hasValue(1L);
+        assertThat(audioSequence).hasValue(32L);
+        assertThat(terminalSequence).hasValue(32L);
         assertThat(relayedText).anyMatch(event -> event.contains("\"type\":\"ready\""));
         assertThat(relayedText).contains(
                 audioAcknowledgement(0L),
+                audioAcknowledgement(31L),
                 "{\"type\":\"eof_ack\"}",
                 "{\"type\":\"drained\"}");
         assertThat(completed).isTrue();
