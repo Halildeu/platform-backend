@@ -46,6 +46,8 @@ public class EthicsService {
     private final ParticipantHandles handles;
     private final UserDirectoryClient directory;
     private final com.example.ethics.intake.IntakeChannelGate intakeChannel;
+    private final com.example.ethics.intake.ReportModePolicy reportModes;
+    private final com.example.ethics.identity.ReporterIdentityService reporterIdentities;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
             EthicsReportRepository reports, ReporterAccessGrantRepository grants, EthicsMessageRepository messages,
@@ -59,10 +61,14 @@ public class EthicsService {
             UserDirectoryClient directory,
             CaseSlaClock sla,
             com.example.ethics.repository.CaseWaitingReasonRepository waits,
-            com.example.ethics.intake.IntakeChannelGate intakeChannel) {
+            com.example.ethics.intake.IntakeChannelGate intakeChannel,
+            com.example.ethics.intake.ReportModePolicy reportModes,
+            com.example.ethics.identity.ReporterIdentityService reporterIdentities) {
         this.sla=sla;
         this.waits=waits;
         this.intakeChannel=intakeChannel;
+        this.reportModes=reportModes;
+        this.reporterIdentities=reporterIdentities;
         this.handles=handles;
         this.directory=directory;
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
@@ -95,7 +101,7 @@ public class EthicsService {
         // of them would transfer the org's 2019/1937 Art.9 duties onto a billing event. The
         // gate itself fails OPEN (outage != lapse); see IntakeChannelGate.
         if (!intakeChannel.isOpen(orgId)) throw new ResponseStatusException(HttpStatus.FORBIDDEN,"INTAKE_CHANNEL_INACTIVE");
-        if (request.mode()!=ReportMode.ANONYMOUS) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,"REPORT_MODE_NOT_ENABLED");
+        validateReportMode(orgId, request);
         transactionLocks.lock("intake\n"+orgId+"\n"+normalizedChannel+"\n"+key);
         String requestHash = secrets.sha256(canonicalField(request.mode().name())
                 +canonicalField(request.category().name())
@@ -103,7 +109,12 @@ public class EthicsService {
                 +canonicalField(request.description())
                 +canonicalField(request.locale())
                 +canonicalField(request.noticeVersion())
-                +canonicalField(secrets.sha256(request.accessSecret())));
+                +canonicalField(secrets.sha256(request.accessSecret()))
+                // ES-212: the identity is part of what was submitted, so a retry that keeps
+                // the key but changes the name must collide rather than silently return the
+                // first receipt and discard the correction. Hashed, not canonicalised
+                // directly, so the identity never appears in the idempotency row.
+                +canonicalField(identityFingerprint(request.reporterIdentity())));
         Optional<IntakeIdempotency> prior = idempotency.findByOrgIdAndChannelAndIdempotencyKey(orgId, normalizedChannel, key);
         if (prior.isPresent()) {
             if (!prior.get().getRequestHash().equals(requestHash)) throw new ResponseStatusException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT");
@@ -112,7 +123,18 @@ public class EthicsService {
         }
         Instant now=Instant.now(); UUID caseId=UUID.randomUUID(); UUID reportId=UUID.randomUUID(); UUID receiptId=UUID.randomUUID();
         cases.save(new EthicsCase(caseId,orgId,now));
-        reports.save(new EthicsReport(reportId,caseId,request.mode().name(),request.category().name(),request.subject(),request.description(),request.locale(),request.noticeVersion(),now));
+        EthicsReport report = new EthicsReport(reportId,caseId,request.mode().name(),request.category().name(),request.subject(),request.description(),request.locale(),request.noticeVersion(),now);
+        if (request.reporterIdentity()==null) {
+            reports.save(report);
+        } else {
+            // The identity row's foreign key points at (case_id, mode) on the report, so the
+            // report has to be on disk before it. Flushing here states that dependency
+            // instead of trusting the persistence provider's insert ordering, which is not
+            // part of any contract and would surface as a constraint violation nobody can
+            // trace back to this line.
+            reports.saveAndFlush(report);
+            reporterIdentities.store(caseId, request.mode(), request.reporterIdentity(), now);
+        }
         grants.save(new ReporterAccessGrant(receiptId,caseId,normalizedChannel,secrets.hash(request.accessSecret(),properties.secretIterations()),now));
         audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.report.created",
                 encodeAuditPayload(Map.of(
@@ -124,6 +146,80 @@ public class EthicsService {
         notifications.enqueue(orgId, NotificationOutboxPublisher.NEW_REPORT, now);
         idempotency.save(new IntakeIdempotency(UUID.randomUUID(),orgId,normalizedChannel,key,requestHash,receiptId,now));
         return new CreateReportResponse(receiptId,now,"/mailbox",false);
+    }
+
+    /**
+     * ES-212 — what the intake form for this host should offer.
+     *
+     * <p>Anonymous is always in the list. The other two appear only when the organisation
+     * turned them on and the service holds key material to seal an identity with, so the
+     * form and the submit path can never disagree.
+     */
+    @Transactional(readOnly = true)
+    public IntakeOptionsResponse intakeOptions(String channel) {
+        UUID orgId = tenantResolver.resolve(channel);
+        List<String> modes = new ArrayList<>();
+        for (ReportMode mode : ReportMode.values()) {
+            if (!reportModes.isEnabled(orgId, mode)) {
+                continue;
+            }
+            if (com.example.ethics.intake.ReportModePolicy.collectsIdentity(mode)
+                    && !reporterIdentities.isOperational()) {
+                continue;
+            }
+            modes.add(mode.name());
+        }
+        return new IntakeOptionsResponse(List.copyOf(modes));
+    }
+
+    /**
+     * ES-212 (#3370) — may this org take a report in this mode, and does the submission
+     * carry the right identity for it?
+     *
+     * <p>The three refusals are deliberately distinct. A mode the organisation never turned
+     * on is a policy answer (422). A missing identity on a mode that collects one is the
+     * client's mistake (400). A mode that is enabled but has no key material behind it is
+     * ours (503) — and it must be loud, because the alternative to refusing is accepting a
+     * name we cannot encrypt.
+     */
+    private void validateReportMode(UUID orgId, CreateReportRequest request) {
+        ReportMode mode = request.mode();
+        if (!reportModes.isEnabled(orgId, mode)) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "REPORT_MODE_NOT_ENABLED");
+        }
+        boolean collects = com.example.ethics.intake.ReportModePolicy.collectsIdentity(mode);
+        if (!collects) {
+            if (request.reporterIdentity() != null) {
+                // Refused rather than ignored. A client that sends a name on an anonymous
+                // form has misunderstood the mode, and dropping the field silently would
+                // leave the reporter believing they had identified themselves — or, worse,
+                // believing they had not, if the drop ever regressed.
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "REPORTER_IDENTITY_NOT_ALLOWED");
+            }
+            return;
+        }
+        if (request.reporterIdentity() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "REPORTER_IDENTITY_REQUIRED");
+        }
+        if (!reporterIdentities.isOperational()) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "IDENTITY_STORE_UNAVAILABLE");
+        }
+    }
+
+    /**
+     * A stable fingerprint of the submitted identity for the idempotency hash. Returns a
+     * fixed marker when there is none, so an anonymous report hashes the same way it did
+     * before this field existed and in-flight receipts keep replaying correctly.
+     */
+    private String identityFingerprint(ReporterIdentityPayload identity) {
+        if (identity == null) {
+            return "none";
+        }
+        return secrets.sha256(canonicalField(identity.fullName())
+                + canonicalField(identity.email())
+                + canonicalField(identity.phone())
+                + canonicalField(identity.unit())
+                + canonicalField(identity.note()));
     }
 
     private static String canonicalField(String value) {

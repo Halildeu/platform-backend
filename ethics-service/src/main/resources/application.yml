@@ -37,6 +37,16 @@ server:
 
 ethics:
   public-org-id: ${ETHICS_PUBLIC_ORG_ID:00000000-0000-0000-0000-000000000035}
+  # ES-212 — envelope keys for the reporter identity collected by CONFIDENTIAL and
+  # NAMED intake. Empty by default: with no active key the service refuses those two
+  # modes (503) rather than storing a person in the clear. Which modes a tenant runs is
+  # separate data (ethics_org_report_policy); this is only whether we can seal them.
+  # Rotation adds an id to the map and moves active-key-id; retired ids stay so rows
+  # sealed under them remain readable.
+  identity:
+    active-key-id: ${ETHICS_IDENTITY_ACTIVE_KEY_ID:}
+    keys:
+      "[v1]": ${ETHICS_IDENTITY_KEY_V1:}
   # ES-203/D — keys the participant handle the browser receives. No default: a service
   # that booted without it would mint handles from a constant, which is the same as no
   # scoping at all. ParticipantHandles refuses to construct, so it fails at start.

@@ -23,6 +23,20 @@ public class PublicEthicsController {
         this.service=service;this.evidence=evidence;
     }
 
+    /**
+     * ES-212 — which reporting modes this host's tenant offers. Read before the form
+     * renders so the reporter is never shown an option that would be refused on submit.
+     * No authentication: the answer is the same for everyone who can reach the form, and
+     * requiring a session to find out how to report anonymously would defeat the point.
+     */
+    @GetMapping("/intake-options")
+    @RateLimiter(name = "publicIntake")
+    ResponseEntity<IntakeOptionsResponse> intakeOptions(HttpServletRequest servletRequest) {
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(service.intakeOptions(servletRequest.getServerName()));
+    }
+
     @PostMapping("/reports")
     @RateLimiter(name = "publicIntake")
     @Bulkhead(name = "publicIntake")

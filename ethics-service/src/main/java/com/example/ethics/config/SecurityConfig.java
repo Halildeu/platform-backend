@@ -34,7 +34,8 @@ import java.util.Map;
     AuditDeliveryProperties.class,
     NotificationDeliveryProperties.class,
     PublicTenantProperties.class,
-    UserDirectoryProperties.class
+    UserDirectoryProperties.class,
+    ReporterIdentityProperties.class
 })
 public class SecurityConfig {
 
