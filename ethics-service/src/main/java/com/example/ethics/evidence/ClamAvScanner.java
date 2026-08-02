@@ -62,6 +62,18 @@ public class ClamAvScanner {
         }
     }
 
+    /**
+     * The scanner's self-reported identity, e.g. {@code ClamAV 1.5.0/28077/Thu Jul 30 ...}.
+     *
+     * <p>Package-private so the freshness probe can ask without performing a scan. It has to
+     * be askable independently: in a low-volume reporting system weeks can pass without an
+     * attachment, and a definition age that only refreshes on traffic would go stale exactly
+     * in the quiet system where staleness matters most.
+     */
+    String currentVersion() {
+        return queryVersion(Math.toIntExact(properties.getProcessor().getTimeout().toMillis()));
+    }
+
     private String queryVersion(int timeoutMillis) {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(
