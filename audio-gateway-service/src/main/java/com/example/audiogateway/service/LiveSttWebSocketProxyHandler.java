@@ -49,6 +49,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
     static final String PATH_PREFIX = "/api/v1/audio-gateway/sessions/";
     static final String PATH_SUFFIX = "/stream";
     static final String UPSTREAM_PROTOCOL = "source-ranges-v1";
+    static final String SPEECHMATICS_UPLOAD_TERMINAL_MARKER =
+            "__gateway_speechmatics_upload_terminal__";
     private static final long TERMINAL_TRANSPORT_MARGIN_MS = 1_000L;
     private static final int CLIENT_CONTROL_EVENT_BUFFER_SIZE = 64;
 
@@ -246,7 +248,6 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         final AtomicLong speechmaticsFrameCount = new AtomicLong();
         final AtomicLong acceptedSamples = new AtomicLong();
         final Sinks.One<Void> upstreamReady = Sinks.one();
-        final Sinks.One<Boolean> speechmaticsEofRequested = Sinks.one();
         final Sinks.One<Void> drainedRelayed = Sinks.one();
         final Sinks.Many<RelayedEvent> clientControlEvents = Sinks.many()
                 .unicast()
@@ -299,10 +300,13 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         if (speechmatics == null) {
                             sink.next(upstream.textMessage(control.upstreamPayload(objectMapper)));
                         } else if (control.terminal()) {
-                            // A value signal is required here. With a real Reactor Netty
-                            // client receive publisher, an empty completion can race the
-                            // currently handled EOF frame and leave the upload source open.
-                            speechmaticsEofRequested.tryEmitValue(Boolean.TRUE);
+                            // Emit an internal marker through the same serialized upload
+                            // publisher. A side-channel sink can race Reactor Netty's
+                            // currently handled EOF frame and leave client.receive() open.
+                            // The transform below consumes this marker and completes without
+                            // ever forwarding it to Speechmatics.
+                            sink.next(upstream.textMessage(
+                                    SPEECHMATICS_UPLOAD_TERMINAL_MARKER));
                         }
                         return;
                     }
@@ -362,7 +366,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 // inbound socket open while waiting for final/drained events.
                 .transform(frames -> speechmatics == null
                         ? frames.takeUntil(message -> eofSent.get())
-                        : frames.takeUntilOther(speechmaticsEofRequested.asMono()))
+                        : completeSpeechmaticsUpload(frames))
                 .doFinally(signal -> clientControlEvents.tryEmitComplete())
                 // The AI endpoint can spend minutes loading pinned models. Do not admit,
                 // account or forward any desktop audio until it proves the exact source
@@ -465,6 +469,20 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         // so the download completes only after the terminal event reached the desktop. For a
         // non-EOF disconnect, either leg may still terminate the bridge promptly.
         return Mono.firstWithSignal(upload, download).then();
+    }
+
+    static Flux<WebSocketMessage> completeSpeechmaticsUpload(
+            final Flux<WebSocketMessage> frames) {
+        return frames
+                .takeUntil(LiveSttWebSocketProxyHandler::isSpeechmaticsUploadTerminalMarker)
+                .filter(message -> !isSpeechmaticsUploadTerminalMarker(message));
+    }
+
+    private static boolean isSpeechmaticsUploadTerminalMarker(
+            final WebSocketMessage message) {
+        return message.getType() == WebSocketMessage.Type.TEXT
+                && SPEECHMATICS_UPLOAD_TERMINAL_MARKER.equals(
+                        message.getPayloadAsText());
     }
 
     private void emitAudioAcknowledgement(
