@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -60,6 +61,12 @@ public class ScannerDefinitionFreshness {
     private final Clock clock;
     private final AtomicReference<Instant> definitionBuiltAt = new AtomicReference<>();
 
+    // @Autowired is not decoration: this class has two constructors, and with two
+    // unannotated candidates Spring stops looking for an injectable one and falls back
+    // to a default constructor that does not exist — the context dies with
+    // "No default constructor found", far from the actual cause. Measured 2026-08-02:
+    // it put the evidence worker into CrashLoopBackOff.
+    @Autowired
     public ScannerDefinitionFreshness(ClamAvScanner scanner, MeterRegistry metrics) {
         this(scanner, metrics, Clock.systemUTC());
     }
