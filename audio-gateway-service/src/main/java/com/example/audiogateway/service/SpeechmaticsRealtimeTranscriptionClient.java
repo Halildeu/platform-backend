@@ -164,7 +164,7 @@ public final class SpeechmaticsRealtimeTranscriptionClient
     private String endMessage(final int frameCount) {
         final ObjectNode root = objectMapper.createObjectNode();
         root.put("message", "EndOfStream");
-        root.put("last_seq_no", frameCount);
+        root.put("last_seq_no", Math.max(0, frameCount - 1));
         try {
             return objectMapper.writeValueAsString(root);
         } catch (final JsonProcessingException ex) {
