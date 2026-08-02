@@ -576,17 +576,21 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     }
 
     @Test
-    void speechmaticsUploadMarkerCompletesOpenClientReceiveWithoutLeakingMarker() {
+    void speechmaticsUploadMarkerEmitsProviderTerminalAndCompletesOpenClientReceive() {
         final NettyDataBufferFactory factory =
                 new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
         final WebSocketMessage audio = binaryFrame(factory, 0L);
         final WebSocketMessage marker = textFrame(
                 factory,
                 LiveSttWebSocketProxyHandler.SPEECHMATICS_UPLOAD_TERMINAL_MARKER);
+        final WebSocketMessage terminal = textFrame(
+                factory,
+                "{\"message\":\"EndOfStream\",\"last_seq_no\":1}");
 
         StepVerifier.create(LiveSttWebSocketProxyHandler.completeSpeechmaticsUpload(
-                        Flux.concat(Flux.just(audio, marker), Flux.never())))
-                .expectNext(audio)
+                        Flux.concat(Flux.just(audio, marker), Flux.never()),
+                        Mono.just(terminal)))
+                .expectNext(audio, terminal)
                 .verifyComplete();
     }
 
