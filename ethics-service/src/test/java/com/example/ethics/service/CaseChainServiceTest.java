@@ -71,7 +71,7 @@ class CaseChainServiceTest {
         // Sanctioning before the case that justifies it has concluded inverts the chain:
         // the finding would be written to fit a decision already taken.
         ResponseStatusException e = assertThrows(ResponseStatusException.class,
-                () -> service.recordSanction(STAFF, CASE, 25, Band.AGIR, null, "SUSPENSION"));
+                () -> service.recordSanction(STAFF, CASE, "EXPENSE_IRREGULARITY", 25, Band.AGIR, null, "SUSPENSION"));
         assertEquals(HttpStatus.CONFLICT, e.getStatusCode());
         verify(sanctions, never()).save(any());
     }
@@ -83,7 +83,7 @@ class CaseChainServiceTest {
         // Reading that a sanction was applied and applying one are different powers, and
         // the second is the one that ends someone's employment.
         assertThrows(ResponseStatusException.class,
-                () -> service.recordSanction(STAFF, CASE, 25, Band.AGIR, null, "SUSPENSION"));
+                () -> service.recordSanction(STAFF, CASE, "EXPENSE_IRREGULARITY", 25, Band.AGIR, null, "SUSPENSION"));
         verify(cases, never()).findById(any());
     }
 
@@ -104,7 +104,7 @@ class CaseChainServiceTest {
         EthicsCase closed = closedCase(ORG);
         when(cases.findById(CASE)).thenReturn(Optional.of(closed));
         ResponseStatusException e = assertThrows(ResponseStatusException.class,
-                () -> service.recordSanction(STAFF, CASE, 28, Band.ORTA, null, "WRITTEN_WARNING"));
+                () -> service.recordSanction(STAFF, CASE, "EXPENSE_IRREGULARITY", 28, Band.ORTA, null, "WRITTEN_WARNING"));
         assertEquals(HttpStatus.BAD_REQUEST, e.getStatusCode());
         // The scale's own words travel: "band ORTA is below what score 28 supports (AGIR)"
         // tells the handler what to change. A generic 400 would not.
@@ -148,7 +148,7 @@ class CaseChainServiceTest {
 
     @Test
     void anOverturnedSanctionCannotBeApplied() {
-        CaseSanction sanction = new CaseSanction(UUID.randomUUID(), CASE, ORG, 25, Band.AGIR, null,
+        CaseSanction sanction = new CaseSanction(UUID.randomUUID(), CASE, ORG, "EXPENSE_IRREGULARITY", 25, Band.AGIR, null,
                 "SUSPENSION", "h", Instant.parse("2026-08-02T00:00:00Z"));
         sanction.moveAppeal("REQUESTED");
         sanction.moveAppeal("OVERTURNED");

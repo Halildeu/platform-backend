@@ -67,6 +67,7 @@ public final class EthicsDtos {
      * auditor asking "why AĞIR" needs the number someone actually put on it.
      */
     public record RecordSanctionRequest(
+            @NotBlank @Pattern(regexp = "[A-Z][A-Z_]{2,39}") String violationCategory,
             @jakarta.validation.constraints.Min(1) @jakarta.validation.constraints.Max(40) int severityScore,
             @NotBlank @Pattern(regexp = "HAFIF|ORTA|AGIR|COK_AGIR") String severityBand,
             @Size(max = 400) String escalationReason,
@@ -78,7 +79,8 @@ public final class EthicsDtos {
             @NotBlank @Pattern(regexp = "REQUESTED|UPHELD|OVERTURNED") String appealState) {}
 
     public record SanctionView(
-            UUID id, int severityScore, String severityBand, String escalationReason,
+            UUID id, String violationCategory,
+            int severityScore, String severityBand, String escalationReason,
             String sanctionType, Instant decidedAt, Instant appliedAt,
             String verificationNote, String appealState) {}
 

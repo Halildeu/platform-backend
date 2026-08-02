@@ -57,26 +57,66 @@ class CaseChainInvariantTest {
     void aBandBelowTheScoreIsRefused() {
         // Reading the scale downwards is how a serious finding quietly becomes a warning.
         assertThrows(IllegalArgumentException.class, () -> new CaseSanction(
-                UUID.randomUUID(), CASE, ORG, 28, Band.ORTA, null, "WRITTEN_WARNING", "h", CLOSED));
+                UUID.randomUUID(), CASE, ORG, "EXPENSE_IRREGULARITY", 28, Band.ORTA, null, "WRITTEN_WARNING", "h", CLOSED));
     }
 
     @Test
     void escalatingAboveTheScoreRequiresAReason() {
-        // The scale's automatic-escalation list exists precisely so a single bribe or one
-        // act of harassment does not band as HAFİF on a low total. Escalation is allowed —
-        // it just cannot be silent.
+        // Escalation is allowed — it just cannot be silent.
         assertThrows(IllegalArgumentException.class, () -> new CaseSanction(
-                UUID.randomUUID(), CASE, ORG, 8, Band.COK_AGIR, null, "TERMINATION", "h", CLOSED));
+                UUID.randomUUID(), CASE, ORG, "EXPENSE_IRREGULARITY", 8, Band.COK_AGIR, null,
+                "TERMINATION", "h", CLOSED));
 
-        CaseSanction escalated = new CaseSanction(UUID.randomUUID(), CASE, ORG, 8, Band.COK_AGIR,
-                "PUBLIC_OFFICIAL_BRIBERY — cetvel otomatik yükseltme listesi", "TERMINATION", "h", CLOSED);
+        CaseSanction escalated = new CaseSanction(UUID.randomUUID(), CASE, ORG,
+                "EXPENSE_IRREGULARITY", 8, Band.COK_AGIR,
+                "Tekrar eden davranış; cetvel dışı gerekçeli yükseltme.", "TERMINATION", "h", CLOSED);
         assertEquals("COK_AGIR", escalated.getSeverityBand());
-        assertTrue(CaseSanction.AUTOMATIC_ESCALATIONS.contains("PUBLIC_OFFICIAL_BRIBERY"));
+    }
+
+    @Test
+    void aCategoryOnTheAutomaticListCannotBeBandedBelowTheFloor() {
+        // This is the rule the list was written for, and until now nothing applied it: the
+        // set was referenced only by a test asserting that a set literal contains what it
+        // literally contains, while the record API carried no category at all. A live probe
+        // recorded a termination for a listed category at any band the caller chose.
+        for (String category : CaseSanction.AUTOMATIC_ESCALATIONS) {
+            for (Band tooLow : new Band[] {Band.HAFIF, Band.ORTA, Band.AGIR}) {
+                assertThrows(IllegalArgumentException.class, () -> new CaseSanction(
+                        UUID.randomUUID(), CASE, ORG, category, 8, tooLow,
+                        "gerekçe verilmiş olsa bile taban geçilemez", "TERMINATION", "h", CLOSED),
+                        category + " banded " + tooLow + " should be refused");
+            }
+        }
+    }
+
+    @Test
+    void aListedCategoryAtTheFloorStillNeedsAReasonWhenTheScoreIsLow() {
+        // The two rules compose rather than one excusing the other: the floor says which
+        // band, the reason says why the number underneath it disagrees. A low-scoring bribe
+        // is exactly the case where an auditor needs both.
+        assertThrows(IllegalArgumentException.class, () -> new CaseSanction(
+                UUID.randomUUID(), CASE, ORG, "PUBLIC_OFFICIAL_BRIBERY", 6, Band.COK_AGIR, null,
+                "TERMINATION", "h", CLOSED));
+
+        CaseSanction ok = new CaseSanction(UUID.randomUUID(), CASE, ORG,
+                "PUBLIC_OFFICIAL_BRIBERY", 6, Band.COK_AGIR,
+                "Cetvel otomatik yükseltme listesi: kamu görevlisine rüşvet.",
+                "TERMINATION", "h", CLOSED);
+        assertEquals("PUBLIC_OFFICIAL_BRIBERY", ok.getViolationCategory());
+        assertEquals("COK_AGIR", ok.getSeverityBand());
+    }
+
+    @Test
+    void aSanctionWithoutACategoryIsRefused() {
+        // Without a category the floor has nothing to fire on, which is precisely how the
+        // rule stayed dormant.
+        assertThrows(IllegalArgumentException.class, () -> new CaseSanction(
+                UUID.randomUUID(), CASE, ORG, "  ", 25, Band.AGIR, null, "SUSPENSION", "h", CLOSED));
     }
 
     @Test
     void applyingRequiresVerificationAndAnOverturnedSanctionCannotBeApplied() {
-        CaseSanction s = new CaseSanction(UUID.randomUUID(), CASE, ORG, 25, Band.AGIR, null,
+        CaseSanction s = new CaseSanction(UUID.randomUUID(), CASE, ORG, "EXPENSE_IRREGULARITY", 25, Band.AGIR, null,
                 "SUSPENSION", "h", CLOSED);
         assertThrows(IllegalArgumentException.class, () -> s.markApplied("h2", "  ", CLOSED));
 
@@ -88,7 +128,7 @@ class CaseChainInvariantTest {
 
     @Test
     void appealsMoveForwardOnly() {
-        CaseSanction s = new CaseSanction(UUID.randomUUID(), CASE, ORG, 15, Band.ORTA, null,
+        CaseSanction s = new CaseSanction(UUID.randomUUID(), CASE, ORG, "EXPENSE_IRREGULARITY", 15, Band.ORTA, null,
                 "WRITTEN_WARNING", "h", CLOSED);
         assertThrows(IllegalStateException.class, () -> s.moveAppeal("UPHELD"));
         s.moveAppeal("REQUESTED");

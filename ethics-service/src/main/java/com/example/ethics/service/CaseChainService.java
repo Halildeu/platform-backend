@@ -46,7 +46,8 @@ public class CaseChainService {
     // ---- sanctions --------------------------------------------------------
 
     @Transactional
-    public CaseSanction recordSanction(StaffContext staff, UUID caseId, int severityScore,
+    public CaseSanction recordSanction(StaffContext staff, UUID caseId, String violationCategory,
+                                       int severityScore,
                                        CaseSanction.Band band, String escalationReason,
                                        String sanctionType) {
         EthicsCase item = requireCase(staff, caseId);
@@ -58,7 +59,7 @@ public class CaseChainService {
         }
         try {
             return sanctions.save(new CaseSanction(UUID.randomUUID(), caseId, item.getOrgId(),
-                    severityScore, band, escalationReason, sanctionType,
+                    violationCategory, severityScore, band, escalationReason, sanctionType,
                     secrets.sha256(staff.subject()), Instant.now()));
         } catch (IllegalArgumentException e) {
             // The severity-scale rules speak in the caller's terms, so the message travels
