@@ -18,10 +18,24 @@ public interface ControlPlaneHandler {
     void onAgentHello(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello);
 
     /**
+     * Prepare AgentHello verification without mutating peer/control-plane state. The transport performs potentially
+     * expensive verification outside the CONTROL generation lock, revalidates the exact handle, and runs only the
+     * returned short commit while that generation is still current.
+     */
+    default Runnable prepareAgentHello(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello) {
+        return () -> onAgentHello(peer, hello);
+    }
+
+    /**
      * Authenticated CONTROL liveness from a peer. A heartbeat is never authority by itself; orchestrators may use
      * it only to re-evaluate previously presented peer evidence against the current authenticated transport.
      */
     default void onHeartbeat(PeerIdentity peer) {
+    }
+
+    /** Same two-phase contract as {@link #prepareAgentHello}, using the last accepted Hello as verifier input. */
+    default Runnable prepareHeartbeat(PeerIdentity peer) {
+        return () -> onHeartbeat(peer);
     }
 
     /**
@@ -33,8 +47,25 @@ public interface ControlPlaneHandler {
     default void onControlStreamClosed(PeerIdentity peer) {
     }
 
+    /**
+     * An authenticated inbound CONTROL frame could not be bound to the currently registered, Hello-ready stream
+     * generation. This is transport safety evidence only; it must not authorize or retry the refused frame.
+     */
+    default void onControlFrameRefused(PeerIdentity peer, String reason) {
+    }
+
     /** The endpoint user's consent outcome, reported by the agent. */
     void onConsentResult(PeerIdentity peer, RemoteBridgeMessages.ConsentResult result);
+
+    /**
+     * Prepare consent handling without mutating broker/session/peer state. The transport executes this phase outside
+     * the CONTROL generation lock, revalidates the exact generation, and only then runs the returned commit. Real
+     * implementations must re-check their session incarnation inside the commit; the default preserves inert/test
+     * handlers whose consent callback has no expensive preparation.
+     */
+    default Runnable prepareConsentResult(PeerIdentity peer, RemoteBridgeMessages.ConsentResult result) {
+        return () -> onConsentResult(peer, result);
+    }
 
     /** Agent-originated control-plane audit metadata (content hash, never raw payload). */
     void onAuditEvent(PeerIdentity peer, RemoteBridgeMessages.AuditEvent event);

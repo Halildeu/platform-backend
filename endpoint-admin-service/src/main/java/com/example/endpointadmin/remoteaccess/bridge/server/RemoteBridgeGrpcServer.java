@@ -56,6 +56,7 @@ public final class RemoteBridgeGrpcServer implements SmartLifecycle {
         if (server != null) {
             return;
         }
+        registry.beginAccepting();
         ServerCredentials credentials = buildServerCredentials(); // validated BEFORE any builder/bind
         Server built;
         try {
@@ -67,6 +68,7 @@ public final class RemoteBridgeGrpcServer implements SmartLifecycle {
                     .addService(service)
                     .build();
         } catch (RuntimeException e) {
+            registry.completeAll();
             throw new IllegalStateException(
                     "remote-bridge TLS credentials failed to load (invalid PEM?) — refusing to start", e);
         }
@@ -75,6 +77,7 @@ public final class RemoteBridgeGrpcServer implements SmartLifecycle {
             log.info("remote-bridge grpc server listening on {}:{} ({})", properties.bindHost(),
                     properties.port(), properties.tls().isComplete() ? "mutual TLS" : "INSECURE loopback test mode");
         } catch (IOException e) {
+            registry.completeAll();
             throw new IllegalStateException("remote-bridge grpc server failed to bind "
                     + properties.bindHost() + ":" + properties.port(), e);
         }
@@ -136,8 +139,8 @@ public final class RemoteBridgeGrpcServer implements SmartLifecycle {
         if (current == null) {
             return;
         }
-        registry.completeAll(); // each handle cancels its own heartbeat task; the scheduler bean stays
-        current.shutdown();      // alive (Spring owns its destroy) so a SmartLifecycle restart still works
+        current.shutdown();      // stop accepting new calls before registry shutdown/audit work can block
+        registry.completeAll();  // each handle cancels its own heartbeat task; the scheduler bean stays alive
 
         try {
             if (!current.awaitTermination(properties.shutdownGraceMillis(), TimeUnit.MILLISECONDS)) {

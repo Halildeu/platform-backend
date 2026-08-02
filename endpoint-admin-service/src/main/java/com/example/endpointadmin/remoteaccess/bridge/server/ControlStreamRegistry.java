@@ -13,7 +13,9 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -23,6 +25,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /**
  * Faz 22.6 T-2b (Codex 019eb9fb) — the live CONTROL streams, keyed by the AUTHENTICATED
@@ -100,7 +103,32 @@ public final class ControlStreamRegistry {
     }
 
     /** One live CONTROL stream: the authenticated peer + its serialized write handle, kept atomically together. */
-    private record ConnectedPeer(PeerIdentity peer, ControlStreamHandle handle) {
+    private record ConnectedPeer(PeerIdentity peer, ControlStreamHandle handle, boolean helloObserved,
+                                 boolean initializing, boolean closing, Object generationLock) {
+
+        private ConnectedPeer(PeerIdentity peer, ControlStreamHandle handle) {
+            this(peer, handle, false, false, false, new Object());
+        }
+
+        private ConnectedPeer markHelloObserved() {
+            return helloObserved ? this
+                    : new ConnectedPeer(peer, handle, true, initializing, closing, generationLock);
+        }
+
+        private ConnectedPeer markInitializing() {
+            return initializing ? this
+                    : new ConnectedPeer(peer, handle, helloObserved, true, closing, generationLock);
+        }
+
+        private ConnectedPeer markInitialized() {
+            return !initializing ? this
+                    : new ConnectedPeer(peer, handle, helloObserved, false, closing, generationLock);
+        }
+
+        private ConnectedPeer markClosing() {
+            return closing ? this
+                    : new ConnectedPeer(peer, handle, helloObserved, initializing, true, generationLock);
+        }
     }
 
     /** Public, redacted correlation ticket for one bounded heartbeat-loss acceptance probe. */
@@ -132,10 +160,13 @@ public final class ControlStreamRegistry {
     private final Map<String, ConnectedPeer> streams = new ConcurrentHashMap<>();
     private final Map<String, HeartbeatFaultObservation> heartbeatFaults = new ConcurrentHashMap<>();
     private final Map<String, PendingOperatorKill> pendingOperatorKills = new ConcurrentHashMap<>();
+    private final Object lifecycleLock = new Object();
     private final Object heartbeatFaultObservationLock = new Object();
     private final Object[] peerLocks = createPeerLocks();
+    private final Object[] registrationLocks = createPeerLocks();
     private final KillAckRuntime killAckRuntime;
     private final AtomicBoolean operatorKillAckAuditFailureLatched = new AtomicBoolean();
+    private volatile boolean shuttingDown;
 
     /** Back-compatible unit-test/inert wiring: operator close keeps the original immediate terminal path. */
     public ControlStreamRegistry() {
@@ -159,18 +190,340 @@ public final class ControlStreamRegistry {
 
     /** Register the peer's CONTROL handle; an existing handle for the SAME peer is closed and replaced. */
     void register(PeerIdentity peer, ControlStreamHandle handle) {
-        ConnectedPeer previous;
-        PendingOperatorKill replacedPending = null;
-        synchronized (peerLock(peer.transportPeerKey())) {
-            previous = streams.put(peer.transportPeerKey(), new ConnectedPeer(peer, handle));
-            if (previous != null && previous.handle() != handle) {
-                replacedPending = removePendingForHandle(peer.transportPeerKey(), previous.handle());
+        String peerKey = peer.transportPeerKey();
+        ConnectedPeer incoming = new ConnectedPeer(peer, handle);
+        PendingOperatorKill replacedPending;
+        // Registration has a dedicated stripe so only one replacement generation can be staged per peer.
+        // It is intentionally separate from peerLock(): kill paths take generationLock -> peerLock, while
+        // registration must be free to wait for prior-generation cleanup without creating a lock inversion.
+        synchronized (registrationLock(peerKey)) {
+            while (true) {
+                ConnectedPeer previous = streams.get(peerKey);
+                if (previous == null) {
+                    boolean published;
+                    synchronized (lifecycleLock) {
+                        if (shuttingDown) {
+                            published = false;
+                        } else {
+                            published = streams.putIfAbsent(peerKey, incoming) == null;
+                        }
+                    }
+                    if (published) {
+                        return;
+                    }
+                    if (shuttingDown) {
+                        handle.close();
+                        return;
+                    }
+                    continue;
+                }
+                if (previous.handle() == handle) {
+                    return;
+                }
+                ConnectedPeer staging = incoming.markInitializing();
+                boolean replaced;
+                synchronized (previous.generationLock()) {
+                    synchronized (lifecycleLock) {
+                        replaced = !shuttingDown && streams.replace(peerKey, previous, staging);
+                    }
+                    replacedPending = replaced ? removePendingForHandle(peerKey, previous.handle()) : null;
+                }
+                if (!replaced) {
+                    if (shuttingDown) {
+                        handle.close();
+                        return;
+                    }
+                    continue;
+                }
+                previous.handle().requireTransportTerminalCleanup();
+                // Remove registry authority and close the exact predecessor before durable audit I/O can block.
+                // Pending correlation was already consumed, so the close callback cannot double-finish it.
+                previous.handle().closeAndAwaitCleanup();
+                // Do not let the successor publish AgentHello until the prior generation's terminal cleanup has
+                // completed. This fences a delayed heartbeat-fault callback from wiping successor trust/session state.
+                synchronized (lifecycleLock) {
+                    if (!shuttingDown) {
+                        streams.replace(peerKey, staging, staging.markInitialized());
+                    }
+                }
+                if (shuttingDown) {
+                    streams.remove(peerKey, staging);
+                    handle.close();
+                }
+                break;
             }
         }
+        // Durable audit is deliberately outside the shared registration stripe. A recorder stall must not block
+        // an unrelated peer that hashes to the same stripe after this peer's successor is fully initialized.
         finishPending(replacedPending, PendingKillTerminal.STREAM_REPLACED, now());
-        if (previous != null && previous.handle() != handle) {
-            previous.handle().close();
+    }
+
+    /**
+     * Make a live transport eligible for operator-side device resolution only after its first validated
+     * {@code AgentHello} was absorbed by the control plane. The handle identity check prevents a late hello from
+     * a replaced stream from marking its successor ready.
+     */
+    boolean absorbAgentHello(PeerIdentity peer, ControlStreamHandle handle, Runnable absorber) {
+        if (absorber == null) {
+            return false;
         }
+        String peerKey = peer.transportPeerKey();
+        ConnectedPeer current = streams.get(peerKey);
+        if (current == null || current.handle() != handle) {
+            return false;
+        }
+        synchronized (current.generationLock()) {
+            current = streams.get(peerKey);
+            if (current == null || current.handle() != handle || current.initializing() || current.closing()
+                    || !current.handle().isApplicationControlAvailable()) {
+                return false;
+            }
+            // Register/unregister for this generation cannot cross this callback. A late hello from a replaced
+            // generation therefore cannot overwrite control-plane trust state for its successor.
+            absorber.run();
+            ConnectedPeer afterAbsorb = streams.get(peerKey);
+            if (afterAbsorb != current || !current.handle().isApplicationControlAvailable()) {
+                return false;
+            }
+            return streams.replace(peerKey, current, current.markHelloObserved());
+        }
+    }
+
+    /**
+     * Two-phase Hello absorption. Verification runs outside the generation lock; only a short, exact-generation
+     * commit can publish trust and mark this handle Hello-ready. A KILL or replacement never waits for verifier I/O,
+     * and a stale verifier result cannot ready or overwrite its successor.
+     */
+    boolean absorbPreparedAgentHello(PeerIdentity peer,
+                                     ControlStreamHandle handle,
+                                     Supplier<Runnable> preparer) {
+        if (preparer == null) {
+            return false;
+        }
+        String peerKey = peer.transportPeerKey();
+        ConnectedPeer generation = streams.get(peerKey);
+        if (!isTransportGenerationCurrent(peerKey, generation, handle)) {
+            return false;
+        }
+        Runnable commit = preparer.get();
+        if (commit == null) {
+            return false;
+        }
+        synchronized (generation.generationLock()) {
+            if (!isTransportGenerationCurrent(peerKey, generation, handle)) {
+                return false;
+            }
+            commit.run();
+            if (!isTransportGenerationCurrent(peerKey, generation, handle)) {
+                return false;
+            }
+            return streams.replace(peerKey, generation, generation.markHelloObserved());
+        }
+    }
+
+    /**
+     * Dispatch one post-Hello inbound mutation only while this handle still owns the peer slot. The generation lock
+     * makes the generation check and callback atomic with reconnect replacement and terminal unregister.
+     */
+    boolean dispatchIfCurrentHelloObserved(PeerIdentity peer, ControlStreamHandle handle, Runnable dispatcher) {
+        if (dispatcher == null) {
+            return false;
+        }
+        String peerKey = peer.transportPeerKey();
+        ConnectedPeer current = streams.get(peerKey);
+        if (current == null || current.handle() != handle) {
+            return false;
+        }
+        synchronized (current.generationLock()) {
+            current = streams.get(peerKey);
+            if (current == null || current.handle() != handle || current.initializing()
+                    || current.closing() || !current.helloObserved()
+                    || !current.handle().isApplicationControlAvailable()) {
+                return false;
+            }
+            dispatcher.run();
+            return true;
+        }
+    }
+
+    /**
+     * Two-phase consent dispatch. Preparation may perform bounded cryptographic verification and therefore runs
+     * outside the generation lock. The exact handle/generation is checked both before and after preparation; the
+     * returned commit then applies its own session-incarnation guard, so a concurrent KILL/reconnect never waits for
+     * verifier work and a stale generation cannot publish authority into its successor.
+     */
+    boolean dispatchPreparedConsentIfCurrentHelloObserved(PeerIdentity peer,
+                                                          ControlStreamHandle handle,
+                                                          Supplier<Runnable> preparer) {
+        if (preparer == null) {
+            return false;
+        }
+        String peerKey = peer.transportPeerKey();
+        ConnectedPeer generation = streams.get(peerKey);
+        if (!isApplicationGenerationCurrent(peerKey, generation, handle)) {
+            return false;
+        }
+        Runnable commit = preparer.get();
+        if (commit == null) {
+            return false;
+        }
+        synchronized (generation.generationLock()) {
+            if (!isApplicationGenerationCurrent(peerKey, generation, handle)) {
+                return false;
+            }
+            // Preparation already completed outside the lock. Keep only the quick incarnation-checked commit atomic
+            // with replacement/KILL so the validated generation cannot change between recheck and state publication.
+            commit.run();
+            return true;
+        }
+    }
+
+    private boolean isApplicationGenerationCurrent(String peerKey,
+                                                   ConnectedPeer expected,
+                                                   ControlStreamHandle handle) {
+        return isTransportGenerationCurrent(peerKey, expected, handle)
+                && expected.helloObserved();
+    }
+
+    private boolean isTransportGenerationCurrent(String peerKey,
+                                                  ConnectedPeer expected,
+                                                  ControlStreamHandle handle) {
+        ConnectedPeer current = streams.get(peerKey);
+        return !shuttingDown && current != null && current == expected && current.handle() == handle
+                && !current.initializing()
+                && !current.closing() && current.handle().isApplicationControlAvailable();
+    }
+
+    void beginAccepting() {
+        synchronized (lifecycleLock) {
+            if (!streams.isEmpty() || !pendingOperatorKills.isEmpty()) {
+                throw new IllegalStateException("cannot reopen CONTROL registry with residual live state");
+            }
+            shuttingDown = false;
+        }
+    }
+
+    /**
+     * Dispatch only the exact pending operator-close acknowledgement through an otherwise quarantined stream.
+     * This is inbound-only: every broker-to-agent application control path remains blocked while the pending
+     * kill exists.
+     */
+    boolean dispatchPendingOperatorKillAcknowledgement(PeerIdentity peer,
+                                                       ControlStreamHandle handle,
+                                                       RemoteBridgeMessages.AuditEvent event,
+                                                       Runnable dispatcher) {
+        if (peer == null || handle == null || event == null || dispatcher == null
+                || !EVENT_AGENT_KILL_APPLIED.equals(event.eventType())) {
+            return false;
+        }
+        String peerKey = peer.transportPeerKey();
+        ConnectedPeer current = streams.get(peerKey);
+        if (current == null || current.handle() != handle) {
+            return false;
+        }
+        synchronized (current.generationLock()) {
+            current = streams.get(peerKey);
+            PendingOperatorKill pending = pendingOperatorKills.get(peerKey);
+            if (current == null || current.handle() != handle || current.initializing()
+                    || current.closing() || !current.helloObserved()
+                    || pending == null || pending.handle != handle
+                    || !pending.sessionId.equals(event.sessionId())
+                    || !handle.isOperatorKillAcknowledgementAvailable()) {
+                return false;
+            }
+            dispatcher.run();
+            return true;
+        }
+    }
+
+    /** True only for the exact current stream quarantined while its operator-close ACK is pending. */
+    boolean isPendingOperatorKillGeneration(PeerIdentity peer, ControlStreamHandle handle) {
+        if (peer == null || handle == null) {
+            return false;
+        }
+        String peerKey = peer.transportPeerKey();
+        ConnectedPeer current = streams.get(peerKey);
+        if (current == null || current.handle() != handle) {
+            return false;
+        }
+        synchronized (current.generationLock()) {
+            current = streams.get(peerKey);
+            PendingOperatorKill pending = pendingOperatorKills.get(peerKey);
+            return current != null && current.handle() == handle && !current.initializing() && !current.closing()
+                    && current.helloObserved() && pending != null && pending.handle == handle
+                    && handle.isOperatorKillAcknowledgementAvailable();
+        }
+    }
+
+    /** A heartbeat carries no authority; during operator-close quarantine it is accepted as a no-op. */
+    boolean dispatchHeartbeatIfCurrentHelloObserved(PeerIdentity peer,
+                                                    ControlStreamHandle handle,
+                                                    Runnable dispatcher) {
+        String peerKey = peer.transportPeerKey();
+        ConnectedPeer current = streams.get(peerKey);
+        if (current == null || current.handle() != handle) {
+            return false;
+        }
+        synchronized (current.generationLock()) {
+            current = streams.get(peerKey);
+            if (current == null || current.handle() != handle || current.initializing()
+                    || current.closing() || !current.helloObserved()) {
+                return false;
+            }
+            if (handle.isOperatorKillAcknowledgementAvailable()) {
+                return true;
+            }
+            if (!handle.isApplicationControlAvailable()) {
+                return false;
+            }
+            dispatcher.run();
+            return true;
+        }
+    }
+
+    /** Two-phase heartbeat trust refresh with the same KILL/replacement isolation as prepared consent and Hello. */
+    boolean dispatchPreparedHeartbeatIfCurrentHelloObserved(PeerIdentity peer,
+                                                            ControlStreamHandle handle,
+                                                            Supplier<Runnable> preparer) {
+        if (preparer == null) {
+            return false;
+        }
+        String peerKey = peer.transportPeerKey();
+        ConnectedPeer generation = streams.get(peerKey);
+        if (!isHelloGenerationCurrent(peerKey, generation, handle)) {
+            return false;
+        }
+        if (handle.isOperatorKillAcknowledgementAvailable()) {
+            return true;
+        }
+        if (!handle.isApplicationControlAvailable()) {
+            return false;
+        }
+        Runnable commit = preparer.get();
+        if (commit == null) {
+            return false;
+        }
+        synchronized (generation.generationLock()) {
+            if (!isHelloGenerationCurrent(peerKey, generation, handle)) {
+                return false;
+            }
+            if (handle.isOperatorKillAcknowledgementAvailable()) {
+                return true;
+            }
+            if (!handle.isApplicationControlAvailable()) {
+                return false;
+            }
+            commit.run();
+            return true;
+        }
+    }
+
+    private boolean isHelloGenerationCurrent(String peerKey,
+                                             ConnectedPeer expected,
+                                             ControlStreamHandle handle) {
+        ConnectedPeer current = streams.get(peerKey);
+        return current != null && current == expected && current.handle() == handle && !current.initializing()
+                && !current.closing() && current.helloObserved();
     }
 
     /** Remove the peer's handle — only if it is still THIS handle (a replaced stream must not unregister its successor). */
@@ -180,47 +533,51 @@ public final class ControlStreamRegistry {
 
     /**
      * Remove the current handle and run its transport-loss action before a successor can register for the same
-     * peer key. The callback executes under an explicit re-entrant peer stripe (but outside the stream handle and
-     * ConcurrentHashMap internal locks), closing the remove→reconnect race without running broker/viewer/audit
-     * work inside a CHM compute callback. Same-key registry re-entry is therefore defined and deadlock-free.
+     * generation. The callback executes under that generation's private lock, not a shared peer stripe or the
+     * stream handle, so an unrelated peer cannot delay emergency termination.
      */
     boolean unregister(PeerIdentity peer, ControlStreamHandle handle, Runnable onRemoved) {
         String peerKey = peer.transportPeerKey();
         PendingOperatorKill closedPending;
         RuntimeException callbackFailure = null;
         boolean removed;
-        synchronized (peerLock(peerKey)) {
-            ConnectedPeer entry = streams.get(peerKey);
-            boolean heartbeatFaultClosed = markHeartbeatFaultClosed(peerKey, handle);
-            closedPending = removePendingForHandle(peerKey, handle);
-            // A normal replaced stream cannot remove or report loss for its successor. A heartbeat-fault-armed
-            // stream is different: the agent watchdog may reconnect before the old inbound callback arrives.
-            // Its exact armed handle is still real loss evidence, so run terminal cleanup once while preserving
-            // the successor transport for a future session.
-            if (entry == null || entry.handle() != handle) {
-                if (heartbeatFaultClosed && onRemoved != null
-                        && handle.claimHeartbeatFaultTerminalCleanup()) {
-                    try {
-                        onRemoved.run();
-                    } catch (RuntimeException failure) {
-                        callbackFailure = failure;
+        markHeartbeatFaultClosed(peerKey, handle);
+        ConnectedPeer entry = streams.get(peerKey);
+        if (entry != null && entry.handle() == handle) {
+            synchronized (entry.generationLock()) {
+                entry = streams.get(peerKey);
+                if (entry != null && entry.handle() == handle && !entry.closing()) {
+                    ConnectedPeer closingEntry = entry.markClosing();
+                    if (!streams.replace(peerKey, entry, closingEntry)) {
+                        removed = false;
+                    } else {
+                        removed = true;
+                        if (onRemoved != null && handle.claimTransportTerminalCleanup()) {
+                            try {
+                                onRemoved.run();
+                            } catch (RuntimeException failure) {
+                                callbackFailure = failure;
+                            }
+                        }
+                        streams.remove(peerKey, closingEntry);
                     }
-                }
-                removed = false;
-            } else {
-                streams.remove(peerKey, entry);
-                removed = true;
-                // Removal is already committed before policy cleanup. Holding the same peer stripe prevents a
-                // successor from registering until cleanup finishes, while a callback failure cannot restore the slot.
-                if (onRemoved != null) {
-                    try {
-                        onRemoved.run();
-                    } catch (RuntimeException failure) {
-                        callbackFailure = failure;
-                    }
+                } else {
+                    removed = false;
                 }
             }
+        } else {
+            // Replacement/shutdown may already have removed this exact handle from the map. Its run-once terminal
+            // cleanup still has to retire broker trust/session state, while the successor transport stays intact.
+            if (onRemoved != null && handle.claimRequiredTransportTerminalCleanup()) {
+                try {
+                    onRemoved.run();
+                } catch (RuntimeException failure) {
+                    callbackFailure = failure;
+                }
+            }
+            removed = false;
         }
+        closedPending = removePendingForHandle(peerKey, handle);
         finishPending(closedPending, PendingKillTerminal.STREAM_CLOSED, now());
         if (callbackFailure != null) {
             throw callbackFailure;
@@ -281,11 +638,15 @@ public final class ControlStreamRegistry {
 
     public boolean isConnected(String transportPeerKey) {
         ConnectedPeer entry = streams.get(transportPeerKey);
-        return entry != null && entry.handle().isApplicationControlAvailable();
+        return entry != null && !entry.initializing() && !entry.closing() && entry.helloObserved()
+                && entry.handle().isApplicationControlAvailable();
     }
 
     public int connectedCount() {
-        return streams.size();
+        return Math.toIntExact(streams.values().stream()
+                .filter(entry -> !entry.initializing() && !entry.closing() && entry.helloObserved())
+                .filter(entry -> entry.handle().isApplicationControlAvailable())
+                .count());
     }
 
     /** Runtime/metrics acceptance guard: once a durable ACK outcome write fails, this pod never reports clean. */
@@ -305,7 +666,8 @@ public final class ControlStreamRegistry {
             return Optional.empty();
         }
         ConnectedPeer entry = streams.get(transportPeerKey);
-        return entry == null || !entry.handle().isApplicationControlAvailable()
+        return entry == null || entry.initializing() || entry.closing() || !entry.helloObserved()
+                || !entry.handle().isApplicationControlAvailable()
                 ? Optional.empty()
                 : Optional.of(entry.peer());
     }
@@ -322,6 +684,8 @@ public final class ControlStreamRegistry {
             return Optional.empty();
         }
         return streams.values().stream()
+                .filter(entry -> !entry.initializing() && !entry.closing())
+                .filter(ConnectedPeer::helloObserved)
                 .filter(entry -> entry.handle().isApplicationControlAvailable())
                 .map(ConnectedPeer::peer)
                 .filter(peer -> peer.certBoundAdComputerId().filter(wanted::equals).isPresent())
@@ -356,24 +720,27 @@ public final class ControlStreamRegistry {
      *                  ({@link #TRANSPORT_KILL_SESSION})
      */
     public boolean killPeer(String transportPeerKey, String sessionId, String killReason, long nowEpochMillis) {
-        ConnectedPeer entry;
-        PendingOperatorKill interruptedPending = null;
-        synchronized (peerLock(transportPeerKey)) {
-            entry = streams.remove(transportPeerKey);
-            if (entry != null) {
+        while (true) {
+            ConnectedPeer entry = streams.get(transportPeerKey);
+            if (entry == null) {
+                return false;
+            }
+            PendingOperatorKill interruptedPending;
+            boolean delivered;
+            String session = sessionId == null || sessionId.isBlank() ? TRANSPORT_KILL_SESSION : sessionId;
+            synchronized (entry.generationLock()) {
+                if (!streams.remove(transportPeerKey, entry)) {
+                    continue;
+                }
                 cancelHeartbeatFault(entry.handle());
                 interruptedPending = removePendingForHandle(transportPeerKey, entry.handle());
             }
+            // The slot is already removed and no generation lock is held while close drains registry cleanup.
+            delivered = entry.handle().sendAndClose(killEnvelope(session, killReason, nowEpochMillis));
+            // Emergency transport termination is never downstream of durable I/O. Record only after KILL+close.
+            finishPending(interruptedPending, PendingKillTerminal.STREAM_CLOSED, nowEpochMillis);
+            return delivered;
         }
-        if (entry == null) {
-            return false;
-        }
-        String session = sessionId == null || sessionId.isBlank() ? TRANSPORT_KILL_SESSION : sessionId;
-        boolean delivered = entry.handle().sendAndClose(killEnvelope(session, killReason, nowEpochMillis));
-        // Emergency transport termination is never downstream of durable I/O. The ACK correlation was already
-        // detached under the peer lock; record its terminal reason only after the safety KILL and close completed.
-        finishPending(interruptedPending, PendingKillTerminal.STREAM_CLOSED, nowEpochMillis);
-        return delivered;
     }
 
     /**
@@ -392,34 +759,51 @@ public final class ControlStreamRegistry {
             return false;
         }
 
+        ConnectedPeer candidate = streams.get(transportPeerKey);
+        if (candidate == null) {
+            return false;
+        }
         PendingOperatorKill pending;
-        ControlStreamHandle fallbackHandle = null;
+        boolean delivered;
+        boolean schedulerUnavailable = false;
         long dispatchEpochMillis = runtime.clock().getAsLong();
-        synchronized (peerLock(transportPeerKey)) {
-            ConnectedPeer entry = streams.get(transportPeerKey);
-            if (entry == null || pendingOperatorKills.containsKey(transportPeerKey)
-                    || !entry.handle().quarantineForOperatorKill()) {
-                return false;
-            }
-            cancelHeartbeatFault(entry.handle());
-            long deadline = saturatedAdd(dispatchEpochMillis, runtime.timeoutMillis());
-            pending = new PendingOperatorKill(
-                    transportPeerKey, sessionId, entry.handle(), dispatchEpochMillis, deadline);
-            pendingOperatorKills.put(transportPeerKey, pending);
-            try {
-                pending.timeoutTask = runtime.scheduler().schedule(
-                        () -> timeoutOperatorKill(pending), runtime.timeoutMillis(), TimeUnit.MILLISECONDS);
-            } catch (RuntimeException schedulingFailure) {
-                pendingOperatorKills.remove(transportPeerKey, pending);
-                streams.remove(transportPeerKey, entry);
-                fallbackHandle = entry.handle();
+        synchronized (candidate.generationLock()) {
+            synchronized (peerLock(transportPeerKey)) {
+                ConnectedPeer entry = streams.get(transportPeerKey);
+                synchronized (lifecycleLock) {
+                    if (shuttingDown || entry != candidate || entry.initializing() || entry.closing()
+                            || !entry.helloObserved() || pendingOperatorKills.containsKey(transportPeerKey)
+                            || !entry.handle().quarantineForOperatorKill()) {
+                        return false;
+                    }
+                    cancelHeartbeatFault(entry.handle());
+                    long deadline = saturatedAdd(dispatchEpochMillis, runtime.timeoutMillis());
+                    pending = new PendingOperatorKill(
+                            transportPeerKey, sessionId, entry.handle(), dispatchEpochMillis, deadline);
+                    pendingOperatorKills.put(transportPeerKey, pending);
+                    try {
+                        pending.timeoutTask = runtime.scheduler().schedule(
+                                () -> timeoutOperatorKill(pending), runtime.timeoutMillis(), TimeUnit.MILLISECONDS);
+                    } catch (RuntimeException schedulingFailure) {
+                        pendingOperatorKills.remove(transportPeerKey, pending);
+                        streams.remove(transportPeerKey, entry);
+                        schedulerUnavailable = true;
+                    }
+                }
             }
         }
-        if (fallbackHandle != null) {
+        if (schedulerUnavailable) {
+            delivered = candidate.handle().sendAndClose(
+                    killEnvelope(sessionId, "OPERATOR_CLOSE", dispatchEpochMillis));
+        } else {
+            delivered = candidate.handle().sendDeferredCleanup(
+                    killEnvelope(sessionId, "OPERATOR_CLOSE", dispatchEpochMillis));
+            candidate.handle().drainCloseAction();
+        }
+        if (schedulerUnavailable) {
             finishPending(pending, PendingKillTerminal.SCHEDULER_UNAVAILABLE, dispatchEpochMillis);
-            return fallbackHandle.sendAndClose(killEnvelope(sessionId, "OPERATOR_CLOSE", dispatchEpochMillis));
+            return delivered;
         }
-        boolean delivered = pending.handle.send(killEnvelope(sessionId, "OPERATOR_CLOSE", dispatchEpochMillis));
         if (!delivered) {
             boolean claimed;
             synchronized (peerLock(transportPeerKey)) {
@@ -456,11 +840,15 @@ public final class ControlStreamRegistry {
             }
             ConnectedPeer current = streams.get(peerKey);
             if (current == null || current.handle() != pending.handle) {
-                pendingOperatorKills.remove(peerKey, pending);
+                if (!pendingOperatorKills.remove(peerKey, pending)) {
+                    return OperatorKillAckResult.REFUSED_NO_PENDING;
+                }
                 refusal = OperatorKillAckResult.REFUSED_HANDLE_MISMATCH;
                 terminal = PendingKillTerminal.STREAM_REPLACED;
             } else if (nowEpochMillis > pending.deadlineEpochMillis) {
-                pendingOperatorKills.remove(peerKey, pending);
+                if (!pendingOperatorKills.remove(peerKey, pending)) {
+                    return OperatorKillAckResult.REFUSED_NO_PENDING;
+                }
                 streams.remove(peerKey, current);
                 refusal = OperatorKillAckResult.REFUSED_EXPIRED;
                 terminal = PendingKillTerminal.TIMEOUT;
@@ -470,15 +858,20 @@ public final class ControlStreamRegistry {
             } else if (!canonicalAgentAckHash(event).equals(event.contentHash())) {
                 return OperatorKillAckResult.REFUSED_INVALID_PROVENANCE;
             } else {
-                pendingOperatorKills.remove(peerKey, pending);
+                if (!pendingOperatorKills.remove(peerKey, pending)) {
+                    return OperatorKillAckResult.REFUSED_NO_PENDING;
+                }
                 streams.remove(peerKey, current);
                 cancelHeartbeatFault(pending.handle);
                 terminal = PendingKillTerminal.ACKNOWLEDGED;
             }
         }
 
-        boolean auditRecorded = finishPending(pending, terminal, nowEpochMillis);
+        // The terminal transport outcome must not depend on durable recorder latency. Once the ACK consumes the
+        // exact pending generation, close it before recording; a blocked recorder can delay the caller but cannot
+        // leave a live CONTROL handle that emergency kill can no longer find in the registry.
         pending.handle.close();
+        boolean auditRecorded = finishPending(pending, terminal, nowEpochMillis);
         if (refusal != null) {
             return refusal;
         }
@@ -499,17 +892,13 @@ public final class ControlStreamRegistry {
         if (permit == null) {
             return false;
         }
-        ConnectedPeer entry = streams.get(transportPeerKey);
-        if (entry == null) {
-            return false;
-        }
         Envelope envelope = Envelope.newBuilder()
                 .setChannelType(ChannelType.CONTROL)
                 .setSessionId(permit.sessionId())
                 .setSentAtEpochMillis(nowEpochMillis)
                 .setOperationPermit(RemoteBridgeProtoAdapter.encode(permit))
                 .build();
-        return entry.handle().sendApplicationControl(envelope);
+        return sendApplicationControlIfCurrent(transportPeerKey, envelope);
     }
 
     /**
@@ -525,17 +914,13 @@ public final class ControlStreamRegistry {
         if (dispatch == null || dispatch.permit() == null) {
             return false;
         }
-        ConnectedPeer entry = streams.get(transportPeerKey);
-        if (entry == null) {
-            return false;
-        }
         Envelope envelope = Envelope.newBuilder()
                 .setChannelType(ChannelType.CONTROL)
                 .setSessionId(dispatch.permit().sessionId())
                 .setSentAtEpochMillis(nowEpochMillis)
                 .setOperationDispatch(RemoteBridgeProtoAdapter.encode(dispatch))
                 .build();
-        return entry.handle().sendApplicationControl(envelope);
+        return sendApplicationControlIfCurrent(transportPeerKey, envelope);
     }
 
     /**
@@ -550,17 +935,13 @@ public final class ControlStreamRegistry {
         if (prompt == null) {
             return false;
         }
-        ConnectedPeer entry = streams.get(transportPeerKey);
-        if (entry == null) {
-            return false;
-        }
         Envelope envelope = Envelope.newBuilder()
                 .setChannelType(ChannelType.CONTROL)
                 .setSessionId(prompt.sessionId())
                 .setSentAtEpochMillis(nowEpochMillis)
                 .setConsentPrompt(RemoteBridgeProtoAdapter.encode(prompt))
                 .build();
-        return entry.handle().sendApplicationControl(envelope);
+        return sendApplicationControlIfCurrent(transportPeerKey, envelope);
     }
 
     /**
@@ -577,34 +958,68 @@ public final class ControlStreamRegistry {
         if (challenge == null || sessionId == null || sessionId.isBlank()) {
             return false;
         }
-        ConnectedPeer entry = streams.get(transportPeerKey);
-        if (entry == null) {
-            return false;
-        }
         Envelope envelope = Envelope.newBuilder()
                 .setChannelType(ChannelType.CONTROL)
                 .setSessionId(sessionId)
                 .setSentAtEpochMillis(nowEpochMillis)
                 .setDeviceKeyChallenge(RemoteBridgeProtoAdapter.encode(challenge))
                 .build();
-        return entry.handle().sendApplicationControl(envelope);
+        return sendApplicationControlIfCurrent(transportPeerKey, envelope);
+    }
+
+    private boolean sendApplicationControlIfCurrent(String transportPeerKey, Envelope envelope) {
+        if (shuttingDown) {
+            return false;
+        }
+        ConnectedPeer entry = streams.get(transportPeerKey);
+        if (entry == null) {
+            return false;
+        }
+        boolean delivered;
+        synchronized (entry.generationLock()) {
+            ConnectedPeer current = streams.get(transportPeerKey);
+            if (shuttingDown || current != entry || entry.initializing() || entry.closing() || !entry.helloObserved()
+                    || !entry.handle().isApplicationControlAvailable()) {
+                return false;
+            }
+            delivered = entry.handle().sendApplicationControlDeferredCleanup(envelope);
+        }
+        entry.handle().drainCloseAction();
+        return delivered;
     }
 
     /** Close every live stream (server shutdown) — each handle cancels its own heartbeat task. */
     public void completeAll() {
-        pendingOperatorKills.forEach((peerKey, pending) -> {
-            if (pendingOperatorKills.remove(peerKey, pending)) {
-                finishPending(pending, PendingKillTerminal.SERVER_SHUTDOWN, now());
+        List<PendingOperatorKill> shutdownPendings;
+        List<Map.Entry<String, ConnectedPeer>> shutdownStreams;
+        synchronized (lifecycleLock) {
+            shuttingDown = true;
+            shutdownPendings = new ArrayList<>(pendingOperatorKills.values());
+            pendingOperatorKills.clear();
+            shutdownStreams = new ArrayList<>(streams.entrySet());
+        }
+        shutdownStreams.forEach(snapshot -> {
+            ConnectedPeer entry = snapshot.getValue();
+            synchronized (entry.generationLock()) {
+                entry.handle().requireTransportTerminalCleanup();
+                streams.remove(snapshot.getKey(), entry);
             }
-        });
-        streams.values().forEach(entry -> {
             cancelHeartbeatFault(entry.handle());
-            entry.handle().close();
+            entry.handle().closeDeferredCleanup();
         });
-        streams.clear();
+        streams.clear(); // registration is fenced; remove any concurrently unregistered snapshot residue
+        // A pending handle can already have left the registry. close() is idempotent, so include it explicitly.
+        shutdownPendings.forEach(pending -> pending.handle.closeDeferredCleanup());
+        // Every transport is terminal before any broker cleanup callback can block on session/audit work.
+        shutdownStreams.forEach(snapshot -> snapshot.getValue().handle().drainCloseAction());
+        shutdownPendings.forEach(pending -> pending.handle.drainCloseAction());
         synchronized (heartbeatFaultObservationLock) {
             heartbeatFaults.clear();
         }
+        // Durable terminal evidence is attempted only after every transport authority is closed and unpublished.
+        // A slow recorder may delay lifecycle completion, but it cannot leave another CONTROL stream usable.
+        shutdownPendings.forEach(pending ->
+                finishPending(pending, PendingKillTerminal.SERVER_SHUTDOWN, now()));
     }
 
     private boolean markHeartbeatFaultClosed(String transportPeerKey, ControlStreamHandle handle) {
@@ -640,20 +1055,26 @@ public final class ControlStreamRegistry {
     private void timeoutOperatorKill(PendingOperatorKill pending) {
         boolean close = false;
         long now = now();
-        synchronized (peerLock(pending.transportPeerKey)) {
-            if (!pendingOperatorKills.remove(pending.transportPeerKey, pending)) {
-                return;
-            }
-            ConnectedPeer current = streams.get(pending.transportPeerKey);
-            if (current != null && current.handle() == pending.handle) {
-                streams.remove(pending.transportPeerKey, current);
-                close = true;
+        ConnectedPeer candidate = streams.get(pending.transportPeerKey);
+        Object generationLock = candidate != null && candidate.handle() == pending.handle
+                ? candidate.generationLock()
+                : new Object();
+        synchronized (generationLock) {
+            synchronized (peerLock(pending.transportPeerKey)) {
+                if (!pendingOperatorKills.remove(pending.transportPeerKey, pending)) {
+                    return;
+                }
+                ConnectedPeer current = streams.get(pending.transportPeerKey);
+                if (current != null && current.handle() == pending.handle) {
+                    streams.remove(pending.transportPeerKey, current);
+                    close = true;
+                }
             }
         }
-        finishPending(pending, PendingKillTerminal.TIMEOUT, now);
         if (close) {
             pending.handle.close();
         }
+        finishPending(pending, PendingKillTerminal.TIMEOUT, now);
     }
 
     private PendingOperatorKill removePendingForHandle(String transportPeerKey, ControlStreamHandle handle) {
@@ -742,6 +1163,12 @@ public final class ControlStreamRegistry {
         int hash = transportPeerKey.hashCode();
         hash ^= hash >>> 16;
         return peerLocks[hash & (PEER_LOCK_STRIPES - 1)];
+    }
+
+    private Object registrationLock(String transportPeerKey) {
+        int hash = transportPeerKey.hashCode();
+        hash ^= hash >>> 16;
+        return registrationLocks[hash & (PEER_LOCK_STRIPES - 1)];
     }
 
     private static Object[] createPeerLocks() {

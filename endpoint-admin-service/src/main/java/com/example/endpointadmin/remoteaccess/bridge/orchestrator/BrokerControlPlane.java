@@ -3,6 +3,7 @@ package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.State;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages;
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlPlaneHandler;
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlStreamRegistry;
@@ -20,6 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.function.LongSupplier;
 
 /**
@@ -56,9 +58,13 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
             "AGENT_INDICATOR_SHOWN",   // the indicator came up (D10-6)
             EVENT_INDICATOR_LOST);
 
+    /** Bounded tolerance for the endpoint and broker clocks; broker-owned prompt/state remain authoritative. */
+    private static final long CONSENT_CLOCK_SKEW_MILLIS = 30_000L;
+
     private final PeerTrustLedger ledger;
     private final RemoteBridgeSessionStore store;
     private final RemoteBridgeAuditSink auditSink;
+    private final Executor auditExecutor;
     private final LongSupplier clock;
     private final RemoteBridgeAgentErrorLedger agentErrorLedger;
     // Faz 22.6 #548 slice-1 step-5 — the canonical device-key challenge-response state. OPTIONAL: when either is
@@ -104,12 +110,28 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
                               RemoteBridgeAgentErrorLedger agentErrorLedger,
                               DeviceKeyChallengeStore deviceKeyChallengeStore,
                               TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore) {
+        this(ledger, store, auditSink, clock, agentErrorLedger, deviceKeyChallengeStore,
+                deviceKeyEvidenceStore, Runnable::run);
+    }
+
+    public BrokerControlPlane(PeerTrustLedger ledger,
+                              RemoteBridgeSessionStore store,
+                              RemoteBridgeAuditSink auditSink,
+                              LongSupplier clock,
+                              RemoteBridgeAgentErrorLedger agentErrorLedger,
+                              DeviceKeyChallengeStore deviceKeyChallengeStore,
+                              TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore,
+                              Executor auditExecutor) {
         if (ledger == null || store == null || auditSink == null || clock == null) {
             throw new IllegalArgumentException("ledger, store, auditSink and clock are required");
+        }
+        if (auditExecutor == null) {
+            throw new IllegalArgumentException("auditExecutor is required");
         }
         this.ledger = ledger;
         this.store = store;
         this.auditSink = auditSink;
+        this.auditExecutor = auditExecutor;
         this.clock = clock;
         this.agentErrorLedger = agentErrorLedger == null ? new RemoteBridgeAgentErrorLedger(0) : agentErrorLedger;
         this.deviceKeyChallengeStore = deviceKeyChallengeStore;
@@ -118,22 +140,40 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
 
     @Override
     public void onAgentHello(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello) {
-        PeerTrustLedger.PeerTrust trust = ledger.record(peer, hello, clock.getAsLong());
-        lastHelloByPeer.put(peer.transportPeerKey(), hello);
-        recordBestEffort("ledger", "HELLO_VERIFIED:cert=" + trust.certTrusted()
-                + ",attestation=" + trust.attestationVerified() + ",device=" + trust.deviceTrusted());
+        prepareAgentHello(peer, hello).run();
+    }
+
+    @Override
+    public Runnable prepareAgentHello(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello) {
+        PeerTrustLedger.PeerTrust trust = ledger.evaluate(peer, hello, clock);
+        return () -> {
+            ledger.publish(peer, trust);
+            lastHelloByPeer.put(peer.transportPeerKey(), hello);
+            recordBestEffort("ledger", "HELLO_VERIFIED:cert=" + trust.certTrusted()
+                    + ",attestation=" + trust.attestationVerified() + ",device=" + trust.deviceTrusted());
+        };
     }
 
     @Override
     public void onHeartbeat(PeerIdentity peer) {
+        prepareHeartbeat(peer).run();
+    }
+
+    @Override
+    public Runnable prepareHeartbeat(PeerIdentity peer) {
         RemoteBridgeMessages.AgentHello hello = lastHelloByPeer.get(peer.transportPeerKey());
         if (hello == null) {
-            return;
+            return () -> { };
         }
         // A heartbeat is not authority and does not create trust. It only re-runs the same fail-closed
         // verifier path over the last AgentHello evidence while bound to the current authenticated mTLS peer,
         // keeping long-lived control streams from losing trust solely because the initial AgentHello aged out.
-        ledger.record(peer, hello, clock.getAsLong());
+        PeerTrustLedger.PeerTrust trust = ledger.evaluate(peer, hello, clock);
+        return () -> {
+            if (lastHelloByPeer.get(peer.transportPeerKey()) == hello) {
+                ledger.publish(peer, trust);
+            }
+        };
     }
 
     @Override
@@ -151,46 +191,117 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
     }
 
     @Override
+    public void onControlFrameRefused(PeerIdentity peer, String reason) {
+        // A refused frame has no accepted generation/session authority. Never let agent-controlled frame fields
+        // select a session audit chain, even when the authenticated peer currently owns that session.
+        recordBestEffort("ledger", "CONTROL_FRAME_REFUSED:" + safeType(reason));
+    }
+
+    @Override
     public void onConsentResult(PeerIdentity peer, RemoteBridgeMessages.ConsentResult result) {
+        prepareConsentResult(peer, result).run();
+    }
+
+    @Override
+    public Runnable prepareConsentResult(PeerIdentity peer, RemoteBridgeMessages.ConsentResult result) {
         long now = clock.getAsLong();
         RemoteBridgeSession session = store.bySessionId(result.sessionId()).orElse(null);
         if (session == null) {
-            recordBestEffort(result.sessionId(), "CONSENT_REFUSED:unknown-session");
-            return;
+            return () -> recordBestEffort("ledger", "CONSENT_REFUSED:unknown-session");
         }
         if (!session.transportPeerKey().equals(peer.transportPeerKey())) {
             // a peer may only answer for ITS OWN session — never another device's
-            recordBestEffort(session.sessionId(), "CONSENT_REFUSED:wrong-peer");
-            return;
+            // The refused frame has no authority to select the victim session's audit chain.
+            return () -> recordBestEffort("ledger", "CONSENT_REFUSED:wrong-peer");
         }
-        if (now >= session.promptExpiryEpochMillis()) {
-            recordBestEffort(session.sessionId(), "CONSENT_REFUSED:late");
-            return;
+        if (session.state() != State.CONSENT_PENDING) {
+            return () -> recordBestEffort(session.sessionId(), "CONSENT_REFUSED:not-pending");
         }
         if (!result.granted()) {
-            if (session.transition(Event.CONSENT_DENIED).accepted()) {
-                store.evictIfTerminal(session.sessionId());
-                evictDeviceKeySession(session.sessionId(), session.transportPeerKey()); // F1 terminal cleanup
-                terminateViewOnly(session.sessionId()); // #1580 — no stale fanout after consent denied
-                recordBestEffort(session.sessionId(), "CONSENT_DENIED");
-            } else {
-                recordBestEffort(session.sessionId(), "CONSENT_REFUSED:not-pending");
-            }
-            return;
+            return () -> commitConsentDenial(session);
+        }
+        if (now >= session.promptExpiryEpochMillis()) {
+            return () -> recordBestEffort(session.sessionId(), "CONSENT_REFUSED:late");
         }
         if (result.expiryEpochMillis() <= now) {
             // proto3's default 0 (or any not-in-the-future expiry) must NEVER escalate to the full broker
             // window — a malformed grant is no grant (Codex 019ebbfa post-impl P1)
-            recordBestEffort(session.sessionId(), "CONSENT_REFUSED:invalid-expiry");
-            return;
+            return () -> recordBestEffort(session.sessionId(), "CONSENT_REFUSED:invalid-expiry");
         }
-        // the machine accepts CONSENT_GRANTED only from CONSENT_PENDING — duplicates/replays refuse here
-        if (!session.transition(Event.CONSENT_GRANTED).accepted()) {
+        if (result.expiryEpochMillis() > session.promptExpiryEpochMillis()) {
+            // The endpoint may shorten the broker's maximum consent window, but it may never extend it. Prompt
+            // incarnation is bound by the server-generated, one-use session id retained in the replay tombstone.
+            return () -> recordBestEffort(session.sessionId(), "CONSENT_REFUSED:prompt-binding");
+        }
+        long earliestGrant = Math.max(0L, session.sessionStartEpochMillis() - CONSENT_CLOCK_SKEW_MILLIS);
+        long latestGrant = now > Long.MAX_VALUE - CONSENT_CLOCK_SKEW_MILLIS
+                ? Long.MAX_VALUE
+                : now + CONSENT_CLOCK_SKEW_MILLIS;
+        if (result.grantedAtEpochMillis() < earliestGrant
+                || result.grantedAtEpochMillis() > latestGrant
+                || result.grantedAtEpochMillis() >= result.expiryEpochMillis()) {
+            // The timestamp is agent-supplied, so it is only a bounded freshness signal. Session state, the
+            // authenticated current CONTROL generation and the broker-owned prompt expiry remain authoritative.
+            return () -> recordBestEffort(session.sessionId(), "CONSENT_REFUSED:invalid-grant-time");
+        }
+        PeerTrustLedger.PeerTrust refreshedTrust = evaluateTrustFromLastHello(peer);
+        if (refreshedTrust == null) {
+            // A CONTROL transport can connect before its first AgentHello arrives. Consent must not advance the
+            // session in that window: there is no authenticated evidence to bind the user decision to yet.
+            return () -> recordBestEffort(session.sessionId(), "CONSENT_REFUSED:peer-hello-unavailable");
+        }
+        return () -> commitConsentGrant(peer, session, result, refreshedTrust);
+    }
+
+    private void commitConsentDenial(RemoteBridgeSession session) {
+        // Once bound to the authenticated peer and current pending session, refusal is always the safe terminal
+        // result. Legacy/proto3-default grant timestamps must never make an explicit endpoint-user denial inert.
+        if (session.transition(Event.CONSENT_DENIED).accepted()) {
+            store.evictIfTerminal(session.sessionId());
+            evictDeviceKeySession(session.sessionId(), session.transportPeerKey());
+            terminateViewOnly(session.sessionId());
+            recordBestEffort(session.sessionId(), "CONSENT_DENIED");
+        } else {
             recordBestEffort(session.sessionId(), "CONSENT_REFUSED:not-pending");
+        }
+    }
+
+    private void commitConsentGrant(PeerIdentity peer,
+                                    RemoteBridgeSession session,
+                                    RemoteBridgeMessages.ConsentResult result,
+                                    PeerTrustLedger.PeerTrust refreshedTrust) {
+        boolean accepted;
+        String refusalReason = null;
+        synchronized (session) {
+            // Verification above is deliberately side-effect-free so KILL is never held behind verifier work. Only
+            // this exact still-pending incarnation may publish peer-wide trust and consume the one-use consent.
+            if (session.state() != State.CONSENT_PENDING) {
+                accepted = false;
+                refusalReason = "not-pending";
+            } else {
+                long commitNow = clock.getAsLong();
+                if (commitNow >= session.promptExpiryEpochMillis()
+                        || commitNow >= result.expiryEpochMillis()) {
+                    accepted = false;
+                    refusalReason = "expired-during-verification";
+                } else if (!ledger.isFresh(refreshedTrust, commitNow)) {
+                    accepted = false;
+                    refusalReason = "trust-stale-during-verification";
+                } else {
+                    accepted = session.transition(Event.CONSENT_GRANTED).accepted();
+                    if (!accepted) {
+                        throw new IllegalStateException("consent state changed while holding the session monitor");
+                    }
+                    ledger.publish(peer, refreshedTrust);
+                    session.grantConsent(true, result.expiryEpochMillis()); // clamped to the broker prompt window
+                }
+            }
+        }
+        if (!accepted) {
+            recordBestEffort(session.sessionId(), "CONSENT_REFUSED:" + refusalReason);
             return;
         }
-        refreshTrustFromLastHello(peer, session.sessionId(), now);
-        session.grantConsent(true, result.expiryEpochMillis()); // clamped to the broker prompt window
+        recordConsentTrustRefresh(session.sessionId(), refreshedTrust);
         recordBestEffort(session.sessionId(), "CONSENT_GRANTED:lease-until="
                 + session.lease().expiryEpochMillis());
         // D10.1 (#634, Codex 019ec25c): a VALID granted consent (peer/expiry/pending already checked) moves the
@@ -210,47 +321,53 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         if (ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED.equals(event.eventType())) {
             ControlStreamRegistry registry = controlStreamRegistry;
             if (registry == null) {
-                recordBestEffort(event.sessionId(), "AGENT_KILL_ACK_REFUSED:not-wired");
+                recordBestEffort("ledger", "AGENT_KILL_ACK_REFUSED:not-wired");
                 return;
             }
             ControlStreamRegistry.OperatorKillAckResult result =
                     registry.acceptOperatorKillAcknowledgement(peer, event, clock.getAsLong());
             if (result == ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED) {
                 recordBestEffort(event.sessionId(), "AGENT:" + ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED);
+            } else if (result == ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED_AUDIT_FAILED) {
+                recordBestEffort(event.sessionId(), "AGENT_KILL_ACK_ACCEPTED:audit-failed");
             } else {
-                recordBestEffort(event.sessionId(),
+                recordBestEffort("ledger",
                         "AGENT_KILL_ACK_REFUSED:" + result.name().toLowerCase(Locale.ROOT));
             }
             return;
         }
         if (!INBOUND_AUDIT_ALLOWLIST.contains(event.eventType())) {
-            recordBestEffort(event.sessionId(), "AGENT_AUDIT_REFUSED:" + safeType(event.eventType()));
+            recordBestEffort("ledger", "AGENT_AUDIT_REFUSED:" + safeType(event.eventType()));
             return;
         }
-        recordBestEffort(event.sessionId(), "AGENT:" + event.eventType());
+        RemoteBridgeSession session = ownedSession(peer, event.sessionId()).orElse(null);
+        if (session == null) {
+            recordBestEffort("ledger", "AGENT_AUDIT_REFUSED:wrong-session");
+            return;
+        }
+        recordBestEffort(session.sessionId(), "AGENT:" + event.eventType());
         // ConsentLease's contract counts a persistent indicator loss as a local abort (the endpoint user can
         // no longer SEE that support is active) — both events kill, fail-closed (Codex 019ebbfa post-impl P1)
         if (EVENT_LOCAL_ABORT.equals(event.eventType()) || EVENT_INDICATOR_LOST.equals(event.eventType())) {
             String cause = EVENT_LOCAL_ABORT.equals(event.eventType()) ? "local-abort" : "indicator-lost";
-            store.bySessionId(event.sessionId())
-                    .filter(session -> session.transportPeerKey().equals(peer.transportPeerKey()))
-                    .ifPresent(session -> {
-                        session.abortLeaseLocally();
-                        if (session.transition(Event.LOCAL_ABORT).accepted()) {
-                            store.evictIfTerminal(session.sessionId());
-                            evictDeviceKeySession(session.sessionId(), session.transportPeerKey()); // F1 cleanup
-                            terminateViewOnly(session.sessionId()); // #1580 — no stale fanout after abort/indicator-loss
-                            recordBestEffort(session.sessionId(), "KILLED:" + cause);
-                        }
-                    });
+            session.abortLeaseLocally();
+            if (session.transition(Event.LOCAL_ABORT).accepted()) {
+                store.evictIfTerminal(session.sessionId());
+                evictDeviceKeySession(session.sessionId(), session.transportPeerKey()); // F1 cleanup
+                terminateViewOnly(session.sessionId()); // #1580 — no stale fanout after abort/indicator-loss
+                recordBestEffort(session.sessionId(), "KILLED:" + cause);
+            }
         }
     }
 
     @Override
     public void onAgentErrorFrame(PeerIdentity peer, RemoteBridgeMessages.AgentErrorFrame error) {
-        String sessionId = error.sessionId() == null || error.sessionId().isBlank() ? "ledger" : error.sessionId();
+        RemoteBridgeSession ownedSession = ownedSession(peer, error.sessionId()).orElse(null);
+        String sessionId = ownedSession == null ? "ledger" : ownedSession.sessionId();
         String eventType = "AGENT_ERROR:" + safeType(error.code()) + ":retryable=" + error.retryable();
-        agentErrorLedger.record(peer, error, clock.getAsLong());
+        if (ownedSession != null) {
+            agentErrorLedger.record(peer, error, clock.getAsLong());
+        }
         recordBestEffort(sessionId, eventType);
         terminateExpiredViewOnlyPermit(peer, error);
         log.warn("remote-bridge agent error frame peer={} session={} code={} retryable={}",
@@ -370,6 +487,14 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         }
     }
 
+    private Optional<RemoteBridgeSession> ownedSession(PeerIdentity peer, String sessionId) {
+        if (peer == null || sessionId == null || sessionId.isBlank()) {
+            return Optional.empty();
+        }
+        return store.bySessionId(sessionId)
+                .filter(session -> session.transportPeerKey().equals(peer.transportPeerKey()));
+    }
+
     /**
      * Inbound absorption is best-effort on the recorder: a recording failure must never make the broker
      * IGNORE a consent denial or a local abort (the safe outcome proceeds). The durable-record-BEFORE-permit
@@ -377,9 +502,17 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
      */
     private void recordBestEffort(String sessionId, String eventType) {
         try {
-            auditSink.record(new RemoteBridgeMessages.AuditEvent(sessionId, eventType, "", clock.getAsLong()));
+            RemoteBridgeMessages.AuditEvent event =
+                    new RemoteBridgeMessages.AuditEvent(sessionId, eventType, "", clock.getAsLong());
+            auditExecutor.execute(() -> {
+                try {
+                    auditSink.record(event);
+                } catch (RuntimeException e) {
+                    log.warn("remote-bridge inbound audit write failed (continuing fail-safe): {}", eventType);
+                }
+            });
         } catch (RuntimeException e) {
-            log.warn("remote-bridge inbound audit write failed (continuing fail-safe): {}", eventType);
+            log.warn("remote-bridge inbound audit dispatch failed (continuing fail-safe): {}", eventType);
         }
     }
 
@@ -404,16 +537,19 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         }
     }
 
-    private void refreshTrustFromLastHello(PeerIdentity peer, String sessionId, long now) {
+    private PeerTrustLedger.PeerTrust evaluateTrustFromLastHello(PeerIdentity peer) {
         RemoteBridgeMessages.AgentHello hello = lastHelloByPeer.get(peer.transportPeerKey());
         if (hello == null) {
-            return;
+            return null;
         }
         // A valid consent result is an authenticated inbound control-plane event from the same mTLS peer as the
         // session. It does not create trust by itself; it only re-runs the same fail-closed verifier path over
         // the peer's cached AgentHello evidence so legacy agents without HEARTBEAT frames do not lose trust
         // solely because the operator took longer than the ledger freshness TTL to approve and run an operation.
-        PeerTrustLedger.PeerTrust trust = ledger.record(peer, hello, now);
+        return ledger.evaluate(peer, hello, clock);
+    }
+
+    private void recordConsentTrustRefresh(String sessionId, PeerTrustLedger.PeerTrust trust) {
         // Session-scoped hello re-verification signal (Faz 22.6 #1580). onAgentHello() records the peer-level
         // HELLO_VERIFIED to the "ledger" sink before any session exists, so a session-filtered audit stream never
         // observes it. This consent-time refresh re-runs the same fail-closed verifier over the peer's cached

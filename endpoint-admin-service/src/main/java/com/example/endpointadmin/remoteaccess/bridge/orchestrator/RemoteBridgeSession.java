@@ -38,7 +38,7 @@ public final class RemoteBridgeSession {
     private final long sessionStartEpochMillis;
     private final AtomicLong seq = new AtomicLong(1L);
 
-    private State state;
+    private volatile State state;
     private ConsentLease lease = ConsentLease.NONE;
     // operator step-up freshness/strength (Faz 22.6 D step-up wiring) — default fail-closed weakest until the
     // operator transport records a VERIFIED step-up (slice-4c). Restart drops it (fail-closed, session-scoped).
@@ -262,7 +262,12 @@ public final class RemoteBridgeSession {
         return sessionStartEpochMillis;
     }
 
-    public synchronized boolean isTerminal() {
+    /**
+     * Lock-free lifecycle snapshot for registry/store coordination. Transitions publish through the volatile
+     * state field under this session's monitor; callers that only need terminality must not acquire that monitor
+     * while holding a registry lock, which would invert the close path's session -> registry order.
+     */
+    public boolean isTerminal() {
         return state.isTerminal();
     }
 }

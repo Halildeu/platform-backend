@@ -53,6 +53,14 @@ class RemoteBridgeNegativeProbeServiceTest {
         }
     }
 
+    private static void registerHelloReady(ControlStreamRegistry registry,
+                                           CapturingObserver observer) {
+        ControlStreamHandle handle = new ControlStreamHandle(observer);
+        registry.register(PEER, handle);
+        assertTrue(registry.absorbAgentHello(PEER, handle, () -> { }),
+                "negative probes require the same validated AgentHello boundary as product traffic");
+    }
+
     private static RemoteBridgePermitSigner signer() {
         try {
             KeyPairGenerator g = KeyPairGenerator.getInstance("EC");
@@ -85,7 +93,7 @@ class RemoteBridgeNegativeProbeServiceTest {
         RemoteBridgeSession session = activeSession(store);
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
-        registry.register(PEER, new ControlStreamHandle(observer));
+        registerHelloReady(registry, observer);
         RemoteBridgeAgentErrorLedger ledger = new RemoteBridgeAgentErrorLedger(16);
         AtomicLong now = new AtomicLong(NOW);
         RemoteBridgeNegativeProbeService service = new RemoteBridgeNegativeProbeService(
@@ -118,7 +126,7 @@ class RemoteBridgeNegativeProbeServiceTest {
         assertEquals(1L, session.nextSeq());
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
-        registry.register(PEER, new ControlStreamHandle(observer));
+        registerHelloReady(registry, observer);
         RemoteBridgeAgentErrorLedger ledger = new RemoteBridgeAgentErrorLedger(16);
         AtomicLong now = new AtomicLong(NOW);
         RemoteBridgeNegativeProbeService service = new RemoteBridgeNegativeProbeService(
@@ -146,7 +154,7 @@ class RemoteBridgeNegativeProbeServiceTest {
         RemoteBridgeSession session = activeSession(store);
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
-        registry.register(PEER, new ControlStreamHandle(observer));
+        registerHelloReady(registry, observer);
         RemoteBridgeNegativeProbeService service = new RemoteBridgeNegativeProbeService(
                 registry, signer(), new RemoteBridgeAgentErrorLedger(16), () -> NOW, 60_000L, 0L);
 

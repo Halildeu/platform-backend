@@ -6,6 +6,8 @@ import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessag
 import com.example.endpointadmin.remoteaccess.bridge.contract.WireContract;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
 
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -24,8 +26,25 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class RemoteBridgeSessionStore {
 
+    private static final int DEFAULT_MAX_ISSUED_SESSION_IDS = 4_096;
+
     private final Map<String, RemoteBridgeSession> bySessionId = new ConcurrentHashMap<>();
     private final Map<String, String> sessionIdByPeer = new ConcurrentHashMap<>();
+    // Accessed only by synchronized open(). Insertion order gives deterministic oldest-terminal eviction at the
+    // hard bound; live incarnations are never removed from replay protection.
+    private final Map<String, Boolean> issuedSessionIds = new LinkedHashMap<>();
+    private final int maxIssuedSessionIds;
+
+    public RemoteBridgeSessionStore() {
+        this(DEFAULT_MAX_ISSUED_SESSION_IDS);
+    }
+
+    RemoteBridgeSessionStore(int maxIssuedSessionIds) {
+        if (maxIssuedSessionIds <= 0) {
+            throw new IllegalArgumentException("issued session id capacity must be positive");
+        }
+        this.maxIssuedSessionIds = maxIssuedSessionIds;
+    }
 
     /** Why an open was refused (audit detail — never attacker-echoed content). */
     public sealed interface OpenResult permits Opened, Refused {
@@ -49,12 +68,12 @@ public final class RemoteBridgeSessionStore {
      * trusted to the (sole, today) caller. The controller already passes {@code UUID.toString()} (canonical
      * lowercase), so the valid path is unchanged; only a non-canonical tenant is newly refused.
      */
-    public OpenResult open(RemoteBridgeMessages.SessionRequest request,
-                           PeerIdentity peer,
-                           String operatorTenantId,
-                           String operatorDisplayName,
-                           long promptExpiryEpochMillis,
-                           long nowEpochMillis) {
+    public synchronized OpenResult open(RemoteBridgeMessages.SessionRequest request,
+                                        PeerIdentity peer,
+                                        String operatorTenantId,
+                                        String operatorDisplayName,
+                                        long promptExpiryEpochMillis,
+                                        long nowEpochMillis) {
         if (!WireContract.isValid(request) || peer == null) {
             return new Refused("invalid-session-request");
         }
@@ -63,6 +82,19 @@ public final class RemoteBridgeSessionStore {
         }
         if (promptExpiryEpochMillis <= nowEpochMillis) {
             return new Refused("prompt-expiry-not-in-future");
+        }
+        // Session ids are server-generated random incarnation identifiers. Explicit denial intentionally accepts
+        // proto-default timing fields, so recently issued ids remain replay tombstones after terminal eviction. The
+        // tombstone ledger is bounded: at capacity only the oldest already-evicted incarnation may be forgotten;
+        // live ids remain protected and a refused open never consumes its id. This avoids a permanent 4096-open JVM
+        // lifetime limit while retaining deterministic replay protection for every live and recent incarnation.
+        if (issuedSessionIds.containsKey(request.sessionId())) {
+            return new Refused("duplicate-session-id");
+        }
+        if (issuedSessionIds.size() >= maxIssuedSessionIds) {
+            if (!evictOldestTerminalSessionId()) {
+                return new Refused("session-id-replay-capacity");
+            }
         }
         RemoteBridgeSession session = new RemoteBridgeSession(request.sessionId(), peer.transportPeerKey(),
                 request.deviceId(), request.operatorSubject(), operatorTenantId,
@@ -75,22 +107,27 @@ public final class RemoteBridgeSessionStore {
                 return new Refused("state-machine-refused-" + event.name().toLowerCase());
             }
         }
+        if (bySessionId.containsKey(request.sessionId())) {
+            return new Refused("duplicate-session-id");
+        }
+        String existingId = sessionIdByPeer.get(peer.transportPeerKey());
+        if (existingId != null) {
+            RemoteBridgeSession existing = bySessionId.get(existingId);
+            if (existing != null && !existing.isTerminal()) {
+                return new Refused("peer-already-has-live-session");
+            }
+            if (existing != null) {
+                bySessionId.remove(existingId, existing);
+            }
+            sessionIdByPeer.remove(peer.transportPeerKey(), existingId);
+        }
+        if (issuedSessionIds.putIfAbsent(request.sessionId(), Boolean.TRUE) != null) {
+            return new Refused("duplicate-session-id");
+        }
         if (bySessionId.putIfAbsent(request.sessionId(), session) != null) {
             return new Refused("duplicate-session-id");
         }
-        String previousSessionId = sessionIdByPeer.compute(peer.transportPeerKey(), (key, existingId) -> {
-            if (existingId != null) {
-                RemoteBridgeSession existing = bySessionId.get(existingId);
-                if (existing != null && !existing.isTerminal()) {
-                    return existingId; // keep the live one — the new open loses
-                }
-            }
-            return request.sessionId();
-        });
-        if (!request.sessionId().equals(previousSessionId)) {
-            bySessionId.remove(request.sessionId());
-            return new Refused("peer-already-has-live-session");
-        }
+        sessionIdByPeer.put(peer.transportPeerKey(), request.sessionId());
         return new Opened(session);
     }
 
@@ -109,7 +146,7 @@ public final class RemoteBridgeSessionStore {
     }
 
     /** Drop a terminal session's registrations (the audit trail is the recorder's, never this map's). */
-    public void evictIfTerminal(String sessionId) {
+    public synchronized void evictIfTerminal(String sessionId) {
         RemoteBridgeSession session = bySessionId.get(sessionId);
         if (session != null && session.isTerminal()) {
             bySessionId.remove(sessionId, session);
@@ -119,6 +156,18 @@ public final class RemoteBridgeSessionStore {
 
     public int liveCount() {
         return (int) bySessionId.values().stream().filter(s -> !s.isTerminal()).count();
+    }
+
+    private boolean evictOldestTerminalSessionId() {
+        Iterator<String> issued = issuedSessionIds.keySet().iterator();
+        while (issued.hasNext()) {
+            String sessionId = issued.next();
+            if (!bySessionId.containsKey(sessionId)) {
+                issued.remove();
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

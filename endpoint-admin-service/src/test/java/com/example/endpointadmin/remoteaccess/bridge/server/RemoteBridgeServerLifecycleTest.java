@@ -341,6 +341,7 @@ class RemoteBridgeServerLifecycleTest {
                     // T-4a-ii slice-2c: the REAL inbound control plane is wired (INERT→BrokerControlPlane)
                     assertTrue(context.containsBean("remoteBridgeControlPlane"));
                     assertTrue(context.containsBean("remoteBridgeInboundAuditSink"));
+                    assertTrue(context.containsBean("remoteBridgeInboundAuditExecutor"));
                     // T-4a-ii slice-3c: the durable audit sink + the broker are wired (fail-closed, no transport)
                     assertTrue(context.containsBean("remoteBridgeDurableAuditSink"));
                     assertTrue(context.containsBean("remoteBridgeBroker"));
@@ -366,6 +367,9 @@ class RemoteBridgeServerLifecycleTest {
                     PeerIdentity peer = new PeerIdentity("metric-peer", Optional.empty(), List.of());
                     ControlStreamHandle handle = new ControlStreamHandle(new NoopObserver());
                     registry.register(peer, handle);
+                    assertEquals(0.0, connectedStreams.value(),
+                            "a pre-Hello transport is not a live application CONTROL stream");
+                    assertTrue(registry.absorbAgentHello(peer, handle, () -> { }));
                     assertEquals(1.0, connectedStreams.value());
                     assertTrue(((PrometheusMeterRegistry) meters).scrape()
                                     .contains(BRIDGE_CONTROL_STREAMS_CONNECTED + " 1.0"),
