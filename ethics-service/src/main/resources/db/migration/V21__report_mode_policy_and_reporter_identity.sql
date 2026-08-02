@@ -1,5 +1,9 @@
 -- ES-212 (#3370) — open CONFIDENTIAL and NAMED intake.
 --
+-- V21, not V20: Flyway reads two locations here (db/migration and db/vendor/{vendor}),
+-- and V20 was already taken by db/vendor/postgresql/V20__enforce_ack_template_append_only.sql.
+-- Checking only db/migration for the next free number finds a version that is not free.
+--
 -- The mode column has accepted all three values since V1; what was missing was
 -- anywhere to put the reporter. Two tables close that gap: one says which modes an
 -- organisation has turned on, the other holds the identity itself, encrypted.
