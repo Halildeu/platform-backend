@@ -101,6 +101,7 @@ audio:
         language: tr
         max-delay-seconds: 2.0
         audio-chunk-bytes: 32768
+        audio-ack-timeout-ms: 10000
         allow-insecure: false         # loopback protocol tests only; deployment must remain false
       transcript-result-stream:
         enabled: false               # opt-in; writes transcript text to result stream after live-stt returns

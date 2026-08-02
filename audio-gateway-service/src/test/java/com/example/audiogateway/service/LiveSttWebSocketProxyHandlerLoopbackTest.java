@@ -14,6 +14,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.AudioChunkPayload;
 import com.example.audiogateway.dto.AudioFormat;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.netty.buffer.UnpooledByteBufAllocator;
@@ -574,6 +575,105 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     }
 
     @Test
+    void speechmaticsEofUsesTheProviderAcknowledgedAudioSequence() {
+        final ObjectMapper mapper = new ObjectMapper();
+        final AtomicLong audioSequence = new AtomicLong();
+        final AtomicLong terminalSequence = new AtomicLong(-1L);
+        upstreamServer = HttpServer.create()
+                .host("127.0.0.1")
+                .port(0)
+                .route(routes -> routes.ws("/v2/tr", (in, out) -> out.sendObject(
+                        in.receiveFrames().concatMap(frame -> {
+                            if (frame instanceof BinaryWebSocketFrame) {
+                                final long sequence = audioSequence.incrementAndGet();
+                                return Flux.just(new TextWebSocketFrame(
+                                        "{\"message\":\"AudioAdded\",\"seq_no\":"
+                                                + sequence + "}"));
+                            }
+                            if (!(frame instanceof TextWebSocketFrame text)) {
+                                return Flux.empty();
+                            }
+                            final JsonNode control;
+                            try {
+                                control = mapper.readTree(text.text());
+                            } catch (Exception error) {
+                                return Flux.error(error);
+                            }
+                            final String type = control.path("message").asText();
+                            if ("StartRecognition".equals(type)) {
+                                return Flux.just(new TextWebSocketFrame(
+                                        "{\"message\":\"RecognitionStarted\"}"));
+                            }
+                            if ("EndOfStream".equals(type)) {
+                                terminalSequence.set(control.path("last_seq_no").asLong(-1L));
+                                return Flux.just(new TextWebSocketFrame(
+                                        "{\"message\":\"EndOfTranscript\"}"));
+                            }
+                            return Flux.empty();
+                        }))))
+                .bindNow();
+
+        final AudioGatewayProperties properties = new AudioGatewayProperties();
+        properties.getDirectStt().getStreaming().setEnabled(true);
+        properties.getDirectStt().getStreaming().setStreamUrl("ws://unused/ws/stream");
+        properties.getDirectStt().getSpeechmatics().setRealtimeUrl(
+                "ws://127.0.0.1:" + upstreamServer.port() + "/v2");
+        properties.getDirectStt().getSpeechmatics().setAllowInsecure(true);
+        properties.getDirectStt().getSpeechmatics().setApiKey("test-key-not-a-secret");
+        properties.getDirectStt().getSpeechmatics().setAudioAckTimeoutMs(1_000);
+        final LiveSttWebSocketProxyHandler handler = new LiveSttWebSocketProxyHandler(
+                sessions, properties, auditSink, DirectSttTranscriptResultSink.noop(),
+                upstreamClient, upstreamClient, mapper, meters);
+        when(sessions.get("session-1")).thenReturn(Optional.of(
+                speechmaticsStreamingSession(1L, 4L)));
+
+        final NettyDataBufferFactory clientFactory =
+                new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
+        final Sinks.Many<WebSocketMessage> clientInbound =
+                Sinks.many().unicast().onBackpressureBuffer();
+        final List<String> relayedText = new CopyOnWriteArrayList<>();
+        final AtomicReference<CloseStatus> closeStatus = new AtomicReference<>();
+        final AtomicBoolean completed = new AtomicBoolean();
+        final WebSocketSession client = mock(WebSocketSession.class);
+        when(client.getHandshakeInfo()).thenReturn(new HandshakeInfo(
+                URI.create("ws://gateway/api/v1/audio-gateway/sessions/session-1/stream"),
+                new HttpHeaders(), Mono.just(ownerJwt()), null));
+        when(client.receive()).thenReturn(clientInbound.asFlux());
+        when(client.textMessage(anyString())).thenAnswer(invocation ->
+                textFrame(clientFactory, invocation.getArgument(0)));
+        when(client.send(any(Publisher.class))).thenAnswer(invocation ->
+                Flux.from(invocation.<Publisher<WebSocketMessage>>getArgument(0))
+                        .doOnNext(message -> relayedText.add(message.getPayloadAsText()))
+                        .then());
+        when(client.close(any(CloseStatus.class))).thenAnswer(invocation -> {
+            closeStatus.set(invocation.getArgument(0));
+            return Mono.empty();
+        });
+
+        handleSubscription = handler.handle(client)
+                .subscribe(ignored -> { }, error -> { }, () -> completed.set(true));
+        clientInbound.emitNext(binaryFrame(clientFactory, 0L), Sinks.EmitFailureHandler.FAIL_FAST);
+        clientInbound.emitNext(
+                textFrame(clientFactory, LiveStreamControlFrame.CANONICAL_EOF),
+                Sinks.EmitFailureHandler.FAIL_FAST);
+
+        final Instant deadline = Instant.now().plus(TEST_TIMEOUT);
+        while (Instant.now().isBefore(deadline) && !completed.get() && closeStatus.get() == null) {
+            sleepQuietly();
+        }
+
+        assertThat(audioSequence).hasValue(1L);
+        assertThat(terminalSequence).hasValue(1L);
+        assertThat(relayedText).anyMatch(event -> event.contains("\"type\":\"ready\""));
+        assertThat(relayedText).contains(
+                audioAcknowledgement(0L),
+                "{\"type\":\"eof_ack\"}",
+                "{\"type\":\"drained\"}");
+        assertThat(completed).isTrue();
+        assertThat(closeStatus.get()).isNull();
+    }
+
+    @Test
     void drainedBeforeEofAckFailsClosedWithoutRelayingFalseSuccess() {
         upstreamServer = HttpServer.create()
                 .host("127.0.0.1")
@@ -1054,6 +1154,16 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                 "session-1", tenantId, userId, "meeting-1", "device-1", "tr",
                 AudioFormat.PCM16, 16_000, 1, "start-key-123456", 1_000L,
                 SessionState.STREAMING,
+                -1L, 0L, 0L, null, null, null, 0L, 1_000L);
+    }
+
+    private static SessionRecord speechmaticsStreamingSession(
+            final Long tenantId,
+            final Long userId) {
+        return new SessionRecord(
+                "session-1", tenantId, userId, "meeting-1", "device-1", "tr",
+                "speechmatics", "realtime", AudioFormat.PCM16, 16_000, 1,
+                "start-key-123456", 1_000L, SessionState.STREAMING,
                 -1L, 0L, 0L, null, null, null, 0L, 1_000L);
     }
 }

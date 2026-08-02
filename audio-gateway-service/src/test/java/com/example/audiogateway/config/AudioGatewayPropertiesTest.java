@@ -106,6 +106,17 @@ class AudioGatewayPropertiesTest {
     }
 
     @Test
+    void speechmaticsProviderRejectsUnboundedAudioAcknowledgementWait() {
+        final AudioGatewayProperties props = speechmaticsProps();
+        props.getDirectStt().getSpeechmatics().setApiKey("test-key-not-a-secret");
+        props.getDirectStt().getSpeechmatics().setAudioAckTimeoutMs(60_001);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("audio-ack-timeout-ms");
+    }
+
+    @Test
     void speechmaticsProviderRejectsInsecureEndpointByDefault() {
         final AudioGatewayProperties props = speechmaticsProps();
         props.getDirectStt().getSpeechmatics().setApiKey("test-key-not-a-secret");

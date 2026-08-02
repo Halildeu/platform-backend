@@ -10,7 +10,9 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.http.HttpHeaders;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
@@ -27,6 +29,7 @@ public final class SpeechmaticsRealtimeTranscriptionClient
     private static final String START_RECOGNITION = "StartRecognition";
     private static final String RECOGNITION_STARTED = "RecognitionStarted";
     private static final String ADD_TRANSCRIPT = "AddTranscript";
+    private static final String AUDIO_ADDED = "AudioAdded";
     private static final String END_OF_TRANSCRIPT = "EndOfTranscript";
     private static final String ERROR = "Error";
 
@@ -60,10 +63,13 @@ public final class SpeechmaticsRealtimeTranscriptionClient
         final HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(config.getApiKey().trim());
         final Sinks.One<Void> recognitionStarted = Sinks.one();
+        final Sinks.Many<Long> acknowledgedAudioSequences =
+                Sinks.many().replay().latest();
         final Sinks.One<TranscriptResult> completed = Sinks.one();
         final StringBuilder transcript = new StringBuilder();
         final ArrayNode segments = objectMapper.createArrayNode();
         final AtomicBoolean terminalObserved = new AtomicBoolean();
+        final AtomicLong lastAcknowledgedAudioSequence = new AtomicLong();
         final int frameCount = (request.audio().length + config.getAudioChunkBytes() - 1)
                 / config.getAudioChunkBytes();
 
@@ -72,8 +78,12 @@ public final class SpeechmaticsRealtimeTranscriptionClient
                             Mono.fromCallable(() -> session.textMessage(startMessage(request))),
                             recognitionStarted.asMono().thenMany(Flux.concat(
                                     audioFrames(session, request.audio()),
-                                    Mono.fromCallable(() -> session.textMessage(
-                                            endMessage(frameCount))))));
+                                    awaitAudioAcknowledgements(
+                                                    frameCount,
+                                                    lastAcknowledgedAudioSequence,
+                                                    acknowledgedAudioSequences)
+                                            .map(value -> session.textMessage(
+                                                    endMessage(value))))));
 
                     final Mono<Void> send = session.send(outbound);
                     final Mono<Void> receive = session.receive()
@@ -94,6 +104,10 @@ public final class SpeechmaticsRealtimeTranscriptionClient
                                 final String type = event.path("message").asText("");
                                 switch (type) {
                                     case RECOGNITION_STARTED -> recognitionStarted.tryEmitEmpty();
+                                    case AUDIO_ADDED -> observeAudioAdded(
+                                            event,
+                                            lastAcknowledgedAudioSequence,
+                                            acknowledgedAudioSequences);
                                     case ADD_TRANSCRIPT -> appendFinal(event, transcript, segments);
                                     case END_OF_TRANSCRIPT -> {
                                         terminalObserved.set(true);
@@ -104,8 +118,13 @@ public final class SpeechmaticsRealtimeTranscriptionClient
                                                 startedAtNanos));
                                         sink.complete();
                                     }
-                                    case ERROR -> sink.error(new SpeechmaticsProtocolException(
-                                            "Speechmatics returned an error event"));
+                                    case ERROR -> {
+                                        final SpeechmaticsProtocolException error =
+                                                new SpeechmaticsProtocolException(
+                                                        "Speechmatics returned an error event");
+                                        acknowledgedAudioSequences.tryEmitError(error);
+                                        sink.error(error);
+                                    }
                                     default -> {
                                         // Partials, AudioAdded, Info and Warning are non-terminal.
                                     }
@@ -161,10 +180,55 @@ public final class SpeechmaticsRealtimeTranscriptionClient
                 });
     }
 
-    private String endMessage(final int frameCount) {
+    private Mono<Long> awaitAudioAcknowledgements(
+            final long expectedAudioFrames,
+            final AtomicLong lastAcknowledgedAudioSequence,
+            final Sinks.Many<Long> acknowledgedAudioSequences) {
+        return Mono.defer(() -> {
+                    final long current = lastAcknowledgedAudioSequence.get();
+                    if (current >= expectedAudioFrames) {
+                        return Mono.just(current);
+                    }
+                    return acknowledgedAudioSequences.asFlux()
+                            .filter(sequence -> sequence >= expectedAudioFrames)
+                            .next();
+                })
+                .timeout(
+                        Duration.ofMillis(config.getAudioAckTimeoutMs()),
+                        Mono.error(new SpeechmaticsProtocolException(
+                                "Speechmatics did not acknowledge all audio before EndOfStream")));
+    }
+
+    private static void observeAudioAdded(
+            final JsonNode event,
+            final AtomicLong lastAcknowledgedAudioSequence,
+            final Sinks.Many<Long> acknowledgedAudioSequences) {
+        final JsonNode value = event.path("seq_no");
+        if (!value.isIntegralNumber()) {
+            throw new SpeechmaticsProtocolException(
+                    "Speechmatics AudioAdded sequence is invalid");
+        }
+        final long sequence = value.asLong();
+        while (true) {
+            final long previous = lastAcknowledgedAudioSequence.get();
+            if (sequence == previous) {
+                return;
+            }
+            if (sequence != previous + 1L) {
+                throw new SpeechmaticsProtocolException(
+                        "Speechmatics AudioAdded sequence is not contiguous");
+            }
+            if (lastAcknowledgedAudioSequence.compareAndSet(previous, sequence)) {
+                acknowledgedAudioSequences.tryEmitNext(sequence);
+                return;
+            }
+        }
+    }
+
+    private String endMessage(final long lastAcknowledgedSequence) {
         final ObjectNode root = objectMapper.createObjectNode();
         root.put("message", "EndOfStream");
-        root.put("last_seq_no", Math.max(0, frameCount - 1));
+        root.put("last_seq_no", Math.max(0L, lastAcknowledgedSequence));
         try {
             return objectMapper.writeValueAsString(root);
         } catch (final JsonProcessingException ex) {
