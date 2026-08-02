@@ -51,6 +51,10 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
     static final String UPSTREAM_PROTOCOL = "source-ranges-v1";
     static final String SPEECHMATICS_UPLOAD_TERMINAL_MARKER =
             "__gateway_speechmatics_upload_terminal__";
+    // Live A/B evidence showed publisher completion alone can leave EndOfStream
+    // buffered. A delayed control write starts a separate transport flush cycle.
+    private static final Duration SPEECHMATICS_TERMINAL_FLUSH_DELAY =
+            Duration.ofMillis(20L);
     private static final long TERMINAL_TRANSPORT_MARGIN_MS = 1_000L;
     private static final int CLIENT_CONTROL_EVENT_BUFFER_SIZE = 64;
 
@@ -432,12 +436,22 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 : speechmaticsOutbound(
                         Mono.just(upstream.textMessage(
                                 speechmatics.startMessage(record.sampleRateHz()))),
-                        framesToUpstream);
+                        framesToUpstream,
+                        Mono.defer(() -> eofSent.get()
+                                ? Mono.delay(SPEECHMATICS_TERMINAL_FLUSH_DELAY)
+                                        .map(ignored -> upstream.pingMessage(
+                                                factory -> factory.wrap(new byte[0])))
+                                        .doOnNext(ignored -> log.info(
+                                                "Speechmatics terminal flush dispatched "
+                                                        + "sessionId={} frames={}",
+                                                record.sessionId(),
+                                                speechmaticsFrameCount.get()))
+                                : Mono.empty()));
         final Mono<Void> upload = upstream.send(outbound)
                 .then(Mono.defer(() -> eofSent.get()
-                        // Completing the send publisher flushes the provider EOF. The upload
-                        // leg must still be unable to win firstWithSignal before the receive
-                        // leg relays drained, for both internal and Speechmatics providers.
+                        // The RFC 6455 ping is application-inert; its separate write cycle
+                        // flushes the preceding provider EOF before send completion. The upload
+                        // leg must remain unable to win before receive relays drained.
                         ? drainedRelayed.asMono()
                                 .timeout(
                                         drainTimeout,
@@ -477,8 +491,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
 
     static Flux<WebSocketMessage> speechmaticsOutbound(
             final Mono<WebSocketMessage> startMessage,
-            final Flux<WebSocketMessage> completedUpload) {
-        return Flux.concat(startMessage, completedUpload);
+            final Flux<WebSocketMessage> completedUpload,
+            final Mono<WebSocketMessage> terminalFlush) {
+        return Flux.concat(startMessage, completedUpload, terminalFlush);
     }
 
     private static boolean isSpeechmaticsUploadTerminalMarker(
