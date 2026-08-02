@@ -1,5 +1,6 @@
 package com.example.audiogateway.service;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -14,6 +15,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.net.URI;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.concurrent.ArrayBlockingQueue;
 import org.reactivestreams.Publisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,10 +26,12 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.HandshakeInfo;
 import org.springframework.web.reactive.socket.WebSocketHandler;
+import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.reactive.socket.client.WebSocketClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 class LiveSttWebSocketProxyHandlerTest {
 
@@ -63,6 +67,24 @@ class LiveSttWebSocketProxyHandlerTest {
                 speechmaticsClient,
                 new ObjectMapper(),
                 new SimpleMeterRegistry());
+    }
+
+    @Test
+    void boundedUpstreamUploadFailsClosedWhenCapacityIsUnavailable() {
+        final Sinks.Many<WebSocketMessage> upload = Sinks.many()
+                .unicast()
+                .onBackpressureBuffer(new ArrayBlockingQueue<>(2));
+        final WebSocketMessage first = textMessage("first");
+        final WebSocketMessage second = textMessage("second");
+        final WebSocketMessage overflow = textMessage("overflow");
+
+        LiveSttWebSocketProxyHandler.emitUpstreamUploadFrame(upload, first);
+        LiveSttWebSocketProxyHandler.emitUpstreamUploadFrame(upload, second);
+
+        assertThatThrownBy(() ->
+                        LiveSttWebSocketProxyHandler.emitUpstreamUploadFrame(upload, overflow))
+                .isInstanceOf(LiveSttWebSocketProxyHandler.UpstreamUploadException.class)
+                .hasMessageContaining("FAIL_ZERO_SUBSCRIBER");
     }
 
     @Test
