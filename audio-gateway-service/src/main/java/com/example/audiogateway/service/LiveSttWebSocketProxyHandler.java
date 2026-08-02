@@ -246,6 +246,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         final AtomicLong speechmaticsFrameCount = new AtomicLong();
         final AtomicLong acceptedSamples = new AtomicLong();
         final Sinks.One<Void> upstreamReady = Sinks.one();
+        final Sinks.One<Void> speechmaticsEofRequested = Sinks.one();
         final Sinks.One<Void> drainedRelayed = Sinks.one();
         final Sinks.Many<RelayedEvent> clientControlEvents = Sinks.many()
                 .unicast()
@@ -298,8 +299,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         if (speechmatics == null) {
                             sink.next(upstream.textMessage(control.upstreamPayload(objectMapper)));
                         } else if (control.terminal()) {
-                            sink.next(upstream.textMessage(
-                                    speechmatics.endMessage(speechmaticsFrameCount.get())));
+                            speechmaticsEofRequested.tryEmitEmpty();
                         }
                         return;
                     }
@@ -357,7 +357,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 })
                 // EOF is terminal for the upload leg even when the client keeps its
                 // inbound socket open while waiting for final/drained events.
-                .takeUntil(message -> eofSent.get())
+                .transform(frames -> speechmatics == null
+                        ? frames.takeUntil(message -> eofSent.get())
+                        : frames.takeUntilOther(speechmaticsEofRequested.asMono()))
                 .doFinally(signal -> clientControlEvents.tryEmitComplete())
                 // The AI endpoint can spend minutes loading pinned models. Do not admit,
                 // account or forward any desktop audio until it proves the exact source
@@ -409,7 +411,15 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 : Flux.concat(
                         Mono.just(upstream.textMessage(
                                 speechmatics.startMessage(record.sampleRateHz()))),
-                        framesToUpstream);
+                        framesToUpstream,
+                        Mono.defer(() -> eofSent.get()
+                                ? speechmatics.endMessageWhenAcknowledged(
+                                                speechmaticsFrameCount.get(),
+                                                Duration.ofMillis(properties.getDirectStt()
+                                                        .getSpeechmatics()
+                                                        .getAudioAckTimeoutMs()))
+                                        .map(upstream::textMessage)
+                                : Mono.empty()));
         final Mono<Void> upload = upstream.send(outbound)
                 .then(Mono.defer(() -> eofSent.get()
                         // Once drained has been relayed, keep this leg pending so the download

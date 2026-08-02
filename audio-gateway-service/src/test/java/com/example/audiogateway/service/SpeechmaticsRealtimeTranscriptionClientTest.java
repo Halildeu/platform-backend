@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.reactive.socket.client.ReactorNettyWebSocketClient;
+import reactor.core.publisher.Flux;
 import reactor.netty.DisposableServer;
 import reactor.netty.http.server.HttpServer;
 
@@ -48,16 +49,19 @@ class SpeechmaticsRealtimeTranscriptionClientTest {
                     authorization.set(request.requestHeaders().get("Authorization"));
                     return response.sendWebsocket((in, out) -> {
                         final var events = in.receiveFrames()
-                                .<TextWebSocketFrame>handle((frame, sink) -> {
+                                .concatMap(frame -> {
                                     if (frame instanceof BinaryWebSocketFrame binary) {
                                         audioBytes.set(binary.content().readableBytes());
-                                        sink.next(new TextWebSocketFrame(
-                                                "{\"message\":\"AddTranscript\","
-                                                        + "\"metadata\":{\"transcript\":\"Gundem onaylandi.\"},"
-                                                        + "\"results\":[{\"type\":\"word\","
-                                                        + "\"alternatives\":[{\"content\":\"Gundem\","
-                                                        + "\"confidence\":0.99}]}]}"));
-                                        return;
+                                        return Flux.just(
+                                                new TextWebSocketFrame(
+                                                        "{\"message\":\"AudioAdded\",\"seq_no\":1}"),
+                                                new TextWebSocketFrame(
+                                                        "{\"message\":\"AddTranscript\","
+                                                                + "\"metadata\":{\"transcript\":"
+                                                                + "\"Gundem onaylandi.\"},"
+                                                                + "\"results\":[{\"type\":\"word\","
+                                                                + "\"alternatives\":[{\"content\":\"Gundem\","
+                                                                + "\"confidence\":0.99}]}]}"));
                                     }
                                     if (frame instanceof TextWebSocketFrame text) {
                                         controls.add(text.text());
@@ -67,18 +71,18 @@ class SpeechmaticsRealtimeTranscriptionClientTest {
                                                     .path("message")
                                                     .asText();
                                         } catch (final Exception ex) {
-                                            sink.error(ex);
-                                            return;
+                                            return Flux.error(ex);
                                         }
                                         if ("StartRecognition".equals(type)) {
-                                            sink.next(new TextWebSocketFrame(
+                                            return Flux.just(new TextWebSocketFrame(
                                                     "{\"message\":\"RecognitionStarted\","
                                                             + "\"id\":\"fixture-session\"}"));
                                         } else if ("EndOfStream".equals(type)) {
-                                            sink.next(new TextWebSocketFrame(
+                                            return Flux.just(new TextWebSocketFrame(
                                                     "{\"message\":\"EndOfTranscript\"}"));
                                         }
                                     }
+                                    return Flux.empty();
                                 });
                         return out.sendObject(events);
                     });
@@ -125,7 +129,7 @@ class SpeechmaticsRealtimeTranscriptionClientTest {
         assertThat(start.path("audio_format").path("sample_rate").asInt()).isEqualTo(16_000);
         assertThat(start.path("transcription_config").path("language").asText())
                 .isEqualTo("tr");
-        assertThat(mapper.readTree(controls.get(1)).path("last_seq_no").asInt()).isZero();
+        assertThat(mapper.readTree(controls.get(1)).path("last_seq_no").asInt()).isEqualTo(1);
     }
 
     @Test
@@ -221,5 +225,47 @@ class SpeechmaticsRealtimeTranscriptionClientTest {
                         SpeechmaticsRealtimeTranscriptionClient.SpeechmaticsProtocolException.class)
                 .hasMessage("Speechmatics returned an error event")
                 .hasMessageNotContaining("provider-private-detail");
+    }
+
+    @Test
+    void missingAudioAcknowledgementFailsBeforeEndOfStream() {
+        server = HttpServer.create()
+                .host("127.0.0.1")
+                .port(0)
+                .route(routes -> routes.ws("/v2/tr", (in, out) -> out.sendObject(
+                        in.receiveFrames().concatMap(frame -> {
+                            if (frame instanceof TextWebSocketFrame text
+                                    && text.text().contains("StartRecognition")) {
+                                return Flux.just(new TextWebSocketFrame(
+                                        "{\"message\":\"RecognitionStarted\"}"));
+                            }
+                            return Flux.empty();
+                        }))))
+                .bindNow();
+
+        final AudioGatewayProperties.DirectStt.Speechmatics config =
+                new AudioGatewayProperties.DirectStt.Speechmatics();
+        config.setRealtimeUrl("ws://127.0.0.1:" + server.port() + "/v2");
+        config.setAllowInsecure(true);
+        config.setApiKey("test-key-not-a-secret");
+        config.setAudioAckTimeoutMs(100);
+        final SpeechmaticsRealtimeTranscriptionClient client =
+                new SpeechmaticsRealtimeTranscriptionClient(
+                        new ReactorNettyWebSocketClient(), new ObjectMapper(), config);
+
+        assertThatThrownBy(() -> client.transcribe(new DirectSttTranscriptionRequest(
+                                new byte[3_200],
+                                AudioFormat.PCM16,
+                                16_000,
+                                1,
+                                "meeting",
+                                "session",
+                                "device",
+                                "tr",
+                                100))
+                        .block(TIMEOUT))
+                .isInstanceOf(
+                        SpeechmaticsRealtimeTranscriptionClient.SpeechmaticsProtocolException.class)
+                .hasMessageContaining("did not acknowledge all audio");
     }
 }

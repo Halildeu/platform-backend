@@ -989,6 +989,9 @@ public class AudioGatewayProperties {
             /** Maximum raw PCM bytes per AddAudio WebSocket frame. */
             private int audioChunkBytes = 32_768;
 
+            /** Maximum wait for provider AudioAdded acknowledgements before EOF. */
+            private int audioAckTimeoutMs = 10_000;
+
             /** Allows ws:// only for loopback protocol tests. Never enable in deployment. */
             private boolean allowInsecure = false;
 
@@ -1011,6 +1014,11 @@ public class AudioGatewayProperties {
                     throw new IllegalStateException(
                             "audio.gateway.direct-stt.speechmatics.audio-chunk-bytes "
                                     + "must be in [1024,65535]");
+                }
+                if (audioAckTimeoutMs < 100 || audioAckTimeoutMs > 60_000) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.speechmatics.audio-ack-timeout-ms "
+                                    + "must be in [100,60000]");
                 }
                 final java.net.URI uri;
                 try {
@@ -1069,6 +1077,14 @@ public class AudioGatewayProperties {
 
             public void setAudioChunkBytes(final int audioChunkBytes) {
                 this.audioChunkBytes = audioChunkBytes;
+            }
+
+            public int getAudioAckTimeoutMs() {
+                return audioAckTimeoutMs;
+            }
+
+            public void setAudioAckTimeoutMs(final int audioAckTimeoutMs) {
+                this.audioAckTimeoutMs = audioAckTimeoutMs;
             }
 
             public boolean isAllowInsecure() {

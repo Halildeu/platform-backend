@@ -5,9 +5,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.net.URI;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.http.HttpHeaders;
 import org.springframework.web.util.UriComponentsBuilder;
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 /** Translates one long-lived Speechmatics Realtime v2 stream to the gateway live contract. */
 final class SpeechmaticsLiveProtocolAdapter {
@@ -16,6 +20,9 @@ final class SpeechmaticsLiveProtocolAdapter {
 
     private final ObjectMapper objectMapper;
     private final AudioGatewayProperties.DirectStt.Speechmatics config;
+    private final AtomicLong lastAcknowledgedAudioSequence = new AtomicLong();
+    private final Sinks.Many<Long> acknowledgedAudioSequences =
+            Sinks.many().replay().latest();
     private long nextFinalSequence;
     private long lastFinalEndSample;
 
@@ -59,15 +66,33 @@ final class SpeechmaticsLiveProtocolAdapter {
         return encode(root);
     }
 
-    String endMessage(final long audioFrameCount) {
+    private String endMessage(final long lastAcknowledgedSequence) {
         final ObjectNode root = objectMapper.createObjectNode();
         root.put("message", "EndOfStream");
-        root.put("last_seq_no", lastAudioSequence(audioFrameCount));
+        root.put("last_seq_no", Math.max(0L, lastAcknowledgedSequence));
         return encode(root);
     }
 
-    private static long lastAudioSequence(final long audioFrameCount) {
-        return Math.max(0L, audioFrameCount - 1L);
+    Mono<String> endMessageWhenAcknowledged(
+            final long expectedAudioFrames,
+            final Duration timeout) {
+        // Speechmatics assigns the 1-based sequence and confirms each binary
+        // AddAudio frame with AudioAdded. A local frame count alone is not receipt.
+        if (expectedAudioFrames <= 0L) {
+            return Mono.just(endMessage(0L));
+        }
+        return Mono.defer(() -> {
+                    final long current = lastAcknowledgedAudioSequence.get();
+                    if (current >= expectedAudioFrames) {
+                        return Mono.just(endMessage(current));
+                    }
+                    return acknowledgedAudioSequences.asFlux()
+                            .filter(sequence -> sequence >= expectedAudioFrames)
+                            .next()
+                            .map(this::endMessage);
+                })
+                .timeout(timeout, Mono.error(new SpeechmaticsAudioAcknowledgementException(
+                        "Speechmatics did not acknowledge all audio before EndOfStream")));
     }
 
     List<String> translate(final String value, final long acceptedSamples) {
@@ -83,10 +108,42 @@ final class SpeechmaticsLiveProtocolAdapter {
             case "AddPartialTranscript" -> partialEvent(event);
             case "AddTranscript" -> finalEvent(event, acceptedSamples);
             case "EndOfTranscript" -> List.of("{\"type\":\"eof_ack\"}", "{\"type\":\"drained\"}");
-            case "Error" -> List.of("{\"type\":\"error\",\"msg\":\"speechmatics stream failed\"}");
-            case "AudioAdded", "Info", "Warning" -> List.of();
+            case "Error" -> {
+                acknowledgedAudioSequences.tryEmitError(
+                        new SpeechmaticsAudioAcknowledgementException(
+                                "Speechmatics failed before acknowledging all audio"));
+                yield List.of("{\"type\":\"error\",\"msg\":\"speechmatics stream failed\"}");
+            }
+            case "AudioAdded" -> {
+                observeAudioAdded(event);
+                yield List.of();
+            }
+            case "Info", "Warning" -> List.of();
             default -> List.of();
         };
+    }
+
+    private void observeAudioAdded(final JsonNode event) {
+        final JsonNode value = event.path("seq_no");
+        if (!value.isIntegralNumber()) {
+            throw new SpeechmaticsAudioAcknowledgementException(
+                    "Speechmatics AudioAdded sequence is invalid");
+        }
+        final long sequence = value.asLong();
+        while (true) {
+            final long previous = lastAcknowledgedAudioSequence.get();
+            if (sequence == previous) {
+                return;
+            }
+            if (sequence != previous + 1L) {
+                throw new SpeechmaticsAudioAcknowledgementException(
+                        "Speechmatics AudioAdded sequence is not contiguous");
+            }
+            if (lastAcknowledgedAudioSequence.compareAndSet(previous, sequence)) {
+                acknowledgedAudioSequences.tryEmitNext(sequence);
+                return;
+            }
+        }
     }
 
     private String readyEvent() {
@@ -157,6 +214,12 @@ final class SpeechmaticsLiveProtocolAdapter {
             return objectMapper.writeValueAsString(value);
         } catch (Exception error) {
             throw new IllegalStateException("Speechmatics live protocol encoding failed", error);
+        }
+    }
+
+    static final class SpeechmaticsAudioAcknowledgementException extends RuntimeException {
+        SpeechmaticsAudioAcknowledgementException(final String message) {
+            super(message);
         }
     }
 }
