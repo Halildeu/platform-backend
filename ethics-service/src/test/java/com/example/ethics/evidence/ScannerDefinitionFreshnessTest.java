@@ -119,4 +119,21 @@ class ScannerDefinitionFreshnessTest {
                 "a scanner that runs without its freshness gauge is the exact silent state this "
                         + "metric exists to expose — the two must switch on together");
     }
+
+    @Test
+    @DisplayName("exactly one constructor is injectable — two unannotated ones kill the context")
+    void exactlyOneInjectableConstructor() {
+        var constructors = ScannerDefinitionFreshness.class.getDeclaredConstructors();
+        if (constructors.length > 1) {
+            long annotated = java.util.Arrays.stream(constructors)
+                    .filter(c -> c.isAnnotationPresent(
+                            org.springframework.beans.factory.annotation.Autowired.class))
+                    .count();
+            assertEquals(1, annotated,
+                    "with more than one constructor Spring needs exactly one @Autowired candidate; "
+                            + "otherwise it looks for a default constructor, finds none, and the whole "
+                            + "context fails with an error that names neither this class's dependencies "
+                            + "nor the real problem — it put the evidence worker into CrashLoopBackOff");
+        }
+    }
 }
