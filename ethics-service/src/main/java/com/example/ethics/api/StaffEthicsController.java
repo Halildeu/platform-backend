@@ -14,8 +14,9 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/ethics/cases")
 public class StaffEthicsController {
     private final EthicsService service; private final EvidenceService evidence; private final StaffContextResolver context;
+    private final com.example.ethics.service.CaseChainService chain;
     private final com.example.ethics.service.AcknowledgementService acknowledgements;
-    public StaffEthicsController(EthicsService service,EvidenceService evidence,StaffContextResolver context,com.example.ethics.service.AcknowledgementService acknowledgements){this.service=service;this.evidence=evidence;this.context=context;this.acknowledgements=acknowledgements;}
+    public StaffEthicsController(EthicsService service,EvidenceService evidence,StaffContextResolver context,com.example.ethics.service.AcknowledgementService acknowledgements,com.example.ethics.service.CaseChainService chain){this.service=service;this.evidence=evidence;this.context=context;this.acknowledgements=acknowledgements;this.chain=chain;}
     @GetMapping List<CaseSummary> list(){return service.listCases(context.required());}
     @GetMapping("/{id}") ResponseEntity<CaseDetail> detail(@PathVariable UUID id){CaseDetail value=service.caseDetail(context.required(),id);return ResponseEntity.ok().eTag("\""+value.version()+"\"").body(value);}
     @PatchMapping("/{id}") ResponseEntity<CaseSummary> update(@PathVariable UUID id,@RequestHeader("If-Match") String ifMatch,@Valid @RequestBody UpdateCaseRequest body){CaseSummary value=service.updateCase(context.required(),id,ifMatch,body);return ResponseEntity.ok().eTag("\""+value.version()+"\"").body(value);}
@@ -124,5 +125,65 @@ public class StaffEthicsController {
                 .header("Content-Security-Policy",
                         "default-src 'none'; sandbox")
                 .body(download.body());
+    }
+
+    // ---- ES-213 (#3375): sanctions ----------------------------------------
+
+    @GetMapping("/{id}/sanctions")
+    ResponseEntity<List<SanctionView>> sanctions(@PathVariable UUID id){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(chain.sanctionsFor(context.required(),id).stream().map(StaffEthicsController::toView).toList());
+    }
+
+    @PostMapping("/{id}/sanctions")
+    ResponseEntity<SanctionView> recordSanction(@PathVariable UUID id,@Valid @RequestBody RecordSanctionRequest body){
+        var saved=chain.recordSanction(context.required(),id,body.severityScore(),
+                com.example.ethics.model.CaseSanction.Band.valueOf(body.severityBand()),
+                body.escalationReason(),body.sanctionType());
+        return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(toView(saved));
+    }
+
+    @PostMapping("/sanctions/{sanctionId}/application")
+    ResponseEntity<SanctionView> applySanction(@PathVariable UUID sanctionId,@Valid @RequestBody ApplySanctionRequest body){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(toView(chain.applySanction(context.required(),sanctionId,body.verificationNote())));
+    }
+
+    @PostMapping("/sanctions/{sanctionId}/appeal")
+    ResponseEntity<SanctionView> appeal(@PathVariable UUID sanctionId,@Valid @RequestBody AppealTransitionRequest body){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(toView(chain.moveAppeal(context.required(),sanctionId,body.appealState())));
+    }
+
+    // ---- ES-213: retaliation monitoring -----------------------------------
+
+    @GetMapping("/{id}/retaliation-checks")
+    ResponseEntity<List<RetaliationCheckView>> checks(@PathVariable UUID id){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(chain.checksFor(context.required(),id).stream().map(StaffEthicsController::toView).toList());
+    }
+
+    /** Stamps that the question actually reached the reporter, as distinct from falling due. */
+    @PostMapping("/retaliation-checks/{checkId}/asked")
+    ResponseEntity<RetaliationCheckView> markAsked(@PathVariable UUID checkId){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(toView(chain.markAsked(context.required(),checkId)));
+    }
+
+    @PostMapping("/retaliation-checks/{checkId}/conclusion")
+    ResponseEntity<RetaliationCheckView> concludeCheck(@PathVariable UUID checkId,@Valid @RequestBody ConcludeCheckRequest body){
+        var indicators=body.indicators()==null?java.util.Set.<String>of():java.util.Set.copyOf(body.indicators());
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(toView(chain.concludeCheck(context.required(),checkId,body.observation(),body.risk(),body.action(),indicators)));
+    }
+
+    private static SanctionView toView(com.example.ethics.model.CaseSanction s){
+        return new SanctionView(s.getId(),s.getSeverityScore(),s.getSeverityBand(),s.getEscalationReason(),
+                s.getSanctionType(),s.getDecidedAt(),s.getAppliedAt(),s.getVerificationNote(),s.getAppealState());
+    }
+
+    private static RetaliationCheckView toView(com.example.ethics.model.RetaliationCheck c){
+        return new RetaliationCheckView(c.getId(),c.getPeriodMonths(),c.getDueAt(),c.getAskedAt(),
+                c.getObservation(),c.getRisk(),c.getAction(),c.getClosedAt());
     }
 }
