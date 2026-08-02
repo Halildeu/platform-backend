@@ -59,6 +59,46 @@ public final class EthicsDtos {
      */
     public record IntakeOptionsResponse(List<String> modes) {}
 
+    // ---- ES-213 (#3375): sanctions and retaliation monitoring ----
+
+    /**
+     * A sanction decision. The score and band travel together rather than the band being
+     * derived server-side, because the ten-criterion total is the reviewable part: an
+     * auditor asking "why AĞIR" needs the number someone actually put on it.
+     */
+    public record RecordSanctionRequest(
+            @jakarta.validation.constraints.Min(1) @jakarta.validation.constraints.Max(40) int severityScore,
+            @NotBlank @Pattern(regexp = "HAFIF|ORTA|AGIR|COK_AGIR") String severityBand,
+            @Size(max = 400) String escalationReason,
+            @NotBlank @Size(max = 40) String sanctionType) {}
+
+    public record ApplySanctionRequest(@NotBlank @Size(max = 4000) String verificationNote) {}
+
+    public record AppealTransitionRequest(
+            @NotBlank @Pattern(regexp = "REQUESTED|UPHELD|OVERTURNED") String appealState) {}
+
+    public record SanctionView(
+            UUID id, int severityScore, String severityBand, String escalationReason,
+            String sanctionType, Instant decidedAt, Instant appliedAt,
+            String verificationNote, String appealState) {}
+
+    /**
+     * Concluding a retaliation check.
+     *
+     * <p>{@code indicators} uses Directive 2019/1937 art. 19's own enumeration. A free-text
+     * field here would make "how often does this happen, and where" unanswerable, and the
+     * closed set is what lets the answer be compared across cases and years.
+     */
+    public record ConcludeCheckRequest(
+            @NotBlank @Size(max = 4000) String observation,
+            @NotBlank @Pattern(regexp = "NONE|SUSPECTED|CONFIRMED") String risk,
+            @Size(max = 4000) String action,
+            List<@Pattern(regexp = "[A-Z_]{3,48}") String> indicators) {}
+
+    public record RetaliationCheckView(
+            UUID id, int periodMonths, Instant dueAt, Instant askedAt,
+            String observation, String risk, String action, Instant closedAt) {}
+
     public enum ReportMode { ANONYMOUS, CONFIDENTIAL, NAMED }
     public enum ReportCategory { WORKPLACE_CONDUCT, FRAUD_CORRUPTION, HARASSMENT_DISCRIMINATION, OTHER }
     public record CreateReportResponse(UUID receiptId, Instant createdAt, String mailboxPath, boolean idempotentReplay) {}
