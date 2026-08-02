@@ -108,6 +108,14 @@ class DirectSttForwardingDispatcherTest {
                 audioFormat, 16_000, 1, chunkSeq, chunkStartedAtMs, "corr-xyz", payload);
     }
 
+    private static ChunkDispatchCommand realtimeCommand(final byte[] audio) {
+        final AudioChunkPayload payload = AudioChunkPayload.of(audio, "deadbeefcafe0000sha");
+        return new ChunkDispatchCommand(
+                "SES-realtime", 42L, 7L, "22222222-2222-4222-8222-222222222222",
+                "desktop-1", "tr", "speechmatics", "realtime", AudioFormat.PCM16,
+                16_000, 1, 0L, 1_000L, "corr-realtime", payload);
+    }
+
     private static double counter(final MeterRegistry meters, final String name) {
         final var c = meters.find("audio_gateway_direct_stt_" + name).counter();
         return c == null ? 0.0 : c.count();
@@ -159,6 +167,24 @@ class DirectSttForwardingDispatcherTest {
                 .counter().count()).isZero();
         assertThat(meters.get("audio_gateway_direct_stt_aggregation_dropped_capacity")
                 .counter().count()).isZero();
+        dispatcher.destroy();
+    }
+
+    @Test
+    void realtimeSessionKeepsDurableDispatchButDoesNotStartSecondTranscription() {
+        final AtomicInteger durableDispatches = new AtomicInteger();
+        final AudioChunkDispatcher delegate = cmd -> {
+            durableDispatches.incrementAndGet();
+            return new DispatchOutcome.Accepted();
+        };
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                delegate, webClient, props(8), meters, recordingAuditSink());
+
+        final DispatchOutcome out = dispatcher.dispatch(realtimeCommand(new byte[] {1, 2, 3, 4}));
+
+        assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
+        assertThat(durableDispatches).hasValue(1);
+        assertThat(server.getRequestCount()).isZero();
         dispatcher.destroy();
     }
 

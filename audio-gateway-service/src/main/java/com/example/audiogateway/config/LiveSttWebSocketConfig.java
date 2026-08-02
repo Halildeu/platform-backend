@@ -104,6 +104,7 @@ public class LiveSttWebSocketConfig {
             final AudioGatewayAuditSink auditSink,
             final DirectSttTranscriptResultSink transcriptResultSink,
             @Qualifier("directSttWebSocketClient") final WebSocketClient upstreamClient,
+            @Qualifier("speechmaticsWebSocketClient") final WebSocketClient speechmaticsClient,
             final ObjectMapper objectMapper,
             final MeterRegistry meters) {
         return new LiveSttWebSocketProxyHandler(
@@ -112,6 +113,7 @@ public class LiveSttWebSocketConfig {
                 auditSink,
                 transcriptResultSink,
                 upstreamClient,
+                speechmaticsClient,
                 objectMapper,
                 meters);
     }

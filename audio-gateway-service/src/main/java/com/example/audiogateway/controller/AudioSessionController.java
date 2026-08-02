@@ -326,9 +326,12 @@ public class AudioSessionController {
             final Long userId,
             final String corrId) {
         final long now = Instant.now().toEpochMilli();
+        final String transcriptionMode = req.transcriptionMode() == null
+                ? "balanced"
+                : req.transcriptionMode();
         final CreateOutcome outcome = registry.create(new SessionCreateCommand(
                 tenantId, userId, req.meetingId(), req.deviceId(), req.language(),
-                sttProvider, req.audioFormat(), req.sampleRateHz(), req.channels(),
+                sttProvider, transcriptionMode, req.audioFormat(), req.sampleRateHz(), req.channels(),
                 idempotencyKey, now));
 
         return switch (outcome) {
@@ -1108,6 +1111,7 @@ public class AudioSessionController {
                 base + "/status",
                 base + "/finish",
                 record.sessionStartMs(),
-                record.sttProvider());
+                record.sttProvider(),
+                record.transcriptionMode());
     }
 }

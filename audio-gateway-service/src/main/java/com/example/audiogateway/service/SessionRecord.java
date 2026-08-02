@@ -25,6 +25,7 @@ public record SessionRecord(
         String deviceId,
         String language,
         String sttProvider,
+        String transcriptionMode,
         AudioFormat audioFormat,
         int sampleRateHz,
         int channels,
@@ -62,7 +63,36 @@ public record SessionRecord(
             final String finishIdempotencyKey,
             final long finishedAtMs,
             final long updatedAtMs) {
-        this(sessionId, tenantId, userId, meetingId, deviceId, language, "internal",
+        this(sessionId, tenantId, userId, meetingId, deviceId, language, "internal", "balanced",
+                audioFormat, sampleRateHz, channels, startIdempotencyKey, sessionStartMs,
+                state, lastAcceptedChunkSeq, chunkCount, lastChunkAtMs,
+                lastChunkIdempotencyKey, lastChunkPayloadSha256, finishIdempotencyKey,
+                finishedAtMs, updatedAtMs);
+    }
+
+    public SessionRecord(
+            final String sessionId,
+            final Long tenantId,
+            final Long userId,
+            final String meetingId,
+            final String deviceId,
+            final String language,
+            final String sttProvider,
+            final AudioFormat audioFormat,
+            final int sampleRateHz,
+            final int channels,
+            final String startIdempotencyKey,
+            final long sessionStartMs,
+            final SessionState state,
+            final long lastAcceptedChunkSeq,
+            final long chunkCount,
+            final long lastChunkAtMs,
+            final String lastChunkIdempotencyKey,
+            final String lastChunkPayloadSha256,
+            final String finishIdempotencyKey,
+            final long finishedAtMs,
+            final long updatedAtMs) {
+        this(sessionId, tenantId, userId, meetingId, deviceId, language, sttProvider, "balanced",
                 audioFormat, sampleRateHz, channels, startIdempotencyKey, sessionStartMs,
                 state, lastAcceptedChunkSeq, chunkCount, lastChunkAtMs,
                 lastChunkIdempotencyKey, lastChunkPayloadSha256, finishIdempotencyKey,
@@ -72,6 +102,7 @@ public record SessionRecord(
     public SessionRecord withState(final SessionState newState, final long now) {
         return new SessionRecord(
                 sessionId, tenantId, userId, meetingId, deviceId, language, sttProvider,
+                transcriptionMode,
                 audioFormat, sampleRateHz, channels,
                 startIdempotencyKey, sessionStartMs,
                 newState,
@@ -84,6 +115,7 @@ public record SessionRecord(
                                             final String idempotencyKey, final String payloadSha256) {
         return new SessionRecord(
                 sessionId, tenantId, userId, meetingId, deviceId, language, sttProvider,
+                transcriptionMode,
                 audioFormat, sampleRateHz, channels,
                 startIdempotencyKey, sessionStartMs,
                 SessionState.STREAMING,
@@ -95,6 +127,7 @@ public record SessionRecord(
     public SessionRecord withFinish(final String finishKey, final long finishedAt) {
         return new SessionRecord(
                 sessionId, tenantId, userId, meetingId, deviceId, language, sttProvider,
+                transcriptionMode,
                 audioFormat, sampleRateHz, channels,
                 startIdempotencyKey, sessionStartMs,
                 SessionState.FINISHED,

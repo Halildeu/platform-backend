@@ -41,6 +41,7 @@ class LiveSttWebSocketProxyHandlerTest {
     private AudioSessionRegistry sessions;
     private AudioGatewayAuditSink auditSink;
     private WebSocketClient upstreamClient;
+    private WebSocketClient speechmaticsClient;
     private LiveSttWebSocketProxyHandler handler;
 
     @BeforeEach
@@ -48,6 +49,7 @@ class LiveSttWebSocketProxyHandlerTest {
         sessions = mock(AudioSessionRegistry.class);
         auditSink = mock(AudioGatewayAuditSink.class);
         upstreamClient = mock(WebSocketClient.class);
+        speechmaticsClient = mock(WebSocketClient.class);
 
         final AudioGatewayProperties properties = new AudioGatewayProperties();
         properties.getDirectStt().getStreaming().setEnabled(true);
@@ -58,6 +60,7 @@ class LiveSttWebSocketProxyHandlerTest {
                 auditSink,
                 DirectSttTranscriptResultSink.noop(),
                 upstreamClient,
+                speechmaticsClient,
                 new ObjectMapper(),
                 new SimpleMeterRegistry());
     }
@@ -96,6 +99,52 @@ class LiveSttWebSocketProxyHandlerTest {
                 eq(URI.create("ws://live-stt:8200/ws/stream?protocol=source-ranges-v1")),
                 any(WebSocketHandler.class));
         verify(client, never()).close(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @Test
+    void opensSpeechmaticsRealtimeWithServerSideAuthorization() {
+        final AudioGatewayProperties properties = configuredProperties();
+        properties.getDirectStt().getSpeechmatics()
+                .setRealtimeUrl("wss://eu2.rt.speechmatics.com/v2");
+        properties.getDirectStt().getSpeechmatics().setApiKey("fixture-key");
+        properties.getDirectStt().getSpeechmatics().setLanguage("tr");
+        handler = new LiveSttWebSocketProxyHandler(
+                sessions,
+                properties,
+                auditSink,
+                DirectSttTranscriptResultSink.noop(),
+                upstreamClient,
+                speechmaticsClient,
+                new ObjectMapper(),
+                new SimpleMeterRegistry());
+        final WebSocketSession client = clientSession(jwt(true, true));
+        when(sessions.get("session-1")).thenReturn(Optional.of(
+                session(1L, 4L, SessionState.STARTED, "speechmatics", "realtime")));
+        when(speechmaticsClient.execute(
+                any(URI.class), any(HttpHeaders.class), any(WebSocketHandler.class)))
+                .thenReturn(Mono.empty());
+
+        handler.handle(client).block();
+
+        verify(speechmaticsClient).execute(
+                eq(URI.create("wss://eu2.rt.speechmatics.com/v2/tr")),
+                org.mockito.ArgumentMatchers.argThat(headers ->
+                        "Bearer fixture-key".equals(headers.getFirst(HttpHeaders.AUTHORIZATION))),
+                any(WebSocketHandler.class));
+        verify(upstreamClient, never()).execute(any(URI.class), any(WebSocketHandler.class));
+    }
+
+    @Test
+    void rejectsSpeechmaticsBalancedSessionFromLivePath() {
+        final WebSocketSession client = clientSession(jwt(true, true));
+        when(sessions.get("session-1")).thenReturn(Optional.of(
+                session(1L, 4L, SessionState.STARTED, "speechmatics", "balanced")));
+
+        handler.handle(client).block();
+
+        verify(client).close(CloseStatus.NOT_ACCEPTABLE);
+        verify(speechmaticsClient, never()).execute(
+                any(URI.class), any(HttpHeaders.class), any(WebSocketHandler.class));
     }
 
     @Test
@@ -227,5 +276,17 @@ class LiveSttWebSocketProxyHandlerTest {
                 null,
                 0L,
                 1_000L);
+    }
+
+    private static SessionRecord session(
+            final Long tenantId,
+            final Long userId,
+            final SessionState state,
+            final String provider,
+            final String mode) {
+        return new SessionRecord(
+                "session-1", tenantId, userId, "meeting-1", "device-1", "tr",
+                provider, mode, AudioFormat.PCM16, 16_000, 1, "start-key-123456", 1_000L,
+                state, -1L, 0L, 0L, null, null, null, 0L, 1_000L);
     }
 }

@@ -51,7 +51,12 @@ public record StartSessionRequest(
         @Size(max = 32)
         @Pattern(regexp = "^(internal|speechmatics)$",
                 message = "sttProvider must be internal or speechmatics")
-        String sttProvider
+        String sttProvider,
+
+        @Size(max = 16)
+        @Pattern(regexp = "^(balanced|realtime)$",
+                message = "transcriptionMode must be balanced or realtime")
+        String transcriptionMode
 ) {
 
     /** Backward-compatible constructor for clients that rely on the server default. */
@@ -62,7 +67,19 @@ public record StartSessionRequest(
             final AudioFormat audioFormat,
             final Integer sampleRateHz,
             final Integer channels) {
-        this(meetingId, deviceId, language, audioFormat, sampleRateHz, channels, null);
+        this(meetingId, deviceId, language, audioFormat, sampleRateHz, channels, null, null);
+    }
+
+    /** Backward-compatible constructor for callers that select only the provider. */
+    public StartSessionRequest(
+            final String meetingId,
+            final String deviceId,
+            final String language,
+            final AudioFormat audioFormat,
+            final Integer sampleRateHz,
+            final Integer channels,
+            final String sttProvider) {
+        this(meetingId, deviceId, language, audioFormat, sampleRateHz, channels, sttProvider, null);
     }
 
     /** Allowed sample rates (Hz) — Codex {@code 019e879c} fixed enum. */

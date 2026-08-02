@@ -227,6 +227,7 @@ class StartSessionContractTest {
                             .endsWith("/chunks");
                     assertThat(resp.sessionStartMs()).isPositive();
                     assertThat(resp.sttProvider()).isEqualTo("internal");
+                    assertThat(resp.transcriptionMode()).isEqualTo("balanced");
                 });
         verify(meetingAccessValidator).validate(eq(VALID_MEETING_ID), any(), any());
     }
@@ -245,6 +246,49 @@ class StartSessionContractTest {
                 .expectStatus().isCreated()
                 .expectBody(StartSessionResponse.class)
                 .value(resp -> assertThat(resp.sttProvider()).isEqualTo("speechmatics"));
+    }
+
+    @Test
+    void explicitRealtimeMode_isStoredAndReadBack() {
+        final StartSessionRequest request = new StartSessionRequest(
+                VALID_MEETING_ID, "device-1", "tr", AudioFormat.PCM16, 16000, 1,
+                "speechmatics", "realtime");
+
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-realtime")
+                .bodyValue(request)
+                .exchange()
+                .expectStatus().isCreated()
+                .expectBody(StartSessionResponse.class)
+                .value(resp -> {
+                    assertThat(resp.sttProvider()).isEqualTo("speechmatics");
+                    assertThat(resp.transcriptionMode()).isEqualTo("realtime");
+                });
+    }
+
+    @Test
+    void invalidTranscriptionMode_returns400WithoutMeetingLookup() {
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-invalid-mode")
+                .header("Content-Type", "application/json")
+                .bodyValue("""
+                        {
+                          "meetingId": "22222222-2222-4222-8222-222222222222",
+                          "deviceId": "device-1",
+                          "language": "tr",
+                          "audioFormat": "PCM16",
+                          "sampleRateHz": 16000,
+                          "channels": 1,
+                          "sttProvider": "speechmatics",
+                          "transcriptionMode": "slow"
+                        }
+                        """)
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_VALIDATION));
     }
 
     @Test
@@ -372,6 +416,32 @@ class StartSessionContractTest {
                 .expectStatus().isEqualTo(409)
                 .expectBody(ErrorResponse.class)
                 .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_IDEMPOTENCY_CONFLICT));
+    }
+
+    @Test
+    void idempotencyConflict_sameValueDifferentTranscriptionMode_returns409() {
+        final String idemp = VALID_IDEMP + "-mode-conflict";
+        final StartSessionRequest balanced = new StartSessionRequest(
+                VALID_MEETING_ID, "device-1", "tr", AudioFormat.PCM16, 16000, 1,
+                "speechmatics", "balanced");
+        final StartSessionRequest realtime = new StartSessionRequest(
+                VALID_MEETING_ID, "device-1", "tr", AudioFormat.PCM16, 16000, 1,
+                "speechmatics", "realtime");
+
+        withClaims().post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, idemp)
+                .bodyValue(balanced)
+                .exchange()
+                .expectStatus().isCreated();
+
+        withClaims().post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, idemp)
+                .bodyValue(realtime)
+                .exchange()
+                .expectStatus().isEqualTo(409)
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code())
+                        .isEqualTo(ErrorResponse.CODE_IDEMPOTENCY_CONFLICT));
     }
 
     /**
