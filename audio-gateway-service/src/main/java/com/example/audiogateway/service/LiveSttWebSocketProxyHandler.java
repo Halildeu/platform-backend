@@ -246,7 +246,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         final AtomicLong speechmaticsFrameCount = new AtomicLong();
         final AtomicLong acceptedSamples = new AtomicLong();
         final Sinks.One<Void> upstreamReady = Sinks.one();
-        final Sinks.One<Void> speechmaticsEofRequested = Sinks.one();
+        final Sinks.One<Boolean> speechmaticsEofRequested = Sinks.one();
         final Sinks.One<Void> drainedRelayed = Sinks.one();
         final Sinks.Many<RelayedEvent> clientControlEvents = Sinks.many()
                 .unicast()
@@ -299,7 +299,10 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         if (speechmatics == null) {
                             sink.next(upstream.textMessage(control.upstreamPayload(objectMapper)));
                         } else if (control.terminal()) {
-                            speechmaticsEofRequested.tryEmitEmpty();
+                            // A value signal is required here. With a real Reactor Netty
+                            // client receive publisher, an empty completion can race the
+                            // currently handled EOF frame and leave the upload source open.
+                            speechmaticsEofRequested.tryEmitValue(Boolean.TRUE);
                         }
                         return;
                     }
