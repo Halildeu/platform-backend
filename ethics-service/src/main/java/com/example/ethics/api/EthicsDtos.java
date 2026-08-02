@@ -18,7 +18,47 @@ public final class EthicsDtos {
             @NotBlank @Size(max=16000) String description,
             @NotBlank @Size(max=12) String locale,
             @NotBlank @Size(min=43,max=128) @Pattern(regexp="[A-Za-z0-9_-]+") String accessSecret,
-            @NotBlank @Size(max=80) @Pattern(regexp="[A-Za-z0-9._-]+") String noticeVersion) {}
+            @NotBlank @Size(max=80) @Pattern(regexp="[A-Za-z0-9._-]+") String noticeVersion,
+            // ES-212: present only for CONFIDENTIAL and NAMED. Intake refuses a report that
+            // carries one in ANONYMOUS mode rather than ignoring it — a client that sends a
+            // name on an anonymous form has misunderstood something, and silently dropping
+            // the field would leave the reporter believing they had identified themselves.
+            @jakarta.validation.Valid ReporterIdentityPayload reporterIdentity) {
+
+        /** Pre-ES-212 shape: a report with no identity. */
+        public CreateReportRequest(ReportMode mode, ReportCategory category, String subject,
+                                   String description, String locale, String accessSecret,
+                                   String noticeVersion) {
+            this(mode, category, subject, description, locale, accessSecret, noticeVersion, null);
+        }
+    }
+
+    /**
+     * Who the reporter is, for the two modes that collect it.
+     *
+     * <p>Only {@code fullName} is required. The rest are the ways an organisation might
+     * reach the person or place them, and a reporter who gives a name but withholds a phone
+     * number has still made a confidential report — demanding more would push people back
+     * to anonymous, which is the opposite of what opening these modes is for.
+     */
+    public record ReporterIdentityPayload(
+            @NotBlank @Size(max=200) String fullName,
+            @Size(max=320) String email,
+            @Size(max=40) String phone,
+            @Size(max=200) String unit,
+            @Size(max=2000) String note) {}
+
+    /**
+     * Which modes this tenant's intake form should offer.
+     *
+     * <p>Computed rather than configured: a mode appears here only if the organisation
+     * enabled it <em>and</em> the service can actually seal an identity for it. The form
+     * therefore never offers an option that would fail on submit, which matters more here
+     * than elsewhere — a reporter who is refused mid-submission has already typed out the
+     * thing they were afraid to say.
+     */
+    public record IntakeOptionsResponse(List<String> modes) {}
+
     public enum ReportMode { ANONYMOUS, CONFIDENTIAL, NAMED }
     public enum ReportCategory { WORKPLACE_CONDUCT, FRAUD_CORRUPTION, HARASSMENT_DISCRIMINATION, OTHER }
     public record CreateReportResponse(UUID receiptId, Instant createdAt, String mailboxPath, boolean idempotentReplay) {}

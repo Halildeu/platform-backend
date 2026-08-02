@@ -65,7 +65,9 @@ class EthicsServiceMailboxTimingTest {
                 new CaseSlaClock(new com.example.ethics.config.EthicsSlaProperties(null, null)),
                 org.mockito.Mockito.mock(
                         com.example.ethics.repository.CaseWaitingReasonRepository.class),
-                org.mockito.Mockito.mock(com.example.ethics.intake.IntakeChannelGate.class));
+                org.mockito.Mockito.mock(com.example.ethics.intake.IntakeChannelGate.class),
+                org.mockito.Mockito.mock(com.example.ethics.intake.ReportModePolicy.class),
+                org.mockito.Mockito.mock(com.example.ethics.identity.ReporterIdentityService.class));
     }
 
     @Test
