@@ -102,6 +102,7 @@ public interface AudioSessionRegistry {
             String deviceId,
             String language,
             String sttProvider,
+            String transcriptionMode,
             AudioFormat audioFormat,
             int sampleRateHz,
             int channels,
@@ -119,8 +120,24 @@ public interface AudioSessionRegistry {
                 final int channels,
                 final String idempotencyKey,
                 final long sessionStartMs) {
-            this(tenantId, userId, meetingId, deviceId, language, "internal", audioFormat,
+            this(tenantId, userId, meetingId, deviceId, language, "internal", "balanced", audioFormat,
                     sampleRateHz, channels, idempotencyKey, sessionStartMs);
+        }
+
+        public SessionCreateCommand(
+                final Long tenantId,
+                final Long userId,
+                final String meetingId,
+                final String deviceId,
+                final String language,
+                final String sttProvider,
+                final AudioFormat audioFormat,
+                final int sampleRateHz,
+                final int channels,
+                final String idempotencyKey,
+                final long sessionStartMs) {
+            this(tenantId, userId, meetingId, deviceId, language, sttProvider, "balanced",
+                    audioFormat, sampleRateHz, channels, idempotencyKey, sessionStartMs);
         }
     }
 

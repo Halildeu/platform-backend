@@ -189,6 +189,11 @@ public class DirectSttForwardingDispatcher
 
     @Override
     public DispatchOutcome dispatch(final ChunkDispatchCommand cmd) {
+        if ("realtime".equals(cmd.transcriptionMode())) {
+            counter("durable_audio_only", "provider", safeProviderLabel(cmd.sttProvider()))
+                    .increment();
+            return delegate.dispatch(cmd);
+        }
         try {
             providerRegistry.require(cmd.sttProvider());
         } catch (final IllegalArgumentException | IllegalStateException ex) {

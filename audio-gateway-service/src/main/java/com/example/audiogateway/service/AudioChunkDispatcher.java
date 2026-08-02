@@ -69,6 +69,7 @@ public interface AudioChunkDispatcher {
             String deviceId,
             String language,
             String sttProvider,
+            String transcriptionMode,
             AudioFormat audioFormat,
             int sampleRateHz,
             int channels,
@@ -91,8 +92,28 @@ public interface AudioChunkDispatcher {
                 final long chunkStartedAtMs,
                 final String correlationId,
                 final AudioChunkPayload payload) {
-            this(sessionId, tenantId, userId, meetingId, deviceId, language, "internal",
+            this(sessionId, tenantId, userId, meetingId, deviceId, language, "internal", "balanced",
                     audioFormat, sampleRateHz, channels, chunkSeq, chunkStartedAtMs,
+                    correlationId, payload);
+        }
+
+        public ChunkDispatchCommand(
+                final String sessionId,
+                final Long tenantId,
+                final Long userId,
+                final String meetingId,
+                final String deviceId,
+                final String language,
+                final String sttProvider,
+                final AudioFormat audioFormat,
+                final int sampleRateHz,
+                final int channels,
+                final long chunkSeq,
+                final long chunkStartedAtMs,
+                final String correlationId,
+                final AudioChunkPayload payload) {
+            this(sessionId, tenantId, userId, meetingId, deviceId, language, sttProvider,
+                    "balanced", audioFormat, sampleRateHz, channels, chunkSeq, chunkStartedAtMs,
                     correlationId, payload);
         }
     }

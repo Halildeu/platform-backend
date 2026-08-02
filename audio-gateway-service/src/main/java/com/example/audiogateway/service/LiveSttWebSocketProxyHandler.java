@@ -23,6 +23,7 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -58,6 +59,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
     private final AudioGatewayAuditSink auditSink;
     private final DirectSttTranscriptResultSink transcriptResultSink;
     private final WebSocketClient upstreamClient;
+    private final WebSocketClient speechmaticsClient;
     private final URI upstreamUri;
     private final ObjectMapper objectMapper;
     private final Scheduler transcriptSinkScheduler;
@@ -75,6 +77,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             final AudioGatewayAuditSink auditSink,
             final DirectSttTranscriptResultSink transcriptResultSink,
             final WebSocketClient upstreamClient,
+            final WebSocketClient speechmaticsClient,
             final ObjectMapper objectMapper,
             final MeterRegistry meters) {
         this.sessions = sessions;
@@ -82,6 +85,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         this.auditSink = auditSink;
         this.transcriptResultSink = transcriptResultSink;
         this.upstreamClient = upstreamClient;
+        this.speechmaticsClient = speechmaticsClient;
         this.upstreamUri = UriComponentsBuilder
                 .fromUriString(properties.getDirectStt().getStreaming().getStreamUrl())
                 .queryParam("protocol", UPSTREAM_PROTOCOL)
@@ -103,6 +107,18 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 "audio_gateway_live_stream_transcript_results_total", "outcome", "failed");
         Gauge.builder("audio_gateway_live_stream_connections", activeSessions, Set::size)
                 .register(meters);
+    }
+
+    LiveSttWebSocketProxyHandler(
+            final AudioSessionRegistry sessions,
+            final AudioGatewayProperties properties,
+            final AudioGatewayAuditSink auditSink,
+            final DirectSttTranscriptResultSink transcriptResultSink,
+            final WebSocketClient upstreamClient,
+            final ObjectMapper objectMapper,
+            final MeterRegistry meters) {
+        this(sessions, properties, auditSink, transcriptResultSink, upstreamClient,
+                upstreamClient, objectMapper, meters);
     }
 
     @Override
@@ -137,7 +153,12 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             || record.state() == SessionState.FINISHED) {
                         return clientSession.close(CloseStatus.POLICY_VIOLATION);
                     }
-                    if (!"internal".equals(record.sttProvider())) {
+                    if (!"internal".equals(record.sttProvider())
+                            && !"speechmatics".equals(record.sttProvider())) {
+                        return clientSession.close(CloseStatus.NOT_ACCEPTABLE);
+                    }
+                    if ("speechmatics".equals(record.sttProvider())
+                            && !"realtime".equals(record.transcriptionMode())) {
                         return clientSession.close(CloseStatus.NOT_ACCEPTABLE);
                     }
                     if (record.audioFormat() != AudioFormat.PCM16
@@ -160,8 +181,25 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             correlationId,
                             System.currentTimeMillis()));
 
-                    return upstreamClient.execute(upstreamUri, upstream ->
-                                    bridge(clientSession, upstream, record, correlationId))
+                    final SpeechmaticsLiveProtocolAdapter speechmatics =
+                            "speechmatics".equals(record.sttProvider())
+                                    ? new SpeechmaticsLiveProtocolAdapter(
+                                            objectMapper,
+                                            properties.getDirectStt().getSpeechmatics())
+                                    : null;
+                    final Mono<Void> connection = speechmatics == null
+                            ? upstreamClient.execute(upstreamUri, upstream ->
+                                    bridge(clientSession, upstream, record, correlationId, null))
+                            : speechmaticsClient.execute(
+                                    speechmatics.endpoint(),
+                                    speechmatics.authorizationHeaders(),
+                                    upstream -> bridge(
+                                            clientSession,
+                                            upstream,
+                                            record,
+                                            correlationId,
+                                            speechmatics));
+                    return connection
                             .doOnError(error -> {
                                 if (error instanceof ClientFrameException) {
                                     return;
@@ -187,7 +225,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             final WebSocketSession client,
             final WebSocketSession upstream,
             final SessionRecord record,
-            final String correlationId) {
+            final String correlationId,
+            final SpeechmaticsLiveProtocolAdapter speechmatics) {
         final int maxFrameBytes = properties.getDirectStt().getStreaming().getMaxFrameBytes();
         final int maxTerminalControlBytes = properties.getDirectStt().getStreaming()
                 .getMaxTerminalControlBytes();
@@ -204,6 +243,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         final AtomicBoolean eofAckObserved = new AtomicBoolean();
         final AtomicBoolean drainedObserved = new AtomicBoolean();
         final AtomicBoolean errorObserved = new AtomicBoolean();
+        final AtomicLong speechmaticsFrameCount = new AtomicLong();
+        final AtomicLong acceptedSamples = new AtomicLong();
         final Sinks.One<Void> upstreamReady = Sinks.one();
         final Sinks.One<Void> drainedRelayed = Sinks.one();
         final Sinks.Many<RelayedEvent> clientControlEvents = Sinks.many()
@@ -254,7 +295,12 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                     "live stream terminal control is invalid"));
                             return;
                         }
-                        sink.next(upstream.textMessage(control.upstreamPayload(objectMapper)));
+                        if (speechmatics == null) {
+                            sink.next(upstream.textMessage(control.upstreamPayload(objectMapper)));
+                        } else if (control.terminal()) {
+                            sink.next(upstream.textMessage(
+                                    speechmatics.endMessage(speechmaticsFrameCount.get())));
+                        }
                         return;
                     }
                     if (message.getType() != WebSocketMessage.Type.BINARY || eofSent.get()) {
@@ -299,8 +345,14 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     acceptedFrames.increment();
                     audioSent.set(true);
                     transcriptWindow.append(frame, record.sampleRateHz(), record.channels());
-                    sink.next(upstream.binaryMessage(factory ->
-                            factory.wrap(frame.toFloat32LittleEndian())));
+                    if (speechmatics == null) {
+                        sink.next(upstream.binaryMessage(factory ->
+                                factory.wrap(frame.toFloat32LittleEndian())));
+                    } else {
+                        speechmaticsFrameCount.incrementAndGet();
+                        acceptedSamples.addAndGet(frame.pcm16().length / Short.BYTES);
+                        sink.next(upstream.binaryMessage(factory -> factory.wrap(frame.pcm16())));
+                    }
                     emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
                 })
                 // EOF is terminal for the upload leg even when the client keeps its
@@ -312,12 +364,15 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 // range protocol is ready; otherwise early microphone frames are lost.
                 .delaySubscription(upstreamReady.asMono().timeout(readyTimeout));
 
-        final Flux<RelayedEvent> upstreamRelayedEvents = upstream.receive()
+        final Flux<CopiedUpstreamMessage> normalizedUpstreamEvents = upstream.receive()
                 .limitRate(1)
                 // Detach from reactor-netty's frame before the asynchronous persistence
                 // boundary. Keeping even a reference to the framework-owned message inside
                 // concatMap lets cancellation/discard race its own release lifecycle.
                 .map(this::copyUpstreamMessage)
+                .concatMap(message -> normalizeUpstreamMessage(
+                        message, speechmatics, acceptedSamples.get()), 1);
+        final Flux<RelayedEvent> upstreamRelayedEvents = normalizedUpstreamEvents
                 .concatMap(message -> relayUpstreamMessage(
                         client,
                         message,
@@ -349,7 +404,13 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 .merge(clientControlEvents.asFlux(), upstreamRelayedEvents)
                 .takeUntil(RelayedEvent::terminal);
 
-        final Mono<Void> upload = upstream.send(framesToUpstream)
+        final Flux<WebSocketMessage> outbound = speechmatics == null
+                ? framesToUpstream
+                : Flux.concat(
+                        Mono.just(upstream.textMessage(
+                                speechmatics.startMessage(record.sampleRateHz()))),
+                        framesToUpstream);
+        final Mono<Void> upload = upstream.send(outbound)
                 .then(Mono.defer(() -> eofSent.get()
                         // Once drained has been relayed, keep this leg pending so the download
                         // leg wins only after client.send(...) has completed. Without EOF, normal
@@ -388,6 +449,17 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             throw new ClientFrameException(
                     "live audio acknowledgement buffer is unavailable");
         }
+    }
+
+    private Flux<CopiedUpstreamMessage> normalizeUpstreamMessage(
+            final CopiedUpstreamMessage message,
+            final SpeechmaticsLiveProtocolAdapter speechmatics,
+            final long acceptedSamples) {
+        if (speechmatics == null || !(message instanceof CopiedUpstreamMessage.Text text)) {
+            return Flux.just(message);
+        }
+        return Flux.fromIterable(speechmatics.translate(text.value(), acceptedSamples))
+                .map(CopiedUpstreamMessage.Text::new);
     }
 
     private Mono<RelayedEvent> relayUpstreamMessage(

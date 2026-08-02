@@ -252,6 +252,7 @@ public class RedisStreamsAudioChunkDispatcher implements AudioChunkDispatcher {
         fields.put("meetingId", nullSafe(cmd.meetingId()));
         fields.put("deviceId", nullSafe(cmd.deviceId()));
         fields.put("language", nullSafe(cmd.language()));
+        fields.put("transcriptionMode", nullSafe(cmd.transcriptionMode()));
         fields.put("audioFormat", cmd.audioFormat() == null ? "" : cmd.audioFormat().name());
         fields.put("sampleRateHz", Integer.toString(cmd.sampleRateHz()));
         fields.put("channels", Integer.toString(cmd.channels()));
