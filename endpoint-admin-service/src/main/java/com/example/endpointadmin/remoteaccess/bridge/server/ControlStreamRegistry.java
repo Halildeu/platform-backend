@@ -104,30 +104,38 @@ public final class ControlStreamRegistry {
 
     /** One live CONTROL stream: the authenticated peer + its serialized write handle, kept atomically together. */
     private record ConnectedPeer(PeerIdentity peer, ControlStreamHandle handle, boolean helloObserved,
-                                 boolean initializing, boolean closing, Object generationLock) {
+                                 boolean initializing, boolean closing, long lastInboundAtEpochMillis,
+                                 Object generationLock) {
 
         private ConnectedPeer(PeerIdentity peer, ControlStreamHandle handle) {
-            this(peer, handle, false, false, false, new Object());
+            this(peer, handle, false, false, false, 0L, new Object());
         }
 
-        private ConnectedPeer markHelloObserved() {
-            return helloObserved ? this
-                    : new ConnectedPeer(peer, handle, true, initializing, closing, generationLock);
+        private ConnectedPeer markHelloObserved(long nowEpochMillis) {
+            return new ConnectedPeer(peer, handle, true, initializing, closing, nowEpochMillis, generationLock);
+        }
+
+        private ConnectedPeer markInboundObserved(long nowEpochMillis) {
+            return new ConnectedPeer(peer, handle, helloObserved, initializing, closing,
+                    nowEpochMillis, generationLock);
         }
 
         private ConnectedPeer markInitializing() {
             return initializing ? this
-                    : new ConnectedPeer(peer, handle, helloObserved, true, closing, generationLock);
+                    : new ConnectedPeer(peer, handle, helloObserved, true, closing,
+                    lastInboundAtEpochMillis, generationLock);
         }
 
         private ConnectedPeer markInitialized() {
             return !initializing ? this
-                    : new ConnectedPeer(peer, handle, helloObserved, false, closing, generationLock);
+                    : new ConnectedPeer(peer, handle, helloObserved, false, closing,
+                    lastInboundAtEpochMillis, generationLock);
         }
 
         private ConnectedPeer markClosing() {
             return closing ? this
-                    : new ConnectedPeer(peer, handle, helloObserved, initializing, true, generationLock);
+                    : new ConnectedPeer(peer, handle, helloObserved, initializing, true,
+                    lastInboundAtEpochMillis, generationLock);
         }
     }
 
@@ -165,12 +173,14 @@ public final class ControlStreamRegistry {
     private final Object[] peerLocks = createPeerLocks();
     private final Object[] registrationLocks = createPeerLocks();
     private final KillAckRuntime killAckRuntime;
+    private final long applicationControlFreshnessMillis;
     private final AtomicBoolean operatorKillAckAuditFailureLatched = new AtomicBoolean();
     private volatile boolean shuttingDown;
 
     /** Back-compatible unit-test/inert wiring: operator close keeps the original immediate terminal path. */
     public ControlStreamRegistry() {
         this.killAckRuntime = null;
+        this.applicationControlFreshnessMillis = 0L;
     }
 
     ControlStreamRegistry(ScheduledExecutorService scheduler,
@@ -178,14 +188,24 @@ public final class ControlStreamRegistry {
                           LongSupplier clock,
                           long timeoutMillis,
                           long futureClockSkewMillis) {
+        this(scheduler, auditSink, clock, timeoutMillis, futureClockSkewMillis, 0L);
+    }
+
+    ControlStreamRegistry(ScheduledExecutorService scheduler,
+                          RemoteBridgeAuditSink auditSink,
+                          LongSupplier clock,
+                          long timeoutMillis,
+                          long futureClockSkewMillis,
+                          long applicationControlFreshnessMillis) {
         if (scheduler == null || auditSink == null || clock == null) {
             throw new IllegalArgumentException("kill ACK scheduler, audit sink and clock are required");
         }
-        if (timeoutMillis <= 0L || futureClockSkewMillis < 0L) {
-            throw new IllegalArgumentException("kill ACK timeout must be positive and clock skew non-negative");
+        if (timeoutMillis <= 0L || futureClockSkewMillis < 0L || applicationControlFreshnessMillis < 0L) {
+            throw new IllegalArgumentException("kill ACK timeout must be positive and clock skew/freshness non-negative");
         }
         this.killAckRuntime = new KillAckRuntime(
                 scheduler, auditSink, clock, timeoutMillis, futureClockSkewMillis);
+        this.applicationControlFreshnessMillis = applicationControlFreshnessMillis;
     }
 
     /** Register the peer's CONTROL handle; an existing handle for the SAME peer is closed and replaced. */
@@ -285,7 +305,7 @@ public final class ControlStreamRegistry {
             if (afterAbsorb != current || !current.handle().isApplicationControlAvailable()) {
                 return false;
             }
-            return streams.replace(peerKey, current, current.markHelloObserved());
+            return streams.replace(peerKey, current, current.markHelloObserved(now()));
         }
     }
 
@@ -317,7 +337,7 @@ public final class ControlStreamRegistry {
             if (!isTransportGenerationCurrent(peerKey, generation, handle)) {
                 return false;
             }
-            return streams.replace(peerKey, generation, generation.markHelloObserved());
+            return streams.replace(peerKey, generation, generation.markHelloObserved(now()));
         }
     }
 
@@ -374,7 +394,7 @@ public final class ControlStreamRegistry {
             // Preparation already completed outside the lock. Keep only the quick incarnation-checked commit atomic
             // with replacement/KILL so the validated generation cannot change between recheck and state publication.
             commit.run();
-            return true;
+            return streams.replace(peerKey, generation, generation.markInboundObserved(now()));
         }
     }
 
@@ -514,7 +534,7 @@ public final class ControlStreamRegistry {
                 return false;
             }
             commit.run();
-            return true;
+            return streams.replace(peerKey, generation, generation.markInboundObserved(now()));
         }
     }
 
@@ -639,13 +659,14 @@ public final class ControlStreamRegistry {
     public boolean isConnected(String transportPeerKey) {
         ConnectedPeer entry = streams.get(transportPeerKey);
         return entry != null && !entry.initializing() && !entry.closing() && entry.helloObserved()
-                && entry.handle().isApplicationControlAvailable();
+                && entry.handle().isApplicationControlAvailable() && isApplicationControlFresh(entry);
     }
 
     public int connectedCount() {
         return Math.toIntExact(streams.values().stream()
                 .filter(entry -> !entry.initializing() && !entry.closing() && entry.helloObserved())
                 .filter(entry -> entry.handle().isApplicationControlAvailable())
+                .filter(this::isApplicationControlFresh)
                 .count());
     }
 
@@ -667,7 +688,7 @@ public final class ControlStreamRegistry {
         }
         ConnectedPeer entry = streams.get(transportPeerKey);
         return entry == null || entry.initializing() || entry.closing() || !entry.helloObserved()
-                || !entry.handle().isApplicationControlAvailable()
+                || !entry.handle().isApplicationControlAvailable() || !isApplicationControlFresh(entry)
                 ? Optional.empty()
                 : Optional.of(entry.peer());
     }
@@ -687,6 +708,7 @@ public final class ControlStreamRegistry {
                 .filter(entry -> !entry.initializing() && !entry.closing())
                 .filter(ConnectedPeer::helloObserved)
                 .filter(entry -> entry.handle().isApplicationControlAvailable())
+                .filter(this::isApplicationControlFresh)
                 .map(ConnectedPeer::peer)
                 .filter(peer -> peer.certBoundAdComputerId().filter(wanted::equals).isPresent())
                 .findFirst();
@@ -979,13 +1001,23 @@ public final class ControlStreamRegistry {
         synchronized (entry.generationLock()) {
             ConnectedPeer current = streams.get(transportPeerKey);
             if (shuttingDown || current != entry || entry.initializing() || entry.closing() || !entry.helloObserved()
-                    || !entry.handle().isApplicationControlAvailable()) {
+                    || !entry.handle().isApplicationControlAvailable() || !isApplicationControlFresh(entry)) {
                 return false;
             }
             delivered = entry.handle().sendApplicationControlDeferredCleanup(envelope);
         }
         entry.handle().drainCloseAction();
         return delivered;
+    }
+
+    private boolean isApplicationControlFresh(ConnectedPeer entry) {
+        if (applicationControlFreshnessMillis == 0L) {
+            return true;
+        }
+        long observedAt = entry.lastInboundAtEpochMillis();
+        long nowEpochMillis = now();
+        return observedAt > 0L && nowEpochMillis >= observedAt
+                && nowEpochMillis - observedAt <= applicationControlFreshnessMillis;
     }
 
     /** Close every live stream (server shutdown) — each handle cancels its own heartbeat task. */

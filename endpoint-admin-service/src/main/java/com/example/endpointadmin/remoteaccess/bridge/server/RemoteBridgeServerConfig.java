@@ -170,11 +170,20 @@ public class RemoteBridgeServerConfig {
     public ControlStreamRegistry remoteBridgeControlStreamRegistry(
             @Qualifier("remoteBridgeKillAckScheduler") ScheduledExecutorService killAckScheduler,
             DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink,
+            RemoteBridgeServerProperties properties,
             @Value("${remote-bridge.operator-kill-ack.timeout-millis:5000}") long killAckTimeoutMillis,
             @Value("${remote-bridge.operator-kill-ack.future-clock-skew-millis:30000}")
                     long killAckFutureClockSkewMillis) {
         return new ControlStreamRegistry(killAckScheduler, remoteBridgeDurableAuditSink,
-                System::currentTimeMillis, killAckTimeoutMillis, killAckFutureClockSkewMillis);
+                System::currentTimeMillis, killAckTimeoutMillis, killAckFutureClockSkewMillis,
+                applicationControlFreshnessMillis(properties.heartbeatIntervalMillis()));
+    }
+
+    private static long applicationControlFreshnessMillis(long heartbeatIntervalMillis) {
+        if (heartbeatIntervalMillis <= 0L) {
+            return 0L;
+        }
+        return Math.multiplyExact(heartbeatIntervalMillis, 3L);
     }
 
     /**

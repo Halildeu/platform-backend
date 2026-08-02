@@ -1369,6 +1369,35 @@ class ControlStreamRegistryTest {
     }
 
     @Test
+    void staleInboundHeartbeatMakesApplicationControlUnavailableUntilFreshHeartbeatArrives() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            AtomicLong now = new AtomicLong(100_000L);
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, event -> { }, now::get, 5_000L, 30_000L, 3_000L);
+            PeerIdentity identity = peer("peer-1");
+            CapturingObserver observer = new CapturingObserver();
+            ControlStreamHandle handle = new ControlStreamHandle(observer);
+            registry.register(identity, handle);
+            assertTrue(registry.absorbAgentHello(identity, handle, () -> { }));
+            assertTrue(registry.sendConsentPrompt("peer-1", prompt("sess-fresh"), now.get()));
+
+            now.addAndGet(3_001L);
+            assertFalse(registry.isConnected("peer-1"));
+            assertTrue(registry.connectedPeer("peer-1").isEmpty());
+            assertFalse(registry.sendConsentPrompt("peer-1", prompt("sess-stale"), now.get()),
+                    "a half-open StreamObserver must not count as prompt delivery");
+
+            assertTrue(registry.dispatchPreparedHeartbeatIfCurrentHelloObserved(
+                    identity, handle, () -> () -> { }));
+            assertTrue(registry.isConnected("peer-1"));
+            assertTrue(registry.sendConsentPrompt("peer-1", prompt("sess-recovered"), now.get()));
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
     void concurrentAckAndReconnectProduceExactlyOneOldHandleOutcomeAndPreserveSuccessor() throws Exception {
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         try {
