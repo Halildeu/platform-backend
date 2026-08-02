@@ -137,7 +137,7 @@ public class StaffEthicsController {
 
     @PostMapping("/{id}/sanctions")
     ResponseEntity<SanctionView> recordSanction(@PathVariable UUID id,@Valid @RequestBody RecordSanctionRequest body){
-        var saved=chain.recordSanction(context.required(),id,body.severityScore(),
+        var saved=chain.recordSanction(context.required(),id,body.violationCategory(),body.severityScore(),
                 com.example.ethics.model.CaseSanction.Band.valueOf(body.severityBand()),
                 body.escalationReason(),body.sanctionType());
         return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(toView(saved));
@@ -178,7 +178,8 @@ public class StaffEthicsController {
     }
 
     private static SanctionView toView(com.example.ethics.model.CaseSanction s){
-        return new SanctionView(s.getId(),s.getSeverityScore(),s.getSeverityBand(),s.getEscalationReason(),
+        return new SanctionView(s.getId(),s.getViolationCategory(),
+                s.getSeverityScore(),s.getSeverityBand(),s.getEscalationReason(),
                 s.getSanctionType(),s.getDecidedAt(),s.getAppliedAt(),s.getVerificationNote(),s.getAppealState());
     }
 

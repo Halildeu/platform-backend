@@ -69,9 +69,19 @@ public class CaseSanction {
             "INSIDER_TRADING",
             "FORGED_IDENTITY");
 
+    /**
+     * The band an automatically escalated category must carry, whatever the score says.
+     *
+     * <p>Named rather than written as {@code Band.COK_AGIR} at each use so that the scale
+     * and the rule cannot drift apart if the scale ever grows a fifth band.
+     */
+    private static final Band ESCALATION_FLOOR = Band.COK_AGIR;
+
     @Id private UUID id;
     @Column(name = "case_id", nullable = false, updatable = false) private UUID caseId;
     @Column(name = "org_id", nullable = false, updatable = false) private UUID orgId;
+    @Column(name = "violation_category", nullable = false, length = 40, updatable = false)
+    private String violationCategory;
     @Column(name = "severity_score", nullable = false) private int severityScore;
     @Column(name = "severity_band", nullable = false, length = 16) private String severityBand;
     @Column(name = "escalation_reason", length = 400) private String escalationReason;
@@ -86,10 +96,23 @@ public class CaseSanction {
 
     protected CaseSanction() {}
 
-    public CaseSanction(UUID id, UUID caseId, UUID orgId, int severityScore, Band band,
+    public CaseSanction(UUID id, UUID caseId, UUID orgId, String violationCategory,
+                        int severityScore, Band band,
                         String escalationReason, String sanctionType,
                         String decidedByHash, Instant decidedAt) {
+        if (violationCategory == null || violationCategory.isBlank()) {
+            throw new IllegalArgumentException("violation category is required");
+        }
         Band fromScore = Band.ofScore(severityScore);
+        if (AUTOMATIC_ESCALATIONS.contains(violationCategory) && ESCALATION_FLOOR.isAbove(band)) {
+            // The whole point of the list: these do not get to be scored down. A single
+            // bribe of modest value totals low on the ten criteria and would otherwise be
+            // banded HAFİF, which is how a category the scale calls automatic quietly
+            // becomes a warning letter.
+            throw new IllegalArgumentException(
+                    violationCategory + " is on the automatic-escalation list and must be banded "
+                            + ESCALATION_FLOOR + ", not " + band);
+        }
         if (fromScore.isAbove(band)) {
             // Reading the scale downwards is how a serious finding quietly becomes a
             // warning. The database refuses it too (V22); this is the message a human reads.
@@ -103,6 +126,7 @@ public class CaseSanction {
         this.id = id;
         this.caseId = caseId;
         this.orgId = orgId;
+        this.violationCategory = violationCategory;
         this.severityScore = severityScore;
         this.severityBand = band.name();
         this.escalationReason = escalationReason;
@@ -115,6 +139,7 @@ public class CaseSanction {
     public UUID getId() { return id; }
     public UUID getCaseId() { return caseId; }
     public UUID getOrgId() { return orgId; }
+    public String getViolationCategory() { return violationCategory; }
     public int getSeverityScore() { return severityScore; }
     public String getSeverityBand() { return severityBand; }
     public String getEscalationReason() { return escalationReason; }
