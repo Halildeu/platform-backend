@@ -103,9 +103,13 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     }
 
     private static String partialEvent(final long sequence) {
+        // Carries the optional RT-5 stage-timing fields so the loopback flows
+        // prove the validator accepts them; the raw fixtures elsewhere omit
+        // them and prove absence stays valid (internal live-stt lane).
         return "{\"type\":\"partial\",\"seq\":" + sequence
                 + ",\"confirmed\":\"\",\"tentative\":\"fixture\","
-                + "\"elapsed_ms\":12,\"rms\":0.02,\"source\":\"fixture-live\"}";
+                + "\"elapsed_ms\":12,\"rms\":0.02,\"source\":\"fixture-live\","
+                + "\"audio_sent_ms\":480,\"emitted_at_ms\":1754955600000}";
     }
 
     private static String audioAcknowledgement(final long sequence) {
