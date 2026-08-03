@@ -28,6 +28,21 @@ class SpeechmaticsLiveProtocolAdapterTest {
                 .isTrue();
         assertThat(start.path("transcription_config").path("max_delay").asDouble())
                 .isEqualTo(1.0d);
+        // Vendor default: flexible lets the engine keep a formatted entity intact
+        // instead of hard-cutting at the cap (fixed was our old hardcode).
+        assertThat(start.path("transcription_config").path("max_delay_mode").asText())
+                .isEqualTo("flexible");
+    }
+
+    @Test
+    void honoursAConfiguredFixedMaxDelayMode() throws Exception {
+        final AudioGatewayProperties.DirectStt.Speechmatics config = config();
+        config.setMaxDelayMode("fixed");
+        final SpeechmaticsLiveProtocolAdapter adapter =
+                new SpeechmaticsLiveProtocolAdapter(objectMapper, config);
+
+        final JsonNode start = objectMapper.readTree(adapter.startMessage(16_000));
+
         assertThat(start.path("transcription_config").path("max_delay_mode").asText())
                 .isEqualTo("fixed");
     }
@@ -131,12 +146,16 @@ class SpeechmaticsLiveProtocolAdapterTest {
     }
 
     private SpeechmaticsLiveProtocolAdapter adapter() {
+        return new SpeechmaticsLiveProtocolAdapter(objectMapper, config());
+    }
+
+    private AudioGatewayProperties.DirectStt.Speechmatics config() {
         final AudioGatewayProperties.DirectStt.Speechmatics config =
                 new AudioGatewayProperties.DirectStt.Speechmatics();
         config.setRealtimeUrl("wss://eu2.rt.speechmatics.com/v2");
         config.setApiKey("test-key-not-a-secret");
         config.setLanguage("tr");
         config.setMaxDelaySeconds(1.0d);
-        return new SpeechmaticsLiveProtocolAdapter(objectMapper, config);
+        return config;
     }
 }

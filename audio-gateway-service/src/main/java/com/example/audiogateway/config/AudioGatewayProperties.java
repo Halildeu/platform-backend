@@ -986,6 +986,14 @@ public class AudioGatewayProperties {
             /** Finalization latency requested from Speechmatics. */
             private double maxDelaySeconds = 2.0d;
 
+            /**
+             * Speechmatics vendor default is "flexible" (engine may slightly exceed
+             * max_delay to keep a formatted entity intact in one final); "fixed"
+             * enforces the strict cap at the cost of formatting and risks mid-word
+             * cuts near the 0.7 floor.
+             */
+            private String maxDelayMode = "flexible";
+
             /** Maximum raw PCM bytes per AddAudio WebSocket frame. */
             private int audioChunkBytes = 32_768;
 
@@ -1009,6 +1017,11 @@ public class AudioGatewayProperties {
                     throw new IllegalStateException(
                             "audio.gateway.direct-stt.speechmatics.max-delay-seconds "
                                     + "must be in [0.7,10.0]");
+                }
+                if (!"flexible".equals(maxDelayMode) && !"fixed".equals(maxDelayMode)) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.speechmatics.max-delay-mode "
+                                    + "must be flexible or fixed");
                 }
                 if (audioChunkBytes < 1_024 || audioChunkBytes > 65_535) {
                     throw new IllegalStateException(
@@ -1069,6 +1082,14 @@ public class AudioGatewayProperties {
 
             public void setMaxDelaySeconds(final double maxDelaySeconds) {
                 this.maxDelaySeconds = maxDelaySeconds;
+            }
+
+            public String getMaxDelayMode() {
+                return maxDelayMode;
+            }
+
+            public void setMaxDelayMode(final String maxDelayMode) {
+                this.maxDelayMode = maxDelayMode;
             }
 
             public int getAudioChunkBytes() {

@@ -76,6 +76,7 @@ audio:
         api-key: ${AUDIO_GATEWAY_SPEECHMATICS_API_KEY:}
         language: ${AUDIO_GATEWAY_SPEECHMATICS_LANGUAGE:tr}
         max-delay-seconds: ${AUDIO_GATEWAY_SPEECHMATICS_MAX_DELAY_SECONDS:2.0}
+        max-delay-mode: ${AUDIO_GATEWAY_SPEECHMATICS_MAX_DELAY_MODE:flexible}
         audio-chunk-bytes: ${AUDIO_GATEWAY_SPEECHMATICS_AUDIO_CHUNK_BYTES:32768}
         audio-ack-timeout-ms: ${AUDIO_GATEWAY_SPEECHMATICS_AUDIO_ACK_TIMEOUT_MS:10000}
         allow-insecure: ${AUDIO_GATEWAY_SPEECHMATICS_ALLOW_INSECURE:false}
