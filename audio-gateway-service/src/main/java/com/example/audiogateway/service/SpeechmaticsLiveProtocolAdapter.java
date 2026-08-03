@@ -62,7 +62,7 @@ final class SpeechmaticsLiveProtocolAdapter {
         transcription.put("language", config.getLanguage());
         transcription.put("enable_partials", true);
         transcription.put("max_delay", config.getMaxDelaySeconds());
-        transcription.put("max_delay_mode", "fixed");
+        transcription.put("max_delay_mode", config.getMaxDelayMode());
         return encode(root);
     }
 

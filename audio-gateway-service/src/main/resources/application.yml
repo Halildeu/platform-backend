@@ -100,6 +100,7 @@ audio:
         api-key: ""                   # secret only; required fail-closed when provider=speechmatics
         language: tr
         max-delay-seconds: 2.0
+        max-delay-mode: flexible      # vendor default; fixed risks mid-word cuts near the 0.7 floor
         audio-chunk-bytes: 32768
         audio-ack-timeout-ms: 10000
         allow-insecure: false         # loopback protocol tests only; deployment must remain false
