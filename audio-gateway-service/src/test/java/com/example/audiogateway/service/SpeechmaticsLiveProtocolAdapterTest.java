@@ -73,6 +73,12 @@ class SpeechmaticsLiveProtocolAdapterTest {
         assertThat(finalEvent.path("seq").asLong()).isZero();
         assertThat(finalEvent.path("source_start_sample").asLong()).isZero();
         assertThat(finalEvent.path("source_end_sample").asLong()).isEqualTo(16_000L);
+        // RT-5 latency-study stage timings: 12_800 samples @16kHz -> 800 ms of
+        // forwarded audio at the partial, 16_000 -> 1000 ms at the final.
+        assertThat(partial.path("audio_sent_ms").asLong()).isEqualTo(800L);
+        assertThat(partial.path("emitted_at_ms").asLong()).isPositive();
+        assertThat(finalEvent.path("audio_sent_ms").asLong()).isEqualTo(1_000L);
+        assertThat(finalEvent.path("emitted_at_ms").asLong()).isPositive();
     }
 
     @Test

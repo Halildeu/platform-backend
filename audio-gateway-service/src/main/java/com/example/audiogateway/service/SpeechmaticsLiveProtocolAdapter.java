@@ -109,7 +109,7 @@ final class SpeechmaticsLiveProtocolAdapter {
         final String message = event.path("message").asText("");
         return switch (message) {
             case "RecognitionStarted" -> List.of(readyEvent());
-            case "AddPartialTranscript" -> partialEvent(event);
+            case "AddPartialTranscript" -> partialEvent(event, acceptedSamples);
             case "AddTranscript" -> finalEvent(event, acceptedSamples);
             case "EndOfTranscript" -> List.of("{\"type\":\"eof_ack\"}", "{\"type\":\"drained\"}");
             case "Error" -> {
@@ -166,7 +166,7 @@ final class SpeechmaticsLiveProtocolAdapter {
         return encode(ready);
     }
 
-    private List<String> partialEvent(final JsonNode event) {
+    private List<String> partialEvent(final JsonNode event, final long acceptedSamples) {
         final String text = event.path("metadata").path("transcript").asText("").trim();
         if (text.isEmpty()) {
             return List.of();
@@ -179,7 +179,20 @@ final class SpeechmaticsLiveProtocolAdapter {
         partial.put("elapsed_ms", elapsedMs(event));
         partial.put("rms", 0.0d);
         partial.put("source", SOURCE);
+        putStageTimings(partial, acceptedSamples);
         return List.of(encode(partial));
+    }
+
+    /**
+     * gitops#3419 RT-5 latency study: pins each event to (a) how much audio the
+     * gateway has forwarded and (b) the gateway wall clock at emission, so the
+     * client can split spoken->engine vs gateway->display lag. Optional fields —
+     * the internal live-stt lane does not emit them and the proxy validator
+     * accepts their absence.
+     */
+    private static void putStageTimings(final ObjectNode target, final long acceptedSamples) {
+        target.put("audio_sent_ms", Math.round(acceptedSamples / 16.0d));
+        target.put("emitted_at_ms", System.currentTimeMillis());
     }
 
     private List<String> finalEvent(final JsonNode event, final long acceptedSamples) {
@@ -204,6 +217,7 @@ final class SpeechmaticsLiveProtocolAdapter {
         result.put("rms", 0.0d);
         result.put("source_start_sample", lastFinalEndSample);
         result.put("source_end_sample", sourceEnd);
+        putStageTimings(result, acceptedSamples);
         lastFinalEndSample = sourceEnd;
         return List.of(encode(result));
     }

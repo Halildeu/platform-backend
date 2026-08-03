@@ -819,7 +819,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             return new UpstreamEvent.EofAck();
         }
         if ("partial".equals(type)) {
-            requireExactFields(root, Set.of(
+            requireFieldsWithOptionalTimings(root, Set.of(
                     "type", "seq", "confirmed", "tentative", "elapsed_ms", "rms", "source"));
             final JsonNode sequence = root.path("seq");
             final JsonNode elapsed = root.path("elapsed_ms");
@@ -861,7 +861,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         if (!"final".equals(type)) {
             throw new IllegalArgumentException("live STT emitted unknown event type");
         }
-        requireExactFields(root, Set.of(
+        requireFieldsWithOptionalTimings(root, Set.of(
                 "type", "seq", "text", "reason", "elapsed_ms", "rms",
                 "source_start_sample", "source_end_sample"));
         final JsonNode sequence = root.path("seq");
@@ -918,6 +918,38 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             if (!expected.contains(fields.next())) {
                 throw new IllegalArgumentException("live STT event fields do not match contract");
             }
+        }
+    }
+
+    /**
+     * gitops#3419 RT-5 latency study: partial/final events may carry gateway
+     * stage-timing fields. Optional because the internal live-stt lane does not
+     * emit them; when present each must be an integral non-negative number.
+     */
+    private static final Set<String> STAGE_TIMING_FIELDS =
+            Set.of("audio_sent_ms", "emitted_at_ms");
+
+    private static void requireFieldsWithOptionalTimings(
+            final JsonNode root, final Set<String> required) {
+        int requiredSeen = 0;
+        final var fields = root.fieldNames();
+        while (fields.hasNext()) {
+            final String field = fields.next();
+            if (required.contains(field)) {
+                requiredSeen += 1;
+                continue;
+            }
+            if (!STAGE_TIMING_FIELDS.contains(field)) {
+                throw new IllegalArgumentException("live STT event fields do not match contract");
+            }
+            final JsonNode value = root.path(field);
+            if (!value.isIntegralNumber() || !value.canConvertToLong()
+                    || value.longValue() < 0L) {
+                throw new IllegalArgumentException("live STT stage timing field is invalid");
+            }
+        }
+        if (requiredSeen != required.size()) {
+            throw new IllegalArgumentException("live STT event fields do not match contract");
         }
     }
 
