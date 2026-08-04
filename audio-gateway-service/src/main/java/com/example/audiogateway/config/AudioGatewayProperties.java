@@ -771,7 +771,30 @@ public class AudioGatewayProperties {
                 this.bearerToken = bearerToken;
             }
 
+            /** True when the configured base URL carries a pinned TLS identity. */
+            public boolean isSecureBaseUrl() {
+                if (baseUrl == null || baseUrl.isBlank()) {
+                    return false;
+                }
+                try {
+                    final String scheme = java.net.URI.create(baseUrl.trim()).getScheme();
+                    return scheme != null && scheme.equalsIgnoreCase("https");
+                } catch (final IllegalArgumentException ex) {
+                    return false;
+                }
+            }
+
             public void validate() {
+                validate(false);
+            }
+
+            /**
+             * @param mutualTlsConfigured whether {@code direct-stt.tls} is enabled. When it
+             *     is, a plaintext base URL is refused: the deployment that carries client
+             *     certificates must not reach meeting-ai without a pinned server identity
+             *     (ADR-0031; the first enable was reverted in gitops#2779 for exactly this).
+             */
+            public void validate(final boolean mutualTlsConfigured) {
                 if (!enabled) return;
                 if (baseUrl == null || baseUrl.isBlank()) {
                     throw new IllegalStateException(
@@ -787,6 +810,11 @@ public class AudioGatewayProperties {
                 } catch (final IllegalArgumentException ex) {
                     throw new IllegalStateException(
                         "audio.gateway.direct-stt.live-analyze.base-url is not a valid URI", ex);
+                }
+                if (mutualTlsConfigured && !isSecureBaseUrl()) {
+                    throw new IllegalStateException(
+                        "audio.gateway.direct-stt.live-analyze.base-url must be https when "
+                            + "audio.gateway.direct-stt.tls is enabled");
                 }
                 if (segmentWindow < 1) {
                     throw new IllegalStateException(

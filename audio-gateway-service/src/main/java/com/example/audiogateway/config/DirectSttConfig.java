@@ -260,21 +260,36 @@ public class DirectSttConfig {
      * hop. Bounded connect + response timeout so a slow meeting-ai never
      * back-pressures the STT forwarding path. NOT the audio WebClient: this
      * is a JSON POST to a different host and belongs on its own bean.
+     *
+     * <p><b>Service identity (ADR-0031, gitops#2779).</b> The first enable of this
+     * hop was reverted because a plain-HTTP bridge carries no pinned server
+     * identity for real transcript traffic. An {@code https} base URL therefore
+     * reuses the same client-auth material as the live-stt hop
+     * ({@code audio.gateway.direct-stt.tls.*}, mounted from the
+     * {@code audio-gateway-direct-stt-mtls} Secret): the CA bundle pins the
+     * Caddy server certificate and the client certificate proves this gateway's
+     * identity. {@code LiveAnalyze.validate()} refuses a plaintext base URL
+     * whenever the TLS block is enabled, so the guarded deployment cannot
+     * silently fall back to {@code http}.
      */
     @Bean
     @ConditionalOnProperty(
             prefix = "audio.gateway.direct-stt.live-analyze",
             name = "enabled",
             havingValue = "true")
-    public WebClient meetingAiLiveAnalyzeWebClient(final AudioGatewayProperties props) {
-        final AudioGatewayProperties.DirectStt.LiveAnalyze cfg =
-                props.getDirectStt().getLiveAnalyze();
-        cfg.validate();
-        final HttpClient httpClient = HttpClient.create()
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, cfg.getTimeoutMs())
-                .responseTimeout(Duration.ofMillis(cfg.getTimeoutMs()));
+    public WebClient meetingAiLiveAnalyzeWebClient(final AudioGatewayProperties props)
+            throws SSLException {
+        final AudioGatewayProperties.DirectStt cfg = props.getDirectStt();
+        final AudioGatewayProperties.DirectStt.LiveAnalyze liveAnalyze = cfg.getLiveAnalyze();
+        liveAnalyze.validate(cfg.getTls().isEnabled());
+        HttpClient httpClient = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, liveAnalyze.getTimeoutMs())
+                .responseTimeout(Duration.ofMillis(liveAnalyze.getTimeoutMs()));
+        if (liveAnalyze.isSecureBaseUrl()) {
+            httpClient = applyMutualTls(httpClient, cfg.getTls());
+        }
         return WebClient.builder()
-                .baseUrl(cfg.getBaseUrl().trim().replaceAll("/+$", ""))
+                .baseUrl(liveAnalyze.getBaseUrl().trim().replaceAll("/+$", ""))
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .defaultHeader("Content-Type", "application/json")
                 .build();
