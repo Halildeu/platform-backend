@@ -48,6 +48,9 @@ public final class LiveAnalyzeTrigger {
     private final int segmentWindow;
     private final String bearerToken;
     private final Duration timeout;
+    /** Optional live relay (Faz 24 İ5); null when broadcast is disabled. */
+    private final LiveAnalysisStreamHub analysisHub;
+
     private final Map<String, Aggregation> perMeeting = new ConcurrentHashMap<>();
 
     private final Counter publishAttempts;
@@ -61,6 +64,22 @@ public final class LiveAnalyzeTrigger {
             final String bearerToken,
             final Duration timeout,
             final MeterRegistry meters) {
+        this(webClient, segmentWindow, bearerToken, timeout, meters, null);
+    }
+
+    /**
+     * @param analysisHub optional live relay; when non-null every successful
+     *     analysis body is broadcast to that meeting's SSE subscribers so the
+     *     decisions/actions appear DURING the meeting. Pass null to keep the
+     *     pre-İ5 fire-and-forget behaviour.
+     */
+    public LiveAnalyzeTrigger(
+            final WebClient webClient,
+            final int segmentWindow,
+            final String bearerToken,
+            final Duration timeout,
+            final MeterRegistry meters,
+            final LiveAnalysisStreamHub analysisHub) {
         if (segmentWindow < 1) {
             throw new IllegalArgumentException("segmentWindow must be >= 1");
         }
@@ -68,6 +87,7 @@ public final class LiveAnalyzeTrigger {
         this.segmentWindow = segmentWindow;
         this.bearerToken = bearerToken == null ? "" : bearerToken;
         this.timeout = timeout;
+        this.analysisHub = analysisHub;
         this.publishAttempts = Counter.builder("audio_gw_live_analyze_publish_total")
                 .description("Attempts to post to meeting-ai /analyze/live (per meeting-triggered flush)")
                 .register(meters);
@@ -124,9 +144,17 @@ public final class LiveAnalyzeTrigger {
             }
             req.bodyValue(body)
                     .retrieve()
-                    .toBodilessEntity()
+                    .bodyToMono(String.class)
                     .timeout(timeout)
-                    .doOnSuccess(entity -> publishSuccess.increment())
+                    .doOnSuccess(
+                            analysisJson -> {
+                                publishSuccess.increment();
+                                // Relay to live viewers. Never let a hub failure
+                                // turn a successful analysis into a failed one.
+                                if (analysisHub != null) {
+                                    analysisHub.publish(meetingId, analysisJson);
+                                }
+                            })
                     .doOnError(err -> {
                         publishError.increment();
                         // PII discipline: log the failure class + status, NEVER the transcript.

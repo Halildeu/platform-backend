@@ -7,6 +7,7 @@ import com.example.audiogateway.service.DirectSttProviderRegistry;
 import com.example.audiogateway.service.DirectSttTranscriptionClient;
 import com.example.audiogateway.service.DirectSttTranscriptResultSink;
 import com.example.audiogateway.service.InternalDirectSttTranscriptionClient;
+import com.example.audiogateway.service.LiveAnalysisStreamHub;
 import com.example.audiogateway.service.LiveAnalyzeTrigger;
 import com.example.audiogateway.service.LiveAnalyzeTriggerSink;
 import com.example.audiogateway.service.LiveTranscriptBroadcastSink;
@@ -309,7 +310,8 @@ public class DirectSttConfig {
             final AudioGatewayProperties props,
             @org.springframework.beans.factory.annotation.Qualifier("meetingAiLiveAnalyzeWebClient")
             final WebClient meetingAiLiveAnalyzeWebClient,
-            final MeterRegistry meters) {
+            final MeterRegistry meters,
+            final LiveAnalysisStreamHub liveAnalysisStreamHub) {
         final AudioGatewayProperties.DirectStt.LiveAnalyze cfg =
                 props.getDirectStt().getLiveAnalyze();
         return new LiveAnalyzeTrigger(
@@ -317,7 +319,23 @@ public class DirectSttConfig {
                 cfg.getSegmentWindow(),
                 cfg.getBearerToken(),
                 Duration.ofMillis(cfg.getTimeoutMs()),
-                meters);
+                meters,
+                liveAnalysisStreamHub);
+    }
+
+    /**
+     * Faz 24 İ5 — live analysis relay hub. Created alongside the trigger (same
+     * enable flag) so that whenever the gateway is calling meeting-ai it can
+     * also serve those results to in-meeting viewers. Kept a separate bean from
+     * the trigger so the SSE controller can condition on it directly.
+     */
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "audio.gateway.direct-stt.live-analyze",
+            name = "enabled",
+            havingValue = "true")
+    public LiveAnalysisStreamHub liveAnalysisStreamHub() {
+        return new LiveAnalysisStreamHub();
     }
 
     /**
