@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -464,11 +465,19 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 .merge(clientControlEvents.asFlux(), upstreamRelayedEvents)
                 .takeUntil(RelayedEvent::terminal);
 
+        // Faz 24 (gitops#3435 dilim-3): the user dictionary rides in
+        // StartRecognition, which Speechmatics accepts once and only before any
+        // audio. It therefore CANNOT come from the client's mid-stream context
+        // frame: client frames are admitted only after `upstreamReady`, which
+        // itself waits for RecognitionStarted — the terms would always arrive
+        // too late (proven by a deadlocking loopback run). The dictionary is a
+        // property of the session, so it travels in the session-start request
+        // and is read from the record here.
         final Flux<WebSocketMessage> outbound = speechmatics == null
                 ? upstreamUploadFrames.asFlux()
                 : Flux.concat(
-                        Mono.just(upstream.textMessage(
-                                speechmatics.startMessage(record.sampleRateHz()))),
+                        Mono.just(upstream.textMessage(speechmatics.startMessage(
+                                record.sampleRateHz(), record.contextTerms()))),
                         upstreamUploadFrames.asFlux());
         final Mono<Void> upstreamWrite = upstream.send(outbound)
                 .doOnSuccess(ignored -> {

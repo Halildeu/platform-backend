@@ -103,12 +103,20 @@ public interface AudioSessionRegistry {
             String language,
             String sttProvider,
             String transcriptionMode,
+            /** Faz 24 gitops#3435 dilim-3 — kullanıcı sözlüğü; boş liste = sözlük yok. */
+            java.util.List<String> contextTerms,
             AudioFormat audioFormat,
             int sampleRateHz,
             int channels,
             String idempotencyKey,
             long sessionStartMs
     ) {
+        public SessionCreateCommand {
+            contextTerms = contextTerms == null
+                    ? java.util.List.of()
+                    : java.util.List.copyOf(contextTerms);
+        }
+
         public SessionCreateCommand(
                 final Long tenantId,
                 final Long userId,
@@ -120,7 +128,8 @@ public interface AudioSessionRegistry {
                 final int channels,
                 final String idempotencyKey,
                 final long sessionStartMs) {
-            this(tenantId, userId, meetingId, deviceId, language, "internal", "balanced", audioFormat,
+            this(tenantId, userId, meetingId, deviceId, language, "internal", "balanced",
+                    java.util.List.of(), audioFormat,
                     sampleRateHz, channels, idempotencyKey, sessionStartMs);
         }
 
@@ -137,7 +146,8 @@ public interface AudioSessionRegistry {
                 final String idempotencyKey,
                 final long sessionStartMs) {
             this(tenantId, userId, meetingId, deviceId, language, sttProvider, "balanced",
-                    audioFormat, sampleRateHz, channels, idempotencyKey, sessionStartMs);
+                    java.util.List.of(), audioFormat, sampleRateHz, channels, idempotencyKey,
+                    sessionStartMs);
         }
     }
 

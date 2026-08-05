@@ -331,7 +331,8 @@ public class AudioSessionController {
                 : req.transcriptionMode();
         final CreateOutcome outcome = registry.create(new SessionCreateCommand(
                 tenantId, userId, req.meetingId(), req.deviceId(), req.language(),
-                sttProvider, transcriptionMode, req.audioFormat(), req.sampleRateHz(), req.channels(),
+                sttProvider, transcriptionMode, req.contextTerms(),
+                req.audioFormat(), req.sampleRateHz(), req.channels(),
                 idempotencyKey, now));
 
         return switch (outcome) {

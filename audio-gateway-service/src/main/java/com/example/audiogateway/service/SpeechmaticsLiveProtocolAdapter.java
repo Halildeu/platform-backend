@@ -3,6 +3,7 @@ package com.example.audiogateway.service;
 import com.example.audiogateway.config.AudioGatewayProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.net.URI;
 import java.time.Duration;
@@ -52,6 +53,18 @@ final class SpeechmaticsLiveProtocolAdapter {
     }
 
     String startMessage(final int sampleRateHz) {
+        return startMessage(sampleRateHz, List.of());
+    }
+
+    /**
+     * @param additionalVocab user dictionary terms (proper nouns the acoustic
+     *     model mis-hears — "Sevil Karakaş", "Sergen Bediroğlu"). Speechmatics
+     *     accepts these only inside StartRecognition, which is why the caller
+     *     resolves the client's context frame before building this message.
+     *     Blank entries are skipped; an empty list omits the key entirely so
+     *     the request stays byte-identical to the pre-dictionary shape.
+     */
+    String startMessage(final int sampleRateHz, final List<String> additionalVocab) {
         final ObjectNode root = objectMapper.createObjectNode();
         root.put("message", "StartRecognition");
         final ObjectNode format = root.putObject("audio_format");
@@ -63,6 +76,18 @@ final class SpeechmaticsLiveProtocolAdapter {
         transcription.put("enable_partials", true);
         transcription.put("max_delay", config.getMaxDelaySeconds());
         transcription.put("max_delay_mode", config.getMaxDelayMode());
+        if (additionalVocab != null && !additionalVocab.isEmpty()) {
+            final ArrayNode vocab = objectMapper.createArrayNode();
+            for (final String term : additionalVocab) {
+                if (term == null || term.isBlank()) {
+                    continue;
+                }
+                vocab.addObject().put("content", term.trim());
+            }
+            if (!vocab.isEmpty()) {
+                transcription.set("additional_vocab", vocab);
+            }
+        }
         return encode(root);
     }
 

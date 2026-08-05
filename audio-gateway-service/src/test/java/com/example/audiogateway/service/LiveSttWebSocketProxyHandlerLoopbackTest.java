@@ -1190,10 +1190,235 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     private static SessionRecord speechmaticsStreamingSession(
             final Long tenantId,
             final Long userId) {
+        return speechmaticsStreamingSession(tenantId, userId, List.of());
+    }
+
+    private static SessionRecord speechmaticsStreamingSession(
+            final Long tenantId,
+            final Long userId,
+            final List<String> contextTerms) {
         return new SessionRecord(
                 "session-1", tenantId, userId, "meeting-1", "device-1", "tr",
-                "speechmatics", "realtime", AudioFormat.PCM16, 16_000, 1,
+                "speechmatics", "realtime", contextTerms, AudioFormat.PCM16, 16_000, 1,
                 "start-key-123456", 1_000L, SessionState.STREAMING,
                 -1L, 0L, 0L, null, null, null, 0L, 1_000L);
     }
+
+    /**
+     * Faz 24 gitops#3435 dilim-3 — the user dictionary must reach Speechmatics.
+     *
+     * <p>Before this slice a user who typed "Sevil Karakaş" into the dictionary
+     * and picked Speechmatics got no biasing at all: the terms only ever went
+     * out as a mid-stream {@code context} frame, which the handler forwards
+     * solely to the internal engine.
+     *
+     * <p>The terms CANNOT ride that frame for Speechmatics: client frames are
+     * admitted only after {@code upstreamReady}, which waits for
+     * RecognitionStarted — so a context frame is always later than the
+     * StartRecognition that must carry {@code additional_vocab}. The dictionary
+     * is therefore session state, set at session start.
+     */
+    @Test
+    void speechmaticsStartRecognitionCarriesTheClientDictionary() {
+        final ObjectMapper mapper = new ObjectMapper();
+        final AtomicLong audioSequence = new AtomicLong();
+        final AtomicReference<String> startRecognition = new AtomicReference<>();
+        upstreamServer = HttpServer.create()
+                .host("127.0.0.1")
+                .port(0)
+                .route(routes -> routes.ws("/v2/tr", (in, out) -> out.sendObject(
+                        in.receiveFrames().concatMap(frame -> {
+                            if (frame instanceof BinaryWebSocketFrame) {
+                                final long sequence = audioSequence.incrementAndGet();
+                                return Flux.just(new TextWebSocketFrame(
+                                        "{\"message\":\"AudioAdded\",\"seq_no\":"
+                                                + sequence + "}"));
+                            }
+                            if (!(frame instanceof TextWebSocketFrame text)) {
+                                return Flux.empty();
+                            }
+                            final JsonNode control;
+                            try {
+                                control = mapper.readTree(text.text());
+                            } catch (Exception error) {
+                                return Flux.error(error);
+                            }
+                            final String type = control.path("message").asText();
+                            if ("StartRecognition".equals(type)) {
+                                startRecognition.set(text.text());
+                                return Flux.just(new TextWebSocketFrame(
+                                        "{\"message\":\"RecognitionStarted\"}"));
+                            }
+                            if ("EndOfStream".equals(type)) {
+                                return Flux.just(new TextWebSocketFrame(
+                                        "{\"message\":\"EndOfTranscript\"}"));
+                            }
+                            return Flux.empty();
+                        }))))
+                .bindNow();
+
+        final AudioGatewayProperties properties = new AudioGatewayProperties();
+        properties.getDirectStt().getStreaming().setEnabled(true);
+        properties.getDirectStt().getStreaming().setStreamUrl("ws://unused/ws/stream");
+        properties.getDirectStt().getSpeechmatics().setRealtimeUrl(
+                "ws://127.0.0.1:" + upstreamServer.port() + "/v2");
+        properties.getDirectStt().getSpeechmatics().setAllowInsecure(true);
+        properties.getDirectStt().getSpeechmatics().setApiKey("test-key-not-a-secret");
+        properties.getDirectStt().getSpeechmatics().setAudioAckTimeoutMs(1_000);
+        final LiveSttWebSocketProxyHandler handler = new LiveSttWebSocketProxyHandler(
+                sessions, properties, auditSink, DirectSttTranscriptResultSink.noop(),
+                upstreamClient, upstreamClient, mapper, meters);
+        when(sessions.get("session-1")).thenReturn(Optional.of(
+                speechmaticsStreamingSession(
+                        1L, 4L, List.of("Sevil Karakas", "Sergen Bediroglu"))));
+
+        final NettyDataBufferFactory clientFactory =
+                new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
+        final Sinks.Many<WebSocketMessage> clientInbound =
+                Sinks.many().unicast().onBackpressureBuffer();
+        final List<String> relayedText = new CopyOnWriteArrayList<>();
+        final AtomicReference<CloseStatus> closeStatus = new AtomicReference<>();
+        final AtomicBoolean completed = new AtomicBoolean();
+        final WebSocketSession client = mock(WebSocketSession.class);
+        when(client.getHandshakeInfo()).thenReturn(new HandshakeInfo(
+                URI.create("ws://gateway/api/v1/audio-gateway/sessions/session-1/stream"),
+                new HttpHeaders(), Mono.just(ownerJwt()), null));
+        when(client.receive()).thenReturn(clientInbound.asFlux());
+        when(client.textMessage(anyString())).thenAnswer(invocation ->
+                textFrame(clientFactory, invocation.getArgument(0)));
+        when(client.send(any(Publisher.class))).thenAnswer(invocation ->
+                Flux.from(invocation.<Publisher<WebSocketMessage>>getArgument(0))
+                        .doOnNext(message -> relayedText.add(message.getPayloadAsText()))
+                        .then());
+        when(client.close(any(CloseStatus.class))).thenAnswer(invocation -> {
+            closeStatus.set(invocation.getArgument(0));
+            return Mono.empty();
+        });
+
+        handleSubscription = handler.handle(client)
+                .subscribe(ignored -> { }, error -> { }, () -> completed.set(true));
+        clientInbound.emitNext(binaryFrame(clientFactory, 0L),
+                Sinks.EmitFailureHandler.FAIL_FAST);
+        clientInbound.emitNext(
+                textFrame(clientFactory, LiveStreamControlFrame.CANONICAL_EOF),
+                Sinks.EmitFailureHandler.FAIL_FAST);
+
+        final Instant deadline = Instant.now().plus(TEST_TIMEOUT);
+        while (Instant.now().isBefore(deadline) && !completed.get() && closeStatus.get() == null) {
+            sleepQuietly();
+        }
+
+        final String start = startRecognition.get();
+        assertThat(start).as("Speechmatics must receive StartRecognition").isNotNull();
+        final JsonNode vocab;
+        try {
+            vocab = mapper.readTree(start).path("transcription_config").path("additional_vocab");
+        } catch (Exception error) {
+            throw new AssertionError("StartRecognition is not valid JSON", error);
+        }
+        assertThat(vocab.isArray()).as("the dictionary must travel as additional_vocab").isTrue();
+        assertThat(vocab).hasSize(2);
+        assertThat(vocab.get(0).path("content").asText()).isEqualTo("Sevil Karakas");
+        assertThat(vocab.get(1).path("content").asText()).isEqualTo("Sergen Bediroglu");
+        // The dictionary must not leak into the client-facing relay, and the
+        // bridge must still work end to end with it present.
+        assertThat(relayedText).anyMatch(event -> event.contains("\"type\":\"ready\""));
+    }
+
+    /** A session with no dictionary keeps the pre-slice request shape exactly. */
+    @Test
+    void speechmaticsStartsWithoutADictionaryWhenTheSessionHasNoTerms() {
+        final ObjectMapper mapper = new ObjectMapper();
+        final AtomicLong audioSequence = new AtomicLong();
+        final AtomicReference<String> startRecognition = new AtomicReference<>();
+        upstreamServer = HttpServer.create()
+                .host("127.0.0.1")
+                .port(0)
+                .route(routes -> routes.ws("/v2/tr", (in, out) -> out.sendObject(
+                        in.receiveFrames().concatMap(frame -> {
+                            if (frame instanceof BinaryWebSocketFrame) {
+                                final long sequence = audioSequence.incrementAndGet();
+                                return Flux.just(new TextWebSocketFrame(
+                                        "{\"message\":\"AudioAdded\",\"seq_no\":"
+                                                + sequence + "}"));
+                            }
+                            if (!(frame instanceof TextWebSocketFrame text)) {
+                                return Flux.empty();
+                            }
+                            final JsonNode control;
+                            try {
+                                control = mapper.readTree(text.text());
+                            } catch (Exception error) {
+                                return Flux.error(error);
+                            }
+                            final String type = control.path("message").asText();
+                            if ("StartRecognition".equals(type)) {
+                                startRecognition.set(text.text());
+                                return Flux.just(new TextWebSocketFrame(
+                                        "{\"message\":\"RecognitionStarted\"}"));
+                            }
+                            if ("EndOfStream".equals(type)) {
+                                return Flux.just(new TextWebSocketFrame(
+                                        "{\"message\":\"EndOfTranscript\"}"));
+                            }
+                            return Flux.empty();
+                        }))))
+                .bindNow();
+
+        final AudioGatewayProperties properties = new AudioGatewayProperties();
+        properties.getDirectStt().getStreaming().setEnabled(true);
+        properties.getDirectStt().getStreaming().setStreamUrl("ws://unused/ws/stream");
+        properties.getDirectStt().getSpeechmatics().setRealtimeUrl(
+                "ws://127.0.0.1:" + upstreamServer.port() + "/v2");
+        properties.getDirectStt().getSpeechmatics().setAllowInsecure(true);
+        properties.getDirectStt().getSpeechmatics().setApiKey("test-key-not-a-secret");
+        properties.getDirectStt().getSpeechmatics().setAudioAckTimeoutMs(1_000);
+        final LiveSttWebSocketProxyHandler handler = new LiveSttWebSocketProxyHandler(
+                sessions, properties, auditSink, DirectSttTranscriptResultSink.noop(),
+                upstreamClient, upstreamClient, mapper, meters);
+        when(sessions.get("session-1")).thenReturn(Optional.of(
+                speechmaticsStreamingSession(1L, 4L)));
+
+        final NettyDataBufferFactory clientFactory =
+                new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
+        final Sinks.Many<WebSocketMessage> clientInbound =
+                Sinks.many().unicast().onBackpressureBuffer();
+        final List<String> relayedText = new CopyOnWriteArrayList<>();
+        final AtomicReference<CloseStatus> closeStatus = new AtomicReference<>();
+        final AtomicBoolean completed = new AtomicBoolean();
+        final WebSocketSession client = mock(WebSocketSession.class);
+        when(client.getHandshakeInfo()).thenReturn(new HandshakeInfo(
+                URI.create("ws://gateway/api/v1/audio-gateway/sessions/session-1/stream"),
+                new HttpHeaders(), Mono.just(ownerJwt()), null));
+        when(client.receive()).thenReturn(clientInbound.asFlux());
+        when(client.textMessage(anyString())).thenAnswer(invocation ->
+                textFrame(clientFactory, invocation.getArgument(0)));
+        when(client.send(any(Publisher.class))).thenAnswer(invocation ->
+                Flux.from(invocation.<Publisher<WebSocketMessage>>getArgument(0))
+                        .doOnNext(message -> relayedText.add(message.getPayloadAsText()))
+                        .then());
+        when(client.close(any(CloseStatus.class))).thenAnswer(invocation -> {
+            closeStatus.set(invocation.getArgument(0));
+            return Mono.empty();
+        });
+
+        handleSubscription = handler.handle(client)
+                .subscribe(ignored -> { }, error -> { }, () -> completed.set(true));
+        clientInbound.emitNext(binaryFrame(clientFactory, 0L),
+                Sinks.EmitFailureHandler.FAIL_FAST);
+        clientInbound.emitNext(
+                textFrame(clientFactory, LiveStreamControlFrame.CANONICAL_EOF),
+                Sinks.EmitFailureHandler.FAIL_FAST);
+
+        final Instant deadline = Instant.now().plus(TEST_TIMEOUT);
+        while (Instant.now().isBefore(deadline) && !completed.get() && closeStatus.get() == null) {
+            sleepQuietly();
+        }
+
+        final String start = startRecognition.get();
+        assertThat(start).as("StartRecognition must not be deferred forever").isNotNull();
+        assertThat(start).doesNotContain("additional_vocab");
+        assertThat(relayedText).anyMatch(event -> event.contains("\"type\":\"ready\""));
+    }
+
 }

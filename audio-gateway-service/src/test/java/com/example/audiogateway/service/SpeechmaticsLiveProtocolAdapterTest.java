@@ -164,4 +164,59 @@ class SpeechmaticsLiveProtocolAdapterTest {
         config.setMaxDelaySeconds(1.0d);
         return config;
     }
+
+    // ── Faz 24 gitops#3435 dilim-3: kullanıcı sözlüğü Speechmatics'e de gider ──
+
+    @Test
+    void carriesTheUserDictionaryAsAdditionalVocab() throws Exception {
+        final SpeechmaticsLiveProtocolAdapter adapter = adapter();
+
+        final JsonNode start = objectMapper.readTree(
+                adapter.startMessage(16_000, List.of("Sevil Karakaş", "Sergen Bediroğlu")));
+
+        final JsonNode vocab = start.path("transcription_config").path("additional_vocab");
+        assertThat(vocab.isArray()).isTrue();
+        assertThat(vocab).hasSize(2);
+        assertThat(vocab.get(0).path("content").asText()).isEqualTo("Sevil Karakaş");
+        assertThat(vocab.get(1).path("content").asText()).isEqualTo("Sergen Bediroğlu");
+    }
+
+    @Test
+    void omitsAdditionalVocabEntirelyWhenTheDictionaryIsEmpty() throws Exception {
+        final SpeechmaticsLiveProtocolAdapter adapter = adapter();
+
+        // Both the no-dictionary overload and an explicitly empty list must keep
+        // the request byte-identical to the pre-dictionary shape — an empty
+        // `additional_vocab: []` is a different request and we do not send one.
+        for (final String message :
+                List.of(adapter.startMessage(16_000), adapter.startMessage(16_000, List.of()))) {
+            final JsonNode start = objectMapper.readTree(message);
+            assertThat(start.path("transcription_config").has("additional_vocab")).isFalse();
+        }
+    }
+
+    @Test
+    void skipsBlankDictionaryEntriesAndTrimsTheRest() throws Exception {
+        final SpeechmaticsLiveProtocolAdapter adapter = adapter();
+
+        final JsonNode start = objectMapper.readTree(
+                adapter.startMessage(16_000, java.util.Arrays.asList(
+                        "  Ayşe Yıldız  ", "", "   ", null, "Mahmut Ateş")));
+
+        final JsonNode vocab = start.path("transcription_config").path("additional_vocab");
+        assertThat(vocab).hasSize(2);
+        assertThat(vocab.get(0).path("content").asText()).isEqualTo("Ayşe Yıldız");
+        assertThat(vocab.get(1).path("content").asText()).isEqualTo("Mahmut Ateş");
+    }
+
+    @Test
+    void aDictionaryOfOnlyBlanksLeavesTheRequestUnchanged() throws Exception {
+        final SpeechmaticsLiveProtocolAdapter adapter = adapter();
+
+        final JsonNode start =
+                objectMapper.readTree(adapter.startMessage(16_000, List.of(" ", "\t")));
+
+        assertThat(start.path("transcription_config").has("additional_vocab")).isFalse();
+    }
+
 }

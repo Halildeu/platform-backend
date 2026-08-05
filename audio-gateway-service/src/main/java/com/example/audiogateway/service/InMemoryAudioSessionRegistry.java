@@ -85,7 +85,8 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
         final String sessionId = "SES-" + UUID.randomUUID();
         final SessionRecord rec = new SessionRecord(
                 sessionId, cmd.tenantId(), cmd.userId(), cmd.meetingId(), cmd.deviceId(),
-                cmd.language(), cmd.sttProvider(), cmd.transcriptionMode(), cmd.audioFormat(),
+                cmd.language(), cmd.sttProvider(), cmd.transcriptionMode(), cmd.contextTerms(),
+                cmd.audioFormat(),
                 cmd.sampleRateHz(), cmd.channels(),
                 cmd.idempotencyKey(), cmd.sessionStartMs(),
                 SessionState.STARTED,
