@@ -26,6 +26,14 @@ public record SessionRecord(
         String language,
         String sttProvider,
         String transcriptionMode,
+        /**
+         * Faz 24 (gitops#3435 dilim-3) — kullanıcı sözlüğü. Speechmatics bunu
+         * yalnız StartRecognition içinde kabul ettiği ve o mesaj ilk ses
+         * çerçevesinden ÖNCE gitmek zorunda olduğu için sözlük akış-içi bir
+         * kontrol çerçevesiyle taşınamaz; oturumun özelliğidir. Boş liste =
+         * sözlük yok. Asla null tutulmaz (compact constructor normalize eder).
+         */
+        java.util.List<String> contextTerms,
         AudioFormat audioFormat,
         int sampleRateHz,
         int channels,
@@ -41,6 +49,12 @@ public record SessionRecord(
         long finishedAtMs,
         long updatedAtMs
 ) {
+
+    public SessionRecord {
+        // Normalize once at the boundary so no consumer has to null-check, and
+        // so the record stays deeply immutable.
+        contextTerms = contextTerms == null ? java.util.List.of() : java.util.List.copyOf(contextTerms);
+    }
 
     public SessionRecord(
             final String sessionId,
@@ -64,7 +78,7 @@ public record SessionRecord(
             final long finishedAtMs,
             final long updatedAtMs) {
         this(sessionId, tenantId, userId, meetingId, deviceId, language, "internal", "balanced",
-                audioFormat, sampleRateHz, channels, startIdempotencyKey, sessionStartMs,
+                java.util.List.of(), audioFormat, sampleRateHz, channels, startIdempotencyKey, sessionStartMs,
                 state, lastAcceptedChunkSeq, chunkCount, lastChunkAtMs,
                 lastChunkIdempotencyKey, lastChunkPayloadSha256, finishIdempotencyKey,
                 finishedAtMs, updatedAtMs);
@@ -93,6 +107,38 @@ public record SessionRecord(
             final long finishedAtMs,
             final long updatedAtMs) {
         this(sessionId, tenantId, userId, meetingId, deviceId, language, sttProvider, "balanced",
+                java.util.List.of(), audioFormat, sampleRateHz, channels, startIdempotencyKey, sessionStartMs,
+                state, lastAcceptedChunkSeq, chunkCount, lastChunkAtMs,
+                lastChunkIdempotencyKey, lastChunkPayloadSha256, finishIdempotencyKey,
+                finishedAtMs, updatedAtMs);
+    }
+
+    /** Backward-compatible constructor for callers that predate the dictionary. */
+    public SessionRecord(
+            final String sessionId,
+            final Long tenantId,
+            final Long userId,
+            final String meetingId,
+            final String deviceId,
+            final String language,
+            final String sttProvider,
+            final String transcriptionMode,
+            final AudioFormat audioFormat,
+            final int sampleRateHz,
+            final int channels,
+            final String startIdempotencyKey,
+            final long sessionStartMs,
+            final SessionState state,
+            final long lastAcceptedChunkSeq,
+            final long chunkCount,
+            final long lastChunkAtMs,
+            final String lastChunkIdempotencyKey,
+            final String lastChunkPayloadSha256,
+            final String finishIdempotencyKey,
+            final long finishedAtMs,
+            final long updatedAtMs) {
+        this(sessionId, tenantId, userId, meetingId, deviceId, language, sttProvider,
+                transcriptionMode, java.util.List.of(),
                 audioFormat, sampleRateHz, channels, startIdempotencyKey, sessionStartMs,
                 state, lastAcceptedChunkSeq, chunkCount, lastChunkAtMs,
                 lastChunkIdempotencyKey, lastChunkPayloadSha256, finishIdempotencyKey,
@@ -102,7 +148,7 @@ public record SessionRecord(
     public SessionRecord withState(final SessionState newState, final long now) {
         return new SessionRecord(
                 sessionId, tenantId, userId, meetingId, deviceId, language, sttProvider,
-                transcriptionMode,
+                transcriptionMode, contextTerms,
                 audioFormat, sampleRateHz, channels,
                 startIdempotencyKey, sessionStartMs,
                 newState,
@@ -115,7 +161,7 @@ public record SessionRecord(
                                             final String idempotencyKey, final String payloadSha256) {
         return new SessionRecord(
                 sessionId, tenantId, userId, meetingId, deviceId, language, sttProvider,
-                transcriptionMode,
+                transcriptionMode, contextTerms,
                 audioFormat, sampleRateHz, channels,
                 startIdempotencyKey, sessionStartMs,
                 SessionState.STREAMING,
@@ -127,7 +173,7 @@ public record SessionRecord(
     public SessionRecord withFinish(final String finishKey, final long finishedAt) {
         return new SessionRecord(
                 sessionId, tenantId, userId, meetingId, deviceId, language, sttProvider,
-                transcriptionMode,
+                transcriptionMode, contextTerms,
                 audioFormat, sampleRateHz, channels,
                 startIdempotencyKey, sessionStartMs,
                 SessionState.FINISHED,
