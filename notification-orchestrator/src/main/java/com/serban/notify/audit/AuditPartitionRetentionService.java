@@ -72,6 +72,7 @@ public class AuditPartitionRetentionService {
     private final Counter lockSkippedCounter;
     private final Counter errorsCounter;
     private final Counter futurePartitionsCreatedCounter;
+    private final Counter defaultRescuedRowsCounter;
     private final AtomicLong lastSuccessTimestamp = new AtomicLong(0);
     private AuditPartitionRetentionService self;  // self-injection for proxy
 
@@ -95,6 +96,8 @@ public class AuditPartitionRetentionService {
             .tags(Tags.of("phase", "unknown"))
             .register(meterRegistry);
         this.futurePartitionsCreatedCounter = Counter.builder("notify.audit.retention.future_partitions.created")
+            .register(meterRegistry);
+        this.defaultRescuedRowsCounter = Counter.builder("notify.audit.retention.default_partition.rescued_rows")
             .register(meterRegistry);
         meterRegistry.gauge("notify.audit.retention.last_success.timestamp_seconds",
             lastSuccessTimestamp, AtomicLong::get);
@@ -201,20 +204,71 @@ public class AuditPartitionRetentionService {
             if (partitionExists(partitionName)) continue;
             String rangeStart = ym.atDay(1).atStartOfDay().atOffset(ZoneOffset.UTC).toString();
             String rangeEnd = ym.plusMonths(1).atDay(1).atStartOfDay().atOffset(ZoneOffset.UTC).toString();
+            Integer strandedCount = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM notify.audit_event_v2_default "
+                    + "WHERE occurred_at >= ?::timestamptz AND occurred_at < ?::timestamptz",
+                Integer.class, rangeStart, rangeEnd);
+            int stranded = strandedCount == null ? 0 : strandedCount;
             if (cfg.retentionDryRun()) {
-                log.info("[dry-run] would CREATE partition {} FOR VALUES FROM ('{}') TO ('{}')",
-                    partitionName, rangeStart, rangeEnd);
+                log.info("[dry-run] would CREATE partition {} FOR VALUES FROM ('{}') TO ('{}'){}",
+                    partitionName, rangeStart, rangeEnd,
+                    stranded > 0
+                        ? " and rescue " + stranded + " stranded DEFAULT-partition rows"
+                        : "");
                 continue;
             }
-            jdbc.execute(String.format(
-                "CREATE TABLE IF NOT EXISTS notify.%s PARTITION OF notify.audit_event_v2 "
-                    + "FOR VALUES FROM ('%s') TO ('%s')",
-                partitionName, rangeStart, rangeEnd
-            ));
+            if (stranded == 0) {
+                jdbc.execute(String.format(
+                    "CREATE TABLE IF NOT EXISTS notify.%s PARTITION OF notify.audit_event_v2 "
+                        + "FOR VALUES FROM ('%s') TO ('%s')",
+                    partitionName, rangeStart, rangeEnd
+                ));
+            } else {
+                rescueDefaultAndCreate(partitionName, rangeStart, rangeEnd, stranded);
+            }
             log.info("Created future partition: {} ({} → {})", partitionName, rangeStart, rangeEnd);
             created++;
         }
         return created;
+    }
+
+    /**
+     * A row that reaches the DEFAULT partition before its month's partition
+     * exists (month rollover is at midnight UTC; the ensure cron fires at
+     * 02:00) permanently blocks the plain CREATE: Postgres refuses a new
+     * partition whose range overlaps rows already in DEFAULT. Self-heal
+     * within the cycle transaction: detach DEFAULT, create the month
+     * partition, route the stranded rows back through the parent (they land
+     * in the new partition), re-attach DEFAULT. The append-only triggers
+     * cloned onto the detached DEFAULT would veto the relocation DELETE, so
+     * user triggers are disabled on the standalone table for the move only —
+     * rows are re-inserted unchanged in the same transaction, so append-only
+     * semantics hold for every observer.
+     */
+    private void rescueDefaultAndCreate(
+        String partitionName, String rangeStart, String rangeEnd, int strandedRows
+    ) {
+        jdbc.execute(
+            "ALTER TABLE notify.audit_event_v2 DETACH PARTITION notify.audit_event_v2_default");
+        jdbc.execute(String.format(
+            "CREATE TABLE IF NOT EXISTS notify.%s PARTITION OF notify.audit_event_v2 "
+                + "FOR VALUES FROM ('%s') TO ('%s')",
+            partitionName, rangeStart, rangeEnd
+        ));
+        jdbc.execute("ALTER TABLE notify.audit_event_v2_default DISABLE TRIGGER USER");
+        jdbc.update(String.format(
+            "WITH moved AS ("
+                + "DELETE FROM notify.audit_event_v2_default "
+                + "WHERE occurred_at >= '%s' AND occurred_at < '%s' RETURNING *) "
+                + "INSERT INTO notify.audit_event_v2 SELECT * FROM moved",
+            rangeStart, rangeEnd
+        ));
+        jdbc.execute("ALTER TABLE notify.audit_event_v2_default ENABLE TRIGGER USER");
+        jdbc.execute(
+            "ALTER TABLE notify.audit_event_v2 ATTACH PARTITION notify.audit_event_v2_default DEFAULT");
+        defaultRescuedRowsCounter.increment(strandedRows);
+        log.warn("Rescued {} stranded DEFAULT-partition rows into {} — a row arrived in the "
+            + "rollover window before this cycle created the month partition", strandedRows, partitionName);
     }
 
     /**
