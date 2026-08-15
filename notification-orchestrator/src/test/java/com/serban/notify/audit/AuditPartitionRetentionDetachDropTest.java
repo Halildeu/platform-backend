@@ -10,11 +10,18 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.YearMonth;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.Optional;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,17 +71,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 @TestPropertySource(properties = {
     "notify.audit.retention-enabled=true",
     "notify.audit.retention-scheduling-enabled=false",
-    // Codex iter-2 absorb: with retention-days=30, V8 migration's initial
-    // partitions (audit_event_v2_2026_02..07) ALSO become eligible for
-    // detach because their range_end is < cutoff. This bleeds across to
-    // AuditPartitionV8IntegrationTest's
-    // v8MigrationCreatedPartitionedTableWithExpectedPartitions assertion.
-    // Use retention-days=365 so cutoff = (now - 1y) ≈ 2025-05-09:
-    //   - Our disposable 2024-01 partition (range_end 2024-02-01) IS eligible
-    //   - V8 initial 2026-02..07 partitions (range_end 2026-03-01..2026-08-01)
-    //     are NOT eligible
-    // This isolates retention behavior to ONLY our disposable fixture.
-    "notify.audit.retention-days=365",
+    // retention-days is set in retentionWindow() (@DynamicPropertySource):
+    // the eligibility cutoff must sit between the disposable fixture's
+    // range_end (2024-02-01, must BE eligible) and V8's first initial
+    // partition range_end (2026-03-01, must NOT be eligible — bleeds into
+    // AuditPartitionV8IntegrationTest otherwise). A static day-count walks
+    // forward with the wall clock and crosses 2026-03-01 in early 2027, so
+    // the cutoff is pinned to a calendar date instead.
     // Codex 019e0bb6 RED absorb: NotifyConfig.AuditConfig.retentionGraceHours
     // is `@Min(1)` validated; grace=0 fails @Validated bean instantiation
     // before Spring context loads. Use grace=1 and time-travel the
@@ -89,6 +92,15 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
     @Autowired AuditPartitionRetentionService retentionService;
     @Autowired JdbcTemplate jdbc;
 
+    @DynamicPropertySource
+    static void retentionWindow(DynamicPropertyRegistry registry) {
+        // Pin the detach-eligibility cutoff to a fixed calendar date rather
+        // than a fixed day-count (see @TestPropertySource note above).
+        long days = ChronoUnit.DAYS.between(
+            LocalDate.of(2025, 6, 1), LocalDate.now(ZoneOffset.UTC));
+        registry.add("notify.audit.retention-days", () -> Long.toString(days));
+    }
+
     @org.junit.jupiter.api.BeforeEach
     void cleanRetentionState() {
         // Same isolation pattern as AuditPartitionV8IntegrationTest.
@@ -99,12 +111,30 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
         // recentPartition test in case its cleanup didn't run (test failure).
         jdbc.execute("DROP TABLE IF EXISTS notify.audit_event_v2_2024_01");
         jdbc.execute("DROP TABLE IF EXISTS notify.audit_event_v2_2099_12");
+        rebuildDefaultPartition();
+    }
+
+    private void rebuildDefaultPartition() {
+        // Shared-container schema: other suites in this module insert audit
+        // rows with occurred_at = NOW(). Once the wall clock passed V8's
+        // static partition horizon (2026-08-01), those rows started landing
+        // in the DEFAULT partition — and PostgreSQL then refuses to create
+        // the matching monthly partition ("updated partition constraint for
+        // default partition would be violated by some row"), aborting every
+        // retention cycle before its detach/drop phases (CI 2026-08-15;
+        // class-order dependent, so it surfaced as a coin-flip red). Rebuild
+        // the default partition empty so this class is independent of suite
+        // order and wall-clock date. DROP is DDL — the V7 append-only row
+        // triggers block only UPDATE/DELETE.
+        jdbc.execute("DROP TABLE IF EXISTS notify.audit_event_v2_default");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS notify.audit_event_v2_default "
+            + "PARTITION OF notify.audit_event_v2 DEFAULT");
     }
 
     @Test
     void detachOldPartitionInsertsLogRowAndRemovesFromInheritance() {
         // Setup: create a disposable old partition (range 2024-01-01 → 2024-02-01).
-        // retention-days=30 means cutoff = today - 30d ≈ 2026-04-09;
+        // The cutoff is pinned to 2025-06-01 (see retentionWindow());
         // partition range_end 2024-02-01 << cutoff → eligible for detach.
         createOldPartition("audit_event_v2_2024_01", "2024-01-01", "2024-02-01");
 
@@ -259,6 +289,48 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
         // so log row count stays at 1; dropEligible(...) might increment
         // status to dropped which keeps row count the same.
         assertThat(logCountAfterSecond).isEqualTo(1L);
+    }
+
+    @Test
+    void strayDefaultRowsBlockTheCycleUntilEvicted() {
+        // Regression for the 2026-08-15 CI red: reproduce the shared-schema
+        // poison deterministically, then prove the @BeforeEach eviction is
+        // what unblocks the cycle.
+        DateTimeFormatter monthFmt = DateTimeFormatter.ofPattern("yyyy_MM");
+        YearMonth current = YearMonth.from(OffsetDateTime.now(ZoneOffset.UTC));
+        // Drop current..+3 months so a NOW() row has no matching partition
+        // and must land in DEFAULT (future-months=2, +1 margin).
+        for (int i = 0; i <= 3; i++) {
+            jdbc.execute("DROP TABLE IF EXISTS notify.audit_event_v2_"
+                + current.plusMonths(i).format(monthFmt));
+        }
+        jdbc.update(
+            "INSERT INTO notify.audit_event_v2 "
+                + "(intent_id, event_type, org_id, topic_key, occurred_at) "
+                + "VALUES (?, 'TEST_EVENT', 'default', 'test.topic', NOW())",
+            "stray-" + UUID.randomUUID());
+
+        // Poisoned: ensureFuturePartitions() cannot create the current-month
+        // partition over the stray DEFAULT row; the cycle aborts as error.
+        AuditPartitionRetentionService.CycleResult poisoned = retentionService.cycle();
+        assertThat(poisoned.successful()).isFalse();
+        Boolean createdWhilePoisoned = jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM pg_class c "
+                + "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                + "WHERE n.nspname = 'notify' AND c.relname = ?)",
+            Boolean.class, "audit_event_v2_" + current.format(monthFmt));
+        assertThat(createdWhilePoisoned).isFalse();
+
+        // The eviction (same guard @BeforeEach runs) unblocks the cycle.
+        rebuildDefaultPartition();
+        AuditPartitionRetentionService.CycleResult recovered = retentionService.cycle();
+        assertThat(recovered.successful()).isTrue();
+        Boolean createdAfterEviction = jdbc.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM pg_class c "
+                + "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                + "WHERE n.nspname = 'notify' AND c.relname = ?)",
+            Boolean.class, "audit_event_v2_" + current.format(monthFmt));
+        assertThat(createdAfterEviction).isTrue();
     }
 
     /** Create + ATTACH a disposable partition for testing. */
