@@ -96,11 +96,32 @@ public class ScopeContextFilter extends OncePerRequestFilter {
         // Dev YAML scope remains available only when OpenFGA is explicitly
         // disabled above.
         try {
-            return scopeReader.readScopeContext(userId);
+            return scopeReader.readScopeContext(userId, extractKcSubjectAlias());
         } catch (Exception e) {
             log.error("Failed to build ScopeContext from OpenFGA for user {}; failing closed", userId, e);
             return ScopeContext.empty(userId);
         }
+    }
+
+    /**
+     * The product grant path keys OpenFGA tuples by the Keycloak subject
+     * (data_access scope outbox writes {@code user:<kc-uuid>} unconditionally),
+     * while {@link #extractUserId()} prefers the resolved numeric platform id
+     * once the principal exists in users_db. Reading with only the numeric
+     * subject makes every UUID-keyed tuple invisible the moment the numeric
+     * identity appears (#2530 family; measured live on gitops#3468: the same
+     * token read company scope fine before its users_db row existed and lost
+     * it right after). The reader's dual-subject overload (#2531 mirror)
+     * exists precisely for this; it ignores a blank alias or one equal to the
+     * primary id, so the extra argument is a no-op for principals whose
+     * primary id already is the KC subject.
+     */
+    private String extractKcSubjectAlias() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated()) {
+            return null;
+        }
+        return auth.getPrincipal() instanceof Jwt jwt ? jwt.getSubject() : null;
     }
 
     private ScopeContext buildDevScopeContext() {

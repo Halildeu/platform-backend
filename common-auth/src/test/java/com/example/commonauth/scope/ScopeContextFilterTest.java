@@ -323,4 +323,35 @@ class ScopeContextFilterTest {
             assertTrue(captured.get().allowedCompanyIds().isEmpty());
         }
     }
+
+    @Nested
+    @DisplayName("Dual-subject read (gitops#3468 — numeric identity must not hide KC-subject tuples)")
+    class DualSubjectRead {
+
+        @Test
+        @DisplayName("company tuple keyed by the KC subject stays visible after numeric resolution")
+        void kcSubjectTuplesSurviveNumericResolution() throws Exception {
+            // Product grant path writes user:<kc-uuid>; lookup resolves numeric "30".
+            String kcSub = "c4455da9-a95d-427d-9225-ceafdbd7999b";
+            setJwtAuth(kcSub);
+            var lookup = mock(com.example.commonauth.AuthenticatedUserLookupService.class);
+            when(lookup.resolve(any())).thenReturn(
+                    new com.example.commonauth.AuthenticatedUserLookupService
+                            .ResolvedAuthenticatedUser(30L, "30", null));
+            when(authzService.listObjectIds(eq(kcSub), anyString(), anyString()))
+                    .thenReturn(Set.of(1L));
+            when(authzService.listObjectIds(eq("30"), anyString(), anyString()))
+                    .thenReturn(Set.of());
+            captureContextDuringFilter();
+
+            new ScopeContextFilter(authzService, enabledProps(), lookup)
+                    .doFilter(request, response, filterChain);
+
+            assertNotNull(captured.get());
+            assertEquals("30", captured.get().userId(),
+                    "primary identity stays the resolved numeric id");
+            assertTrue(captured.get().allowedCompanyIds().contains(1L),
+                    "UUID-keyed tuple must remain visible via the KC-subject alias");
+        }
+    }
 }
