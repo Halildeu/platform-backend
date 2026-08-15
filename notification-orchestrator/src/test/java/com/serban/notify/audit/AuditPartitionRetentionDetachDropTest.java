@@ -99,6 +99,28 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
         // recentPartition test in case its cleanup didn't run (test failure).
         jdbc.execute("DROP TABLE IF EXISTS notify.audit_event_v2_2024_01");
         jdbc.execute("DROP TABLE IF EXISTS notify.audit_event_v2_2099_12");
+
+        // Isolation hardening (flaky-CI fix): this suite ATTACHes partitions
+        // over the 2024-01 and 2099-12 ranges via CREATE TABLE ... PARTITION
+        // OF. PostgreSQL validates on ATTACH that the DEFAULT partition holds
+        // no row that would belong to the range being attached; otherwise it
+        // fails with "updated partition constraint for default partition
+        // 'audit_event_v2_default' would be violated by some row". The
+        // Testcontainers PG is shared + reused across the whole module
+        // (AbstractPostgresTest: static container, withReuse(true)) and
+        // @DirtiesContext rebuilds only the Spring context, not the database,
+        // so a stray row in the default partition makes these ATTACHes fail
+        // depending on execution order — an order-dependent flake that is
+        // green on main by luck and red on unrelated PR runs.
+        //
+        // The default partition can't be cleaned with DELETE: audit_event_v2
+        // carries a BEFORE DELETE row-level trigger enforcing append-only
+        // ("audit_event is append-only ... blocked"). TRUNCATE does not fire
+        // row-level triggers, and the default partition only ever holds stray
+        // out-of-range rows (real audit events are now()-dated and route to
+        // the dated partitions, never default), so truncating it before the
+        // ATTACH is safe and makes the attach deterministic.
+        jdbc.execute("TRUNCATE TABLE notify.audit_event_v2_default");
     }
 
     @Test
