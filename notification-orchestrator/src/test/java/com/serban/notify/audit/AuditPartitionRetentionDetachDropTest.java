@@ -16,12 +16,9 @@ import org.springframework.test.context.TestPropertySource;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
-import java.time.YearMonth;
 import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.Optional;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -116,16 +113,14 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
 
     private void rebuildDefaultPartition() {
         // Shared-container schema: other suites in this module insert audit
-        // rows with occurred_at = NOW(). Once the wall clock passed V8's
-        // static partition horizon (2026-08-01), those rows started landing
-        // in the DEFAULT partition — and PostgreSQL then refuses to create
-        // the matching monthly partition ("updated partition constraint for
-        // default partition would be violated by some row"), aborting every
-        // retention cycle before its detach/drop phases (CI 2026-08-15;
-        // class-order dependent, so it surfaced as a coin-flip red). Rebuild
-        // the default partition empty so this class is independent of suite
-        // order and wall-clock date. DROP is DDL — the V7 append-only row
-        // triggers block only UPDATE/DELETE.
+        // rows with occurred_at = NOW(), and past V8's static partition
+        // horizon (2026-08-01) those land in the DEFAULT partition (CI
+        // 2026-08-15, class-order dependent coin-flip red). The service now
+        // rescues such rows itself (PR #1108), but this suite's assertions
+        // count partitions and retention-log rows — rebuild the DEFAULT
+        // partition empty so foreign rows can't route this class's cycles
+        // through the rescue path mid-test. DROP is DDL — the V7 append-only
+        // row triggers block only UPDATE/DELETE.
         jdbc.execute("DROP TABLE IF EXISTS notify.audit_event_v2_default");
         jdbc.execute("CREATE TABLE IF NOT EXISTS notify.audit_event_v2_default "
             + "PARTITION OF notify.audit_event_v2 DEFAULT");
@@ -291,47 +286,11 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
         assertThat(logCountAfterSecond).isEqualTo(1L);
     }
 
-    @Test
-    void strayDefaultRowsBlockTheCycleUntilEvicted() {
-        // Regression for the 2026-08-15 CI red: reproduce the shared-schema
-        // poison deterministically, then prove the @BeforeEach eviction is
-        // what unblocks the cycle.
-        DateTimeFormatter monthFmt = DateTimeFormatter.ofPattern("yyyy_MM");
-        YearMonth current = YearMonth.from(OffsetDateTime.now(ZoneOffset.UTC));
-        // Drop current..+3 months so a NOW() row has no matching partition
-        // and must land in DEFAULT (future-months=2, +1 margin).
-        for (int i = 0; i <= 3; i++) {
-            jdbc.execute("DROP TABLE IF EXISTS notify.audit_event_v2_"
-                + current.plusMonths(i).format(monthFmt));
-        }
-        jdbc.update(
-            "INSERT INTO notify.audit_event_v2 "
-                + "(intent_id, event_type, org_id, topic_key, occurred_at) "
-                + "VALUES (?, 'TEST_EVENT', 'default', 'test.topic', NOW())",
-            "stray-" + UUID.randomUUID());
-
-        // Poisoned: ensureFuturePartitions() cannot create the current-month
-        // partition over the stray DEFAULT row; the cycle aborts as error.
-        AuditPartitionRetentionService.CycleResult poisoned = retentionService.cycle();
-        assertThat(poisoned.successful()).isFalse();
-        Boolean createdWhilePoisoned = jdbc.queryForObject(
-            "SELECT EXISTS (SELECT 1 FROM pg_class c "
-                + "JOIN pg_namespace n ON n.oid = c.relnamespace "
-                + "WHERE n.nspname = 'notify' AND c.relname = ?)",
-            Boolean.class, "audit_event_v2_" + current.format(monthFmt));
-        assertThat(createdWhilePoisoned).isFalse();
-
-        // The eviction (same guard @BeforeEach runs) unblocks the cycle.
-        rebuildDefaultPartition();
-        AuditPartitionRetentionService.CycleResult recovered = retentionService.cycle();
-        assertThat(recovered.successful()).isTrue();
-        Boolean createdAfterEviction = jdbc.queryForObject(
-            "SELECT EXISTS (SELECT 1 FROM pg_class c "
-                + "JOIN pg_namespace n ON n.oid = c.relnamespace "
-                + "WHERE n.nspname = 'notify' AND c.relname = ?)",
-            Boolean.class, "audit_event_v2_" + current.format(monthFmt));
-        assertThat(createdAfterEviction).isTrue();
-    }
+    // NOTE (2026-08-15): the earlier regression test asserting "stray DEFAULT
+    // rows block the cycle until evicted" was removed on purpose. PR #1108
+    // (parallel session) taught ensureFuturePartitions() to RESCUE stranded
+    // DEFAULT rows instead of failing, so the blocked-cycle premise no longer
+    // holds — that contract is now pinned by AuditPartitionDefaultRescueTest.
 
     /** Create + ATTACH a disposable partition for testing. */
     private void createOldPartition(String partitionName, String rangeStart, String rangeEnd) {
