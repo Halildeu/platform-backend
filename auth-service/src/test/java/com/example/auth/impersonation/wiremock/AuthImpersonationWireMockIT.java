@@ -527,6 +527,71 @@ class AuthImpersonationWireMockIT {
     }
 
     @Test
+    void token_exchange_failure_maps_to_generic_error_without_leaking_kc_reason()
+            throws Exception {
+        // Regression for the gitops#3188 live incident: Keycloak rejected the
+        // broker exchange with raw reasons ("Client not allowed to exchange" /
+        // "subject not allowed to impersonate"). Two invariants are pinned:
+        //   1. ANY TokenExchangeException maps to errorCode=TOKEN_EXCHANGE_FAILED
+        //      with a GENERIC client message — the raw KC reason (which can name
+        //      internal clients/policies) never reaches the caller.
+        //   2. An IMPERSONATION_FAILED audit IS still emitted, and it DOES carry
+        //      the detail — operators diagnose from the audit, not the caller.
+        long impersonatorUserId = 1L;
+        long targetUserId = 42L;
+        String targetSubject = "target-kc-subject";
+        String targetEmail = "halil.kocoglu@example.com";
+
+        stubAuthzMe(true);
+        stubUserServiceTarget(targetUserId, targetSubject, targetEmail, true);
+        stubAuditAccepted();
+
+        // The exact class of reason string the live incident surfaced — it must
+        // NOT appear anywhere in the client-facing response.
+        String rawKcReason = "Keycloak token exchange failed (403 FORBIDDEN): "
+                + "{\"error\":\"access_denied\","
+                + "\"error_description\":\"Client not allowed to exchange\"}";
+        when(keycloakBrokerClient.exchange(any(), eq(targetSubject)))
+                .thenThrow(new KeycloakBrokerClient.TokenExchangeException(rawKcReason));
+
+        var mvcResult = mockMvc.perform(post("/api/v1/impersonation/sessions")
+                        .with(jwt().jwt(j -> j.subject("admin-kc-subject")
+                                .claim("userId", impersonatorUserId)
+                                .claim("email", "admin@example.com")
+                                .claim("azp", "frontend")))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"targetUserId\":" + targetUserId
+                                + ",\"reason\":\"token exchange failure regression proof\"}"))
+                .andReturn();
+
+        // Invariant 1a — 502 BAD_GATEWAY (KC is an upstream) + stable errorCode.
+        assertThat(mvcResult.getResponse().getStatus()).isEqualTo(502);
+        JsonNode response = objectMapper.readTree(mvcResult.getResponse().getContentAsString());
+        assertThat(response.get("errorCode").asText()).isEqualTo("TOKEN_EXCHANGE_FAILED");
+        assertThat(response.get("errorMessage").asText()).isEqualTo("Keycloak token exchange failed");
+
+        // Invariant 1b — raw KC internals never leak to the client body.
+        String clientBody = mvcResult.getResponse().getContentAsString();
+        assertThat(clientBody)
+                .doesNotContain("Client not allowed to exchange")
+                .doesNotContain("access_denied")
+                .doesNotContain("FORBIDDEN");
+
+        // No session row is created when the exchange fails.
+        assertThat(countPostsTo("/api/v1/internal/impersonation/sessions")).isZero();
+
+        // Invariant 2 — IMPERSONATION_FAILED audit emitted, carrying the detail
+        // the client response withholds.
+        JsonNode audit = lastBodyTo("/api/v1/internal/impersonation/audit-events");
+        assertThat(audit).isNotNull();
+        assertThat(audit.get("eventType").asText()).isEqualTo("IMPERSONATION_FAILED");
+        assertThat(audit.get("errorCode").asText()).isEqualTo("TOKEN_EXCHANGE_FAILED");
+        assertThat(audit.get("impersonatorUserId").asLong()).isEqualTo(impersonatorUserId);
+        assertThat(audit.get("targetUserId").asLong()).isEqualTo(targetUserId);
+        assertThat(audit.get("message").asText()).contains("Client not allowed to exchange");
+    }
+
+    @Test
     void active_session_conflict_returns_409_with_resolved_target_email_in_audit()
             throws Exception {
         // Full chain up to permission-service session create; that endpoint
