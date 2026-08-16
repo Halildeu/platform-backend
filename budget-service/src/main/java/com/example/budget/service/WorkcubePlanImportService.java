@@ -178,9 +178,15 @@ public class WorkcubePlanImportService {
 
         for (ProviderBudgetPlanRow row : sourceRows) {
             if (row.scenario()) {
+                // scenarioRows counts every scenario row encountered; whether it
+                // becomes a skip record or a draft line is the planner's explicit
+                // includeScenarios choice (default: skip — a scenario is not an
+                // approved assignment).
                 scenarioRows++;
-                skips.add(skip(row, "SCENARIO_PLAN", row.budgetName()));
-                continue;
+                if (!request.scenariosIncluded()) {
+                    skips.add(skip(row, "SCENARIO_PLAN", row.budgetName()));
+                    continue;
+                }
             }
             String skipReason = classifySkip(row);
             if (skipReason != null) {
