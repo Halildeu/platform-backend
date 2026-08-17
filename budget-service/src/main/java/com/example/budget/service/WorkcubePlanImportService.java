@@ -188,7 +188,7 @@ public class WorkcubePlanImportService {
                     continue;
                 }
             }
-            String skipReason = classifySkip(row);
+            String skipReason = classifySkip(row, request.fiscalYear());
             if (skipReason != null) {
                 skips.add(skip(row, skipReason, row.detail()));
                 continue;
@@ -275,12 +275,20 @@ public class WorkcubePlanImportService {
         }
     }
 
-    private String classifySkip(ProviderBudgetPlanRow row) {
+    private String classifySkip(ProviderBudgetPlanRow row, int fiscalYear) {
         if (row.accountCode() == null || row.accountCode().isBlank()) {
             return "MISSING_ACCOUNT_CODE";
         }
         if (row.planDate() == null) {
             return "MISSING_PERIOD";
+        }
+        // ERP rows can carry PLAN_DATEs outside the budget's PERIOD_YEAR
+        // (measured live on the TEST demo budget: a 2025-06 row inside the
+        // 2026 budget, gitops#3474). Writing such a line would bypass the
+        // period.year == fiscalYear invariant that replaceLines enforces on
+        // the manual path — skip it explicitly instead of importing it.
+        if (row.planDate().getYear() != fiscalYear) {
+            return "PERIOD_OUTSIDE_FISCAL_YEAR";
         }
         if (row.incomeTotal().signum() < 0 || row.expenseTotal().signum() < 0) {
             return "NEGATIVE_AMOUNT";
