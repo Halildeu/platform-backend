@@ -188,7 +188,7 @@ public class WorkcubePlanImportService {
                     continue;
                 }
             }
-            String skipReason = classifySkip(row, request.fiscalYear());
+            String skipReason = classifySkip(row);
             if (skipReason != null) {
                 skips.add(skip(row, skipReason, row.detail()));
                 continue;
@@ -199,10 +199,12 @@ public class WorkcubePlanImportService {
                 splitRows++;
             }
             if (expense) {
-                mergedRows += accumulate(lines, descriptions, row, "EXPENSE", row.expenseTotal());
+                mergedRows += accumulate(
+                        lines, descriptions, row, request.fiscalYear(), "EXPENSE", row.expenseTotal());
             }
             if (income) {
-                mergedRows += accumulate(lines, descriptions, row, "INCOME", row.incomeTotal());
+                mergedRows += accumulate(
+                        lines, descriptions, row, request.fiscalYear(), "INCOME", row.incomeTotal());
             }
         }
 
@@ -275,21 +277,14 @@ public class WorkcubePlanImportService {
         }
     }
 
-    private String classifySkip(ProviderBudgetPlanRow row, int fiscalYear) {
+    private String classifySkip(ProviderBudgetPlanRow row) {
         if (row.accountCode() == null || row.accountCode().isBlank()) {
             return "MISSING_ACCOUNT_CODE";
         }
-        if (row.planDate() == null) {
-            return "MISSING_PERIOD";
-        }
-        // ERP rows can carry PLAN_DATEs outside the budget's PERIOD_YEAR
-        // (measured live on the TEST demo budget: a 2025-06 row inside the
-        // 2026 budget, gitops#3474). Writing such a line would bypass the
-        // period.year == fiscalYear invariant that replaceLines enforces on
-        // the manual path — skip it explicitly instead of importing it.
-        if (row.planDate().getYear() != fiscalYear) {
-            return "PERIOD_OUTSIDE_FISCAL_YEAR";
-        }
+        // No period-based skips: the line period is derived from the budget's
+        // fiscal year (annual bucket), never from PLAN_DATE — see accumulate().
+        // MISSING_PERIOD / PERIOD_OUTSIDE_FISCAL_YEAR stay in the V5/V6 CHECK
+        // as historical enum values only.
         if (row.incomeTotal().signum() < 0 || row.expenseTotal().signum() < 0) {
             return "NEGATIVE_AMOUNT";
         }
@@ -303,10 +298,17 @@ public class WorkcubePlanImportService {
             Map<LineGrain, BigDecimal> lines,
             Map<LineGrain, String> descriptions,
             ProviderBudgetPlanRow row,
+            int fiscalYear,
             String direction,
             BigDecimal amount) {
+        // Annual bucket, deliberately: BUDGET_PLAN_ROW.PLAN_DATE is the ENTRY
+        // date, not the budget period — measured live on gitops#3474 (the 2026
+        // demo budget's rows cluster on 2025-06 and 2025-12, i.e. two planning
+        // sessions during 2025). The source carries no month signal for the
+        // plan period, so inventing one from the entry date would be fake
+        // granularity; the honest period is the budget's fiscal year itself.
         LineGrain grain = new LineGrain(
-                row.planDate().withDayOfMonth(1),
+                LocalDate.of(fiscalYear, 1, 1),
                 row.accountCode().trim(),
                 canonicalCode("wc-expense-center-", row.expIncCenterId()),
                 canonicalCode("wc-project-", row.projectId()),
