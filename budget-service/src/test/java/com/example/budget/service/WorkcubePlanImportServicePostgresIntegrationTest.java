@@ -106,7 +106,7 @@ class WorkcubePlanImportServicePostgresIntegrationTest {
                 row(6, "740.02", null, null, "2026-05-01", 0, 0, false, "Sıfır")));
 
         PlanImportResult result = service.importPlans(
-                actor, new PlanImportRequest(2026), BEARER);
+                actor, new PlanImportRequest(2026, null), BEARER);
 
         assertThat(result.status()).isEqualTo("COMPLETED");
         assertThat(result.fetchedRows()).isEqualTo(6);
@@ -152,18 +152,41 @@ class WorkcubePlanImportServicePostgresIntegrationTest {
     }
 
     @Test
+    void includeScenariosFlagImportsScenarioRowsAsDraftLines() {
+        BudgetActor actor = actor("tenant-imp7");
+        provider.rows.set(List.of(
+                row(1, "770.01", null, null, "2026-05-01", 0, 400, true, "Senaryo A"),
+                row(2, "770.02", null, null, "2026-06-01", 150, 0, true, "Senaryo B")));
+
+        PlanImportResult result = service.importPlans(
+                actor, new PlanImportRequest(2026, true), BEARER);
+
+        assertThat(result.status()).isEqualTo("COMPLETED");
+        assertThat(result.fetchedRows()).isEqualTo(2);
+        assertThat(result.scenarioRows())
+                .as("scenario counter keeps reporting encountered scenario rows")
+                .isEqualTo(2);
+        assertThat(result.skippedRows()).isZero();
+        assertThat(result.importedLines()).isEqualTo(2);
+        Integer lineCount = inTransaction(actor, () -> jdbc.queryForObject(
+                "SELECT COUNT(*) FROM budget_lines WHERE tenant_id=? AND version_id=?",
+                Integer.class, actor.tenantId(), result.versionId()));
+        assertThat(lineCount).isEqualTo(2);
+    }
+
+    @Test
     void reimportReusesTheDraftAndReplacesLinesWithoutDuplicates() {
         BudgetActor actor = actor("tenant-imp2");
         provider.rows.set(List.of(
                 row(1, "740.01", null, null, "2026-03-15", 0, 500, false, "İlk")));
         PlanImportResult first = service.importPlans(
-                actor, new PlanImportRequest(2026), BEARER);
+                actor, new PlanImportRequest(2026, null), BEARER);
 
         provider.rows.set(List.of(
                 row(1, "740.01", null, null, "2026-03-15", 0, 750, false, "Güncel"),
                 row(2, "750.01", null, null, "2026-06-01", 0, 100, false, "Yeni")));
         PlanImportResult second = service.importPlans(
-                actor, new PlanImportRequest(2026), BEARER);
+                actor, new PlanImportRequest(2026, null), BEARER);
 
         assertThat(second.planId()).isEqualTo(first.planId());
         assertThat(second.versionId()).isEqualTo(first.versionId());
@@ -184,7 +207,7 @@ class WorkcubePlanImportServicePostgresIntegrationTest {
         provider.rows.set(List.of(
                 row(1, "740.01", null, null, "2026-03-15", 0, 500, false, "İlk")));
         PlanImportResult first = service.importPlans(
-                actor, new PlanImportRequest(2026), BEARER);
+                actor, new PlanImportRequest(2026, null), BEARER);
 
         inTransaction(actor, () -> jdbc.update("""
                 UPDATE budget_versions
@@ -195,7 +218,7 @@ class WorkcubePlanImportServicePostgresIntegrationTest {
         provider.rows.set(List.of(
                 row(2, "750.01", null, null, "2026-06-01", 0, 100, false, "Yeni")));
         PlanImportResult second = service.importPlans(
-                actor, new PlanImportRequest(2026), BEARER);
+                actor, new PlanImportRequest(2026, null), BEARER);
 
         assertThat(second.planId()).isEqualTo(first.planId());
         assertThat(second.versionId()).isNotEqualTo(first.versionId());
@@ -229,7 +252,7 @@ class WorkcubePlanImportServicePostgresIntegrationTest {
         provider.rows.set(List.of(tampered));
 
         PlanImportResult result = service.importPlans(
-                actor, new PlanImportRequest(2026), BEARER);
+                actor, new PlanImportRequest(2026, null), BEARER);
 
         assertThat(result.status()).isEqualTo("BLOCKED");
         assertThat(result.failureCode()).isEqualTo("PROVIDER_DATA_INVALID");
@@ -246,7 +269,7 @@ class WorkcubePlanImportServicePostgresIntegrationTest {
                 HttpStatus.FORBIDDEN, "denied", HttpHeaders.EMPTY, new byte[0], null));
 
         PlanImportResult result = service.importPlans(
-                actor, new PlanImportRequest(2026), BEARER);
+                actor, new PlanImportRequest(2026, null), BEARER);
 
         assertThat(result.status()).isEqualTo("BLOCKED");
         assertThat(result.failureCode()).isEqualTo("PROVIDER_SCOPE_DENIED");
@@ -264,7 +287,7 @@ class WorkcubePlanImportServicePostgresIntegrationTest {
                 row(1, "740.01", null, null, "2026-03-15", 0, 500, false, "TRY satırı")));
 
         PlanImportResult result = service.importPlans(
-                actor, new PlanImportRequest(2026), BEARER);
+                actor, new PlanImportRequest(2026, null), BEARER);
 
         assertThat(result.status()).isEqualTo("BLOCKED");
         assertThat(result.failureCode()).isEqualTo("IMPORT_CONFLICT");

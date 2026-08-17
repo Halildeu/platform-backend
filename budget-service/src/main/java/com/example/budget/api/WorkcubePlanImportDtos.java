@@ -13,8 +13,19 @@ public final class WorkcubePlanImportDtos {
     private WorkcubePlanImportDtos() {
     }
 
+    /**
+     * {@code includeScenarios} is an explicit opt-in: scenario plans
+     * (IS_SCENARIO=1) are not approved assignments and are skipped by default;
+     * a planner may still pull them into a draft deliberately (e.g. the TEST
+     * ERP only carries a scenario demo budget). Null means false.
+     */
     public record PlanImportRequest(
-            @Min(2000) @Max(2200) int fiscalYear) {
+            @Min(2000) @Max(2200) int fiscalYear,
+            Boolean includeScenarios) {
+
+        public boolean scenariosIncluded() {
+            return Boolean.TRUE.equals(includeScenarios);
+        }
     }
 
     /**
