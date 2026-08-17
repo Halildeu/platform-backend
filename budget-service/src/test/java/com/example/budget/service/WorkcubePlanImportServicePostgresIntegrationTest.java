@@ -152,6 +152,30 @@ class WorkcubePlanImportServicePostgresIntegrationTest {
     }
 
     @Test
+    void rowsOutsideTheFiscalYearAreSkippedNotImported() {
+        BudgetActor actor = actor("tenant-imp8");
+        provider.rows.set(List.of(
+                row(1, "740.01", null, null, "2026-03-15", 0, 500, false, "Yıl içi"),
+                // The live gitops#3474 shape: a 2025-06 PLAN_DATE inside the
+                // 2026 budget must not become a 2026 plan's draft line.
+                row(2, "600.01", null, null, "2025-06-01", 900, 0, false, "Yıl dışı")));
+
+        PlanImportResult result = service.importPlans(
+                actor, new PlanImportRequest(2026, null), BEARER);
+
+        assertThat(result.status()).isEqualTo("COMPLETED");
+        assertThat(result.importedLines()).isEqualTo(1);
+        assertThat(result.skippedRows()).isEqualTo(1);
+        assertThat(result.skipSample())
+                .extracting(s -> s.reason())
+                .containsExactly("PERIOD_OUTSIDE_FISCAL_YEAR");
+        Integer lineCount = inTransaction(actor, () -> jdbc.queryForObject(
+                "SELECT COUNT(*) FROM budget_lines WHERE tenant_id=? AND version_id=?",
+                Integer.class, actor.tenantId(), result.versionId()));
+        assertThat(lineCount).isEqualTo(1);
+    }
+
+    @Test
     void includeScenariosFlagImportsScenarioRowsAsDraftLines() {
         BudgetActor actor = actor("tenant-imp7");
         provider.rows.set(List.of(
