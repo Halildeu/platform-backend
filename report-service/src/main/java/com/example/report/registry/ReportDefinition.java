@@ -67,7 +67,10 @@ public record ReportDefinition(
         @JsonInclude(JsonInclude.Include.NON_NULL) List<FilterDefinition> filterDefinitions,
         // PR-D2.1b (ADR-0015, Codex 019e8306 AGREE D): report execution adapter
         // (remote-http executor pattern). Opt-in; default SQL via QueryEngine.
-        @JsonInclude(JsonInclude.Include.NON_NULL) ExecutionConfig execution
+        @JsonInclude(JsonInclude.Include.NON_NULL) ExecutionConfig execution,
+        // Issue #799 (1c migration, RC-009/RC-010): report action menu.
+        // Optional; semantic enforcement lives in the contract rules.
+        @JsonInclude(JsonInclude.Include.NON_NULL) List<ActionDefinition> actions
 ) {
     public ReportDefinition {
         if (key == null || key.isBlank()) {
@@ -104,6 +107,9 @@ public record ReportDefinition(
                     ? null
                     : List.copyOf(filterDefinitions);
         }
+        if (actions != null) {
+            actions = actions.isEmpty() ? null : List.copyOf(actions);
+        }
     }
 
     /**
@@ -118,7 +124,7 @@ public record ReportDefinition(
             String defaultSort, String defaultSortDirection, AccessConfig access) {
         this(key, version, title, description, category, source, sourceSchema,
                 schemaMode, yearColumn, sourceQuery, columns, defaultSort,
-                defaultSortDirection, access, null, null, null, null);
+                defaultSortDirection, access, null, null, null, null, null);
     }
 
     /**
@@ -136,7 +142,25 @@ public record ReportDefinition(
         this(key, version, title, description, category, source, sourceSchema,
                 schemaMode, yearColumn, sourceQuery, columns, defaultSort,
                 defaultSortDirection, access, routeSegment, sharedReportId,
-                filterDefinitions, null);
+                filterDefinitions, null, null);
+    }
+
+    /**
+     * Backward-compatible 18-arg constructor for pre-#799 call sites
+     * (post-PR-D2.1b code paths). The {@code actions} field defaults to
+     * {@code null}.
+     */
+    public ReportDefinition(
+            String key, String version, String title, String description,
+            String category, String source, String sourceSchema, String schemaMode,
+            String yearColumn, String sourceQuery, List<ColumnDefinition> columns,
+            String defaultSort, String defaultSortDirection, AccessConfig access,
+            String routeSegment, String sharedReportId,
+            List<FilterDefinition> filterDefinitions, ExecutionConfig execution) {
+        this(key, version, title, description, category, source, sourceSchema,
+                schemaMode, yearColumn, sourceQuery, columns, defaultSort,
+                defaultSortDirection, access, routeSegment, sharedReportId,
+                filterDefinitions, execution, null);
     }
 
     /**

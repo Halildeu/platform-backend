@@ -142,9 +142,28 @@
     "execution": {
       "description": "PR-D2.1b/d (ADR-0015): report execution adapter configuration. When absent or kind=sql, the report uses the legacy MSSQL QueryEngine path with source/sourceQuery. When kind=remote-http, the report dispatches to a source-owned adapter (e.g. user-service, permission-service) over an allowlist'li HTTP call. See ExecutionConfig sub-schema for shape.",
       "$ref": "#/$defs/ExecutionConfig"
+    },
+    "actions": {
+      "description": "Report action menu (Phase 2 Program 3; issue #799 1c migration). Shape only — RC-009 enforces the scope enum and RC-010 the destructive permission+confirm contract at the rule layer (single semantic source of truth).",
+      "type": "array",
+      "items": {"$ref": "#/$defs/ActionDefinition"}
     }
   },
   "$defs": {
+    "ActionDefinition": {
+      "description": "One action-menu entry (issue #799). Shape only: scope enum is RC-009's contract, the destructive permission+confirm conditional is RC-010's — keeping the semantics in one place (the rules) avoids schema/rule drift.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "scope"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "scope": {"type": "string", "minLength": 1},
+        "destructive": {"type": "boolean"},
+        "permission": {"type": "string", "minLength": 1},
+        "confirm": {"type": "string", "minLength": 1}
+      }
+    },
     "ExecutionConfig": {
       "description": "PR-D2.1b/d (ADR-0015, Codex thread 019e83bd iter-2 PARTIAL absorb): execution dispatch metadata. kind='sql' (default, legacy MSSQL QueryEngine) or kind='remote-http' (source-owned adapter via WebClient + allowlist). When kind=remote-http, service/path/responseShape are required and source/sourceQuery on the parent report definition are exempt. When kind=sql, service/path/responseShape must be absent (mutual exclusion enforced).",
       "type": "object",
