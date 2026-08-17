@@ -140,7 +140,7 @@ class WorkcubePlanImportServicePostgresIntegrationTest {
         assertThat(((BigDecimal) lines.getLast().get("planned_amount")))
                 .isEqualByComparingTo("900");
         assertThat(lines.getLast().get("period_start").toString())
-                .isEqualTo("2026-03-01");
+                .isEqualTo("2026-01-01");
 
         Map<String, Object> version = inTransaction(actor, () -> jdbc.queryForMap("""
                 SELECT status, origin, version_no FROM budget_versions
@@ -152,27 +152,29 @@ class WorkcubePlanImportServicePostgresIntegrationTest {
     }
 
     @Test
-    void rowsOutsideTheFiscalYearAreSkippedNotImported() {
+    void planDateIsAnEntryDateAndNeverLeaksIntoThePeriod() {
         BudgetActor actor = actor("tenant-imp8");
+        // The live gitops#3474 measurement: the 2026 demo budget's PLAN_DATEs
+        // cluster on 2025 entry sessions. The period must come from the
+        // budget's fiscal year (annual bucket), never from PLAN_DATE — and a
+        // null PLAN_DATE is equally importable.
         provider.rows.set(List.of(
-                row(1, "740.01", null, null, "2026-03-15", 0, 500, false, "Yıl içi"),
-                // The live gitops#3474 shape: a 2025-06 PLAN_DATE inside the
-                // 2026 budget must not become a 2026 plan's draft line.
-                row(2, "600.01", null, null, "2025-06-01", 900, 0, false, "Yıl dışı")));
+                row(1, "740.01", null, null, "2026-03-15", 0, 500, false, "Yıl içi giriş"),
+                row(2, "600.01", null, null, "2025-06-01", 900, 0, false, "2025'te girilmiş"),
+                row(3, "610.01", null, null, null, 100, 0, false, "Tarihsiz giriş")));
 
         PlanImportResult result = service.importPlans(
                 actor, new PlanImportRequest(2026, null), BEARER);
 
         assertThat(result.status()).isEqualTo("COMPLETED");
-        assertThat(result.importedLines()).isEqualTo(1);
-        assertThat(result.skippedRows()).isEqualTo(1);
-        assertThat(result.skipSample())
-                .extracting(s -> s.reason())
-                .containsExactly("PERIOD_OUTSIDE_FISCAL_YEAR");
-        Integer lineCount = inTransaction(actor, () -> jdbc.queryForObject(
-                "SELECT COUNT(*) FROM budget_lines WHERE tenant_id=? AND version_id=?",
-                Integer.class, actor.tenantId(), result.versionId()));
-        assertThat(lineCount).isEqualTo(1);
+        assertThat(result.importedLines()).isEqualTo(3);
+        assertThat(result.skippedRows()).isZero();
+        List<java.sql.Date> periods = inTransaction(actor, () -> jdbc.queryForList(
+                "SELECT period_start FROM budget_lines WHERE tenant_id=? AND version_id=?",
+                java.sql.Date.class, actor.tenantId(), result.versionId()));
+        assertThat(periods)
+                .allSatisfy(d -> assertThat(d.toLocalDate())
+                        .isEqualTo(LocalDate.of(2026, 1, 1)));
     }
 
     @Test
