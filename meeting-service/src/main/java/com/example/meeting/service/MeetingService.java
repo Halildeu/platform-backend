@@ -3,6 +3,7 @@ package com.example.meeting.service;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.dto.v1.admin.MeetingActionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingActionResponse;
+import com.example.meeting.dto.v1.admin.MyMeetingActionResponse;
 import com.example.meeting.dto.v1.admin.MeetingActionUpdateRequest;
 import com.example.meeting.dto.v1.admin.MeetingAgendaItemCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingAgendaItemResponse;
@@ -51,9 +52,11 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -528,6 +531,25 @@ public class MeetingService {
 
     // ──────────────────────────── Actions ────────────────────────────
 
+    /**
+     * Caller's own open work across every meeting they can see ("Görevlerim",
+     * gitops#3487). An empty/absent status filter deliberately means the ACTIVE
+     * set (OPEN + IN_PROGRESS) — the closed tail is opt-in via ?status=DONE.
+     */
+    @Transactional(readOnly = true)
+    public List<MyMeetingActionResponse> listMyActions(
+            AdminTenantContext tenant, Set<MeetingActionStatus> statuses) {
+        Set<MeetingActionStatus> effective =
+                (statuses == null || statuses.isEmpty())
+                        ? EnumSet.of(MeetingActionStatus.OPEN, MeetingActionStatus.IN_PROGRESS)
+                        : statuses;
+        return actionRepository
+                .findByAssigneeVisibleToOrgAndStatusIn(tenant.subject(), tenant.tenantId(), effective)
+                .stream()
+                .map(row -> toMyActionResponse(row.action(), row.meetingTitle()))
+                .toList();
+    }
+
     @Transactional(readOnly = true)
     public List<MeetingActionResponse> listActions(AdminTenantContext tenant, UUID meetingId) {
         requireMeeting(tenant, meetingId);
@@ -772,6 +794,23 @@ public class MeetingService {
                 s.getLastUpdatedBySubject(),
                 s.getUpdatedAt(),
                 s.getVersion());
+    }
+
+    private MyMeetingActionResponse toMyActionResponse(MeetingAction a, String meetingTitle) {
+        return new MyMeetingActionResponse(
+                a.getId(),
+                a.getMeetingId(),
+                meetingTitle,
+                a.getEffectiveOrgId(),
+                a.getDescription(),
+                a.getAssigneeSubject(),
+                a.getStatus(),
+                a.getDueAt(),
+                a.getCreatedBySubject(),
+                a.getCreatedAt(),
+                a.getLastUpdatedBySubject(),
+                a.getUpdatedAt(),
+                a.getVersion());
     }
 
     private MeetingActionResponse toActionResponse(MeetingAction a) {
