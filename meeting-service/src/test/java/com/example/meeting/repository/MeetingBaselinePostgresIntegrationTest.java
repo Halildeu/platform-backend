@@ -5,9 +5,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.meeting.model.Meeting;
 import com.example.meeting.dto.v1.admin.MeetingSearchCriteria;
+import com.example.meeting.model.MeetingActionStatus;
 import com.example.meeting.model.MeetingStatus;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -84,6 +86,8 @@ class MeetingBaselinePostgresIntegrationTest {
 
     @Autowired
     private MeetingRepository meetingRepository;
+    @Autowired
+    private MeetingActionRepository actionRepository;
     @Autowired
     private JdbcTemplate jdbc;
     @Autowired
@@ -352,6 +356,64 @@ class MeetingBaselinePostgresIntegrationTest {
     }
 
     // ───────────────────────────── Seed helpers ─────────────────────────────
+
+    /**
+     * "Görevlerim" query (gitops#3487): assignee + status filter, effective-org
+     * visibility, due-first ordering with undated rows trailing by age, and the
+     * meeting title carried without an N+1 lookup.
+     */
+    @Test
+    void myActionsQuery_filtersByAssigneeAndStatus_ordersDueFirstThenAge() {
+        UUID orgA = UUID.randomUUID();
+        UUID orgB = UUID.randomUUID();
+        UUID m1 = UUID.randomUUID();
+        UUID m2 = UUID.randomUUID();
+        UUID m3 = UUID.randomUUID();
+        insertMeetingCanonical(m1, orgA, "Bütçe toplantısı");
+        insertMeetingCanonical(m2, orgA, "Pazarlama planı");
+        insertMeetingCanonical(m3, orgB, "Yabancı tenant");
+
+        Instant base = Instant.parse("2026-08-20T09:00:00Z");
+        UUID a1 = UUID.randomUUID();
+        UUID a2 = UUID.randomUUID();
+        UUID a3 = UUID.randomUUID();
+        UUID a4 = UUID.randomUUID();
+        insertManualAction(a1, m1, orgA, "ali", "OPEN",
+                Instant.parse("2026-08-25T09:00:00Z"), base.plusSeconds(30));
+        insertManualAction(a2, m2, orgA, "ali", "IN_PROGRESS",
+                Instant.parse("2026-08-26T09:00:00Z"), base);
+        insertManualAction(a3, m1, orgA, "ali", "OPEN", null, base);
+        insertManualAction(a4, m1, orgA, "ali", "DONE",
+                Instant.parse("2026-08-21T09:00:00Z"), base);
+        insertManualAction(UUID.randomUUID(), m1, orgA, "veli", "OPEN", null, base);
+        insertManualAction(UUID.randomUUID(), m3, orgB, "ali", "OPEN", null, base);
+
+        List<MyActionProjection> active = actionRepository.findByAssigneeVisibleToOrgAndStatusIn(
+                "ali", orgA,
+                EnumSet.of(MeetingActionStatus.OPEN, MeetingActionStatus.IN_PROGRESS));
+
+        assertThat(active).extracting(row -> row.action().getId())
+                .containsExactly(a1, a2, a3);
+        assertThat(active).extracting(MyActionProjection::meetingTitle)
+                .containsExactly("Bütçe toplantısı", "Pazarlama planı", "Bütçe toplantısı");
+
+        List<MyActionProjection> done = actionRepository.findByAssigneeVisibleToOrgAndStatusIn(
+                "ali", orgA, EnumSet.of(MeetingActionStatus.DONE));
+        assertThat(done).extracting(row -> row.action().getId()).containsExactly(a4);
+    }
+
+    private void insertManualAction(
+            UUID id, UUID meetingId, UUID org, String assignee, String status,
+            Instant dueAt, Instant createdAt) {
+        jdbc.update("INSERT INTO " + SCHEMA + ".meeting_actions "
+                        + "(id, meeting_id, tenant_id, org_id, description, assignee_subject, status, "
+                        + " due_at, source, created_by_subject, last_updated_by_subject, "
+                        + " created_at, updated_at, version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'MANUAL', 'c@e.com', 'c@e.com', ?, ?, 0)",
+                id, meetingId, org, org, "görev " + id, assignee, status,
+                dueAt == null ? null : Timestamp.from(dueAt),
+                Timestamp.from(createdAt), Timestamp.from(createdAt));
+    }
 
     private static final Timestamp NOW = Timestamp.from(Instant.parse("2026-06-16T10:00:00Z"));
 
