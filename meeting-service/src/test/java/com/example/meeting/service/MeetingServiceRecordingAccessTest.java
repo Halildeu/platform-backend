@@ -77,7 +77,7 @@ class MeetingServiceRecordingAccessTest {
                 sessionErasureService,
                 authzProvider,
                 false,
-                false);
+                false, userId -> java.util.Optional.empty());
     }
 
     @Test
@@ -349,7 +349,7 @@ class MeetingServiceRecordingAccessTest {
                 meetingRepository, sessionRepository, actionRepository, agendaItemRepository,
                 decisionRepository,
                 eventOutboxRepository, analysisRunRepository, sessionErasureService,
-                authzProvider, true, true);
+                authzProvider, true, true, userId -> java.util.Optional.empty());
     }
 
     private static Meeting meetingCreatedBy(String subject) {

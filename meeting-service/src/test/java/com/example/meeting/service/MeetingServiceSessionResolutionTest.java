@@ -42,7 +42,7 @@ class MeetingServiceSessionResolutionTest {
                 mock(MeetingActionRepository.class), mock(MeetingAgendaItemRepository.class),
                 mock(MeetingDecisionRepository.class),
                 mock(MeetingEventOutboxRepository.class), mock(MeetingAnalysisRunRepository.class),
-                erasureService, authz, false, false);
+                erasureService, authz, false, false, userId -> java.util.Optional.empty());
     }
 
     @Test

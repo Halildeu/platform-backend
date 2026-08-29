@@ -17,6 +17,7 @@ import java.time.Instant;
 public record MeetingActionUpdateRequest(
         @NotBlank @Size(max = 2000) String description,
         @Size(max = 255) String assigneeSubject,
+        Long assigneeUserId,
         @NotNull MeetingActionStatus status,
         Instant dueAt,
         Long expectedVersion) {
