@@ -116,7 +116,16 @@ public class PypActualProviderRepository {
                                THEN N'INVOICE_LINE'
                            WHEN R.EXPENSE_ITEM_ID IS NOT NULL
                                 AND INV.INVOICE_ID IS NOT NULL
+                                AND IVL.DISTINCT_DIMS = 1
+                                AND IVL.LINE_ITEM_ID IS NOT NULL
+                               THEN N'INVOICE_UNIFORM'
+                           WHEN R.EXPENSE_ITEM_ID IS NOT NULL
+                                AND INV.INVOICE_ID IS NOT NULL
                                THEN N'INVOICE_HEADER'
+                           WHEN INV.INVOICE_ID IS NOT NULL
+                                AND IVL.LINE_COUNT > 0
+                                AND R.EXPENSE_ITEM_ID IS NULL
+                               THEN N'INVOICE_MIXED'
                            WHEN R.EXPENSE_ITEM_ID IS NOT NULL
                                 AND EXPH.EXPENSE_ID IS NOT NULL
                                THEN N'EXPENSE_UNIFORM'
@@ -135,7 +144,11 @@ public class PypActualProviderRepository {
                        NULLIF(ACR.ACC_PROJECT_ID, 0) AS PROJECT_ID,
                        INV.INVOICE_ID,
                        IR.INVOICE_ROW_ID,
-                       NULLIF(IR.ORDER_ID, 0) AS ORDER_ID,
+                       COALESCE(
+                           NULLIF(IR.ORDER_ID, 0),
+                           CASE WHEN IVL.DISTINCT_ORDERS = 1
+                                THEN IVL.LINE_ORDER_ID END
+                       ) AS ORDER_ID,
                        NULLIF(INV.PROGRESS_ID, 0) AS PROGRESS_ID,
                        NULLIF(INV.CONTRACT_ID, 0) AS CONTRACT_ID
                   FROM [%s].[ACCOUNT_CARD_ROWS] ACR
@@ -179,9 +192,26 @@ public class PypActualProviderRepository {
                         FROM [%s].[EXPENSE_ITEMS_ROWS] EXR
                        WHERE EXR.EXPENSE_ID = EXPH.EXPENSE_ID
                   ) EXL
+                  OUTER APPLY (
+                      SELECT COUNT(*) AS LINE_COUNT,
+                             COUNT(DISTINCT CONCAT(
+                                 COALESCE(NULLIF(IR2.ROW_EXP_CENTER_ID, 0), -1),
+                                 N'|',
+                                 COALESCE(NULLIF(IR2.ROW_EXP_ITEM_ID, 0), -1)
+                             )) AS DISTINCT_DIMS,
+                             MIN(NULLIF(IR2.ROW_EXP_CENTER_ID, 0)) AS LINE_CENTER_ID,
+                             MIN(NULLIF(IR2.ROW_EXP_ITEM_ID, 0)) AS LINE_ITEM_ID,
+                             COUNT(DISTINCT COALESCE(NULLIF(IR2.ORDER_ID, 0), -1))
+                                 AS DISTINCT_ORDERS,
+                             MIN(NULLIF(IR2.ORDER_ID, 0)) AS LINE_ORDER_ID
+                        FROM [%s].[INVOICE_ROW] IR2
+                       WHERE IR2.INVOICE_ID = INV.INVOICE_ID
+                  ) IVL
                   CROSS APPLY (
                       SELECT COALESCE(
                                  NULLIF(IR.ROW_EXP_CENTER_ID, 0),
+                                 CASE WHEN IVL.DISTINCT_DIMS = 1
+                                      THEN IVL.LINE_CENTER_ID END,
                                  CASE WHEN INV.INVOICE_ID IS NOT NULL
                                       THEN NULLIF(INV.EXPENSE_CENTER_ID, 0) END,
                                  CASE WHEN EXL.DISTINCT_DIMS = 1
@@ -189,6 +219,8 @@ public class PypActualProviderRepository {
                              ) AS EXPENSE_CENTER_ID,
                              COALESCE(
                                  NULLIF(IR.ROW_EXP_ITEM_ID, 0),
+                                 CASE WHEN IVL.DISTINCT_DIMS = 1
+                                      THEN IVL.LINE_ITEM_ID END,
                                  CASE WHEN INV.INVOICE_ID IS NOT NULL
                                       THEN NULLIF(INV.EXPENSE_ITEM_ID, 0) END,
                                  CASE WHEN EXL.DISTINCT_DIMS = 1
@@ -206,7 +238,7 @@ public class PypActualProviderRepository {
                 """.formatted(
                 boundedLimit,
                 schema, schema, schema, schema, schema, schema, schema, schema,
-                schema, schema, schema);
+                schema, schema, schema, schema);
 
         LocalDate yearStart = LocalDate.of(fiscalYear, 1, 1);
         return jdbc.query(
