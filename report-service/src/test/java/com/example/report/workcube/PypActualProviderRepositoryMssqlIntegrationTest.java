@@ -81,6 +81,24 @@ class PypActualProviderRepositoryMssqlIntegrationTest {
         insertExpenseLine(jdbc, s, 62002, 6002, 15, 80);
         insertLedgerRow(jdbc, s, 70004, 9004, "770.02", 1, 40, null);
 
+        // Card 9006 / row 70006 — the measured live shape: ACTION_ROW_ID is
+        // unset (0), so no exact line join exists, but every invoice line
+        // agrees on one (center, item) pair AND one order -> INVOICE_UNIFORM
+        // with order lineage.
+        insertCard(jdbc, s, 9006, "2026-04-10", 56, 4003L, 0L, null, 0);
+        insertInvoice(jdbc, s, 4003, "FTR-2026-19", null, null, null, 9102L);
+        insertInvoiceRow(jdbc, s, 88003, 4003, 12, 77, 3502L, null);
+        insertInvoiceRow(jdbc, s, 88004, 4003, 12, 77, 3502L, null);
+        insertLedgerRow(jdbc, s, 70006, 9006, "740.03", 1, 700, null);
+
+        // Card 9007 / row 70007 — unset ACTION_ROW_ID and DISAGREEING invoice
+        // lines -> INVOICE_MIXED, nothing guessed.
+        insertCard(jdbc, s, 9007, "2026-04-11", 56, 4004L, 0L, null, 0);
+        insertInvoice(jdbc, s, 4004, "FTR-2026-20", null, null, null, null);
+        insertInvoiceRow(jdbc, s, 88005, 4004, 12, 77, null, null);
+        insertInvoiceRow(jdbc, s, 88006, 4004, 13, 78, null, null);
+        insertLedgerRow(jdbc, s, 70007, 9007, "740.04", 1, 55, null);
+
         // Card 9005 / row 70005 — bank transfer (virman): TRANSFER + NONE.
         insertCard(jdbc, s, 9005, "2026-06-01", 24, 7001L, null, null, 0);
         jdbc.update("INSERT INTO [" + s + "].[BANK_ACTIONS]"
@@ -157,10 +175,31 @@ class PypActualProviderRepositoryMssqlIntegrationTest {
     }
 
     @Test
+    void unsetActionRowIdResolvesThroughUniformInvoiceLines() {
+        List<PypActualRow> rows = repository.find(1L, 2026, 0L, 50);
+
+        PypActualRow uniform = byJournalRow(rows, 70006L);
+        assertThat(uniform.dimensionSource()).isEqualTo("INVOICE_UNIFORM");
+        assertThat(uniform.expenseCenterId()).isEqualTo(12L);
+        assertThat(uniform.expenseItemId()).isEqualTo(77L);
+        assertThat(uniform.expenseItemName()).isEqualTo("Kalıp İşçiliği");
+        assertThat(uniform.orderId()).isEqualTo(3502L);
+        assertThat(uniform.progressId()).isEqualTo(9102L);
+        assertThat(uniform.invoiceRowId()).isNull();
+
+        PypActualRow mixed = byJournalRow(rows, 70007L);
+        assertThat(mixed.dimensionSource()).isEqualTo("INVOICE_MIXED");
+        assertThat(mixed.expenseCenterId()).isNull();
+        assertThat(mixed.expenseItemId()).isNull();
+        assertThat(mixed.orderId()).isNull();
+    }
+
+    @Test
     void scopesToTheCompanySchemaAndPaginatesByKeyset() {
         List<PypActualRow> all = repository.find(1L, 2026, 0L, 50);
         assertThat(all).extracting(PypActualRow::journalRowId)
-                .containsExactly(70001L, 70002L, 70003L, 70004L, 70005L);
+                .containsExactly(70001L, 70002L, 70003L, 70004L, 70005L,
+                        70006L, 70007L);
         assertThat(all).allSatisfy(row ->
                 assertThat(row.sourceCompanyId()).isEqualTo(1L));
 

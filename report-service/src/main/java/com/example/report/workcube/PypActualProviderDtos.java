@@ -27,6 +27,14 @@ public final class PypActualProviderDtos {
      *
      * <ul>
      *   <li>{@code INVOICE_LINE} — exact invoice line ({@code ROW_EXP_*}).</li>
+     *   <li>{@code INVOICE_UNIFORM} — the ledger row could not be tied to one
+     *       invoice line ({@code ACTION_ROW_ID} is unset in this tenant —
+     *       measured live 2026-08-29: 0 of 2898 sampled invoice rows carried
+     *       it), but every line of the invoice agrees on one (center, item)
+     *       pair (99.6%% of 2026 invoices do); that pair is used, and a
+     *       single-order invoice also contributes its order lineage.</li>
+     *   <li>{@code INVOICE_MIXED} — invoice lines disagree; nothing is
+     *       guessed, dimensions stay null.</li>
      *   <li>{@code INVOICE_HEADER} — invoice header fallback.</li>
      *   <li>{@code EXPENSE_UNIFORM} — every masraf line of the expense agrees
      *       on one (center, item) pair; that pair is used.</li>
