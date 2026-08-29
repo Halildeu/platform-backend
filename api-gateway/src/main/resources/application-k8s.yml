@@ -88,12 +88,14 @@ spring:
           predicates:
             - Path=/api/v1/notify/**
         # Faz 24 meeting intelligence admin surface. meeting-service owns
-        # /api/v1/admin/meetings/** including source-backed Meeting AI submit;
-        # keep the path verbatim so controller contracts stay canonical.
+        # /api/v1/admin/meetings/** including source-backed Meeting AI submit,
+        # plus the assignee-centric /api/v1/admin/my/** view (gitops#3487
+        # Görevlerim); keep paths verbatim so controller contracts stay
+        # canonical.
         - id: meeting-service-admin
           uri: ${MEETING_SERVICE_URL:http://meeting-service:8097}
           predicates:
-            - Path=/api/v1/admin/meetings/**
+            - Path=/api/v1/admin/meetings/**,/api/v1/admin/my/**
         # Faz 35 ES-007/ES-204: authenticated Etik Speak staff surface.
         # Public reporter routes deliberately bypass the suite gateway and use
         # ethics-service's disjoint public filter chain.
