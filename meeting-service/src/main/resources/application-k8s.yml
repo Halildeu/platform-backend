@@ -113,6 +113,17 @@ meeting:
     client-secret: ${MEETING_TRANSCRIPT_READ_CLIENT_SECRET:${MEETING_SESSION_ERASURE_CLIENT_SECRET:}}
     connect-timeout-millis: ${MEETING_TRANSCRIPT_READ_CONNECT_TIMEOUT_MS:2000}
     response-timeout-millis: ${MEETING_TRANSCRIPT_READ_RESPONSE_TIMEOUT_MS:10000}
+  # Faz 24 Görevler (gitops#3507): assignee resolution through user-service's
+  # internal subject endpoint; same service client/secret as the other
+  # meeting-service service-token callers.
+  assignee-directory:
+    enabled: ${MEETING_ASSIGNEE_DIRECTORY_ENABLED:false}
+    user-service-base-url: ${MEETING_ASSIGNEE_DIRECTORY_USER_SERVICE_URL:http://user-service:8089}
+    token-url: ${MEETING_ASSIGNEE_DIRECTORY_TOKEN_URL:http://auth-service:8088/oauth2/token}
+    client-id: ${MEETING_ASSIGNEE_DIRECTORY_CLIENT_ID:meeting-service}
+    client-secret: ${MEETING_ASSIGNEE_DIRECTORY_CLIENT_SECRET:${MEETING_SESSION_ERASURE_CLIENT_SECRET:}}
+    connect-timeout-millis: ${MEETING_ASSIGNEE_DIRECTORY_CONNECT_TIMEOUT_MS:2000}
+    response-timeout-millis: ${MEETING_ASSIGNEE_DIRECTORY_RESPONSE_TIMEOUT_MS:10000}
   events:
     redis:
       enabled: ${MEETING_EVENTS_REDIS_ENABLED:false}

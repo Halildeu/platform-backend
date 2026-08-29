@@ -99,6 +99,7 @@ public class MeetingService {
     private final ObjectProvider<OpenFgaAuthzService> authzServiceProvider;
     private final boolean legacyUserIdFallbackEnabled;
     private final boolean legacyUserIdDualWriteEnabled;
+    private final AssigneeDirectoryClient assigneeDirectoryClient;
 
     public MeetingService(
             MeetingRepository meetingRepository,
@@ -113,7 +114,9 @@ public class MeetingService {
             @Value("${meeting.authz.object-principal.legacy-user-id-fallback-enabled:false}")
             boolean legacyUserIdFallbackEnabled,
             @Value("${meeting.authz.object-principal.legacy-user-id-dual-write-enabled:false}")
-            boolean legacyUserIdDualWriteEnabled) {
+            boolean legacyUserIdDualWriteEnabled,
+            AssigneeDirectoryClient assigneeDirectoryClient) {
+        this.assigneeDirectoryClient = assigneeDirectoryClient;
         this.meetingRepository = meetingRepository;
         this.sessionRepository = sessionRepository;
         this.actionRepository = actionRepository;
@@ -572,7 +575,8 @@ public class MeetingService {
         action.setTenantId(tenant.tenantId());
         action.setOrgId(tenant.tenantId()); // canonical writer sets BOTH columns (trigger is backstop)
         action.setDescription(request.description());
-        action.setAssigneeSubject(request.assigneeSubject());
+        action.setAssigneeSubject(
+                resolveAssigneeSubject(request.assigneeSubject(), request.assigneeUserId()));
         action.setStatus(MeetingActionStatus.OPEN);
         action.setDueAt(request.dueAt());
         action.setCreatedBySubject(tenant.subject());
@@ -587,11 +591,46 @@ public class MeetingService {
         MeetingAction action = requireAction(tenant, meetingId, actionId);
         requireExpectedVersion(request.expectedVersion(), action.getVersion());
         action.setDescription(request.description());
-        action.setAssigneeSubject(request.assigneeSubject());
+        action.setAssigneeSubject(
+                resolveAssigneeSubject(request.assigneeSubject(), request.assigneeUserId()));
         action.setStatus(request.status());
         action.setDueAt(request.dueAt());
         action.setLastUpdatedBySubject(tenant.subject());
         return toActionResponse(actionRepository.save(action));
+    }
+
+
+    /**
+     * Faz 24 Görevler (gitops#3507) — server-side assignee resolution.
+     *
+     * <p>UIs only see the public user directory (numeric id + name; no
+     * {@code kc_subject} by design), so they send {@code assigneeUserId} and
+     * this service resolves it to the stable KC subject before persisting.
+     * {@code assigneeSubject} stays accepted for server-to-server callers.
+     * Supplying both is a contract violation (400); an id the directory
+     * cannot bind to a subject is 422 so a claimed assignment is never
+     * silently dropped.
+     */
+    private String resolveAssigneeSubject(String assigneeSubject, Long assigneeUserId) {
+        boolean hasSubject = assigneeSubject != null && !assigneeSubject.isBlank();
+        if (assigneeUserId == null) {
+            return hasSubject ? assigneeSubject : null;
+        }
+        if (hasSubject) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "assigneeSubject and assigneeUserId are mutually exclusive");
+        }
+        try {
+            return assigneeDirectoryClient.resolveKcSubject(assigneeUserId)
+                    .orElseThrow(() -> new ResponseStatusException(
+                            HttpStatus.UNPROCESSABLE_ENTITY,
+                            "assignee_unresolvable: user %d has no subject binding"
+                                    .formatted(assigneeUserId)));
+        } catch (AssigneeDirectoryClient.ResolutionUnavailableException ex) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "assignee directory unavailable", ex);
+        }
     }
 
     @Transactional

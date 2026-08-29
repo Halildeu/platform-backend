@@ -70,7 +70,7 @@ class MeetingAgendaLifecycleServiceTest {
                 mock(MeetingSessionErasureService.class),
                 authz,
                 false,
-                false);
+                false, userId -> java.util.Optional.empty());
         when(meetings.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
                 .thenReturn(Optional.of(meeting()));
         when(agenda.save(org.mockito.ArgumentMatchers.any(MeetingAgendaItem.class)))
@@ -90,7 +90,7 @@ class MeetingAgendaLifecycleServiceTest {
                 TENANT,
                 MEETING_ID,
                 new MeetingActionCreateRequest(
-                        "Revize tahmini paylaş", "finance-owner", Instant.parse("2026-08-05T12:00:00Z")));
+                        "Revize tahmini paylaş", "finance-owner", null, Instant.parse("2026-08-05T12:00:00Z")));
 
         when(agenda.findByMeetingIdVisibleToOrg(MEETING_ID, TENANT_ID))
                 .thenReturn(List.of(savedAgenda.get()));

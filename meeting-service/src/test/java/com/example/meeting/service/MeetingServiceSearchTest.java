@@ -64,7 +64,7 @@ class MeetingServiceSearchTest {
                 sessionErasureService,
                 authzProvider,
                 false,
-                false);
+                false, userId -> java.util.Optional.empty());
     }
 
     @Test

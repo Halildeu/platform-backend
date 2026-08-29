@@ -13,5 +13,6 @@ import java.time.Instant;
 public record MeetingActionCreateRequest(
         @NotBlank @Size(max = 2000) String description,
         @Size(max = 255) String assigneeSubject,
+        Long assigneeUserId,
         Instant dueAt) {
 }

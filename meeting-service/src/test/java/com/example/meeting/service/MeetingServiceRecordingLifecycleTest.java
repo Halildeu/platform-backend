@@ -79,7 +79,7 @@ class MeetingServiceRecordingLifecycleTest {
                 meetingRepository, sessionRepository, actionRepository, agendaItemRepository,
                 decisionRepository,
                 eventOutboxRepository, analysisRunRepository, sessionErasureService,
-                authzProvider, false, false);
+                authzProvider, false, false, userId -> java.util.Optional.empty());
         meeting = meeting(MeetingStatus.SCHEDULED);
         lenient().when(meetingRepository.findVisibleToOrgAndIdForUpdate(TENANT_ID, MEETING_ID))
                 .thenReturn(Optional.of(meeting));

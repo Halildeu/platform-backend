@@ -103,6 +103,15 @@ meeting:
     client-secret: ${MEETING_TRANSCRIPT_READ_CLIENT_SECRET:${MEETING_SESSION_ERASURE_CLIENT_SECRET:}}
     connect-timeout-millis: ${MEETING_TRANSCRIPT_READ_CONNECT_TIMEOUT_MS:2000}
     response-timeout-millis: ${MEETING_TRANSCRIPT_READ_RESPONSE_TIMEOUT_MS:10000}
+  # Faz 24 Görevler (gitops#3507): server-side assignee resolution.
+  assignee-directory:
+    enabled: false
+    user-service-base-url: http://user-service:8089
+    token-url: http://auth-service:8088/oauth2/token
+    client-id: meeting-service
+    client-secret: ""
+    connect-timeout-millis: 2000
+    response-timeout-millis: 10000
   events:
     redis:
       # Publisher + poller form one rollout unit. Both are default-off and a

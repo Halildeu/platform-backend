@@ -205,9 +205,17 @@ security:
         secret: ${SERVICE_CLIENT_MEETING_SERVICE_SECRET:}
         allowed-audiences:
           - transcript-service
+          - user-service
         allowed-permissions:
           - transcript:session:erase
           - transcript:canonical:read
+          - users:internal
+        # gitops#3507 Görevler assignee resolution: the user-service audience
+        # may only mint the narrow internal-directory permission, and the
+        # transcript permissions stay pinned to the transcript audience.
+        allowed-permissions-by-audience:
+          transcript-service: transcript:session:erase,transcript:canonical:read
+          user-service: users:internal
         require-explicit-permissions: true
   service-mint:
     # #734: notification-orchestrator + notify:intents:system added to the
