@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -75,6 +76,15 @@ public class BudgetController {
             @PathVariable UUID versionId,
             Authentication authentication) {
         return service.approve(actors.resolve(authentication, companyId), planId, versionId);
+    }
+
+    @GetMapping("/plans/current")
+    @PreAuthorize("hasAuthority('SCOPE_budget:read')")
+    BudgetPlanView current(
+            @RequestHeader("X-Company-Id") long companyId,
+            @RequestParam int fiscalYear,
+            Authentication authentication) {
+        return service.current(actors.resolve(authentication, companyId), fiscalYear);
     }
 
     @GetMapping("/{planId}/versions/{versionId}")

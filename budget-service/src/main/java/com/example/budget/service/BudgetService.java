@@ -190,6 +190,35 @@ public class BudgetService {
         return loadPlan(actor, planId, versionId);
     }
 
+    /**
+     * Latest version of the company's plan for the fiscal year (gitops#3496
+     * slice C). Consumers so far had no discovery path — every read required
+     * ids only the import response handed out.
+     */
+    @Transactional(readOnly = true)
+    public BudgetPlanView current(BudgetActor actor, int fiscalYear) {
+        tenantScope.apply(actor.tenantId());
+        record PlanRef(UUID planId, UUID versionId) {
+        }
+        List<PlanRef> refs = jdbc.query("""
+                SELECT p.id AS plan_id, v.id AS version_id
+                  FROM budget_plans p
+                  JOIN budget_versions v ON v.plan_id=p.id AND v.tenant_id=p.tenant_id
+                 WHERE p.tenant_id=? AND p.company_id=? AND p.fiscal_year=?
+                 ORDER BY v.version_no DESC
+                 LIMIT 1
+                """, (rs, rowNum) -> new PlanRef(
+                        rs.getObject("plan_id", UUID.class),
+                        rs.getObject("version_id", UUID.class)),
+                actor.tenantId(), actor.companyId(), fiscalYear);
+        if (refs.isEmpty()) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "No budget plan exists for the fiscal year");
+        }
+        PlanRef ref = refs.getFirst();
+        return loadPlan(actor, ref.planId(), ref.versionId());
+    }
+
     @Transactional(readOnly = true)
     public BudgetControlSummary control(BudgetActor actor, UUID planId, UUID versionId) {
         tenantScope.apply(actor.tenantId());

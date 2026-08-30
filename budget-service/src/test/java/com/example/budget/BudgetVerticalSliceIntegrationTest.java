@@ -126,6 +126,29 @@ class BudgetVerticalSliceIntegrationTest {
                 .andExpect(jsonPath("$.forecastStatus").value("NOT_LOADED"))
                 .andExpect(jsonPath("$.eac").value(nullValue()));
 
+        // gitops#3496 slice C — discovery read: the latest version resolves
+        // without ids, per company + fiscal year, tenant-scoped like the rest.
+        mvc.perform(get("/api/v1/budgets/plans/current")
+                        .with(actor("reader-1", "tenant-a", 35, "SCOPE_budget:read"))
+                        .header("X-Company-Id", "35")
+                        .param("fiscalYear", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.planId").value(planId))
+                .andExpect(jsonPath("$.versionId").value(versionId))
+                .andExpect(jsonPath("$.lines.length()").value(1));
+
+        mvc.perform(get("/api/v1/budgets/plans/current")
+                        .with(actor("reader-1", "tenant-a", 35, "SCOPE_budget:read"))
+                        .header("X-Company-Id", "35")
+                        .param("fiscalYear", "2031"))
+                .andExpect(status().isNotFound());
+
+        mvc.perform(get("/api/v1/budgets/plans/current")
+                        .with(actor("other-tenant", "tenant-b", 35, "SCOPE_budget:read"))
+                        .header("X-Company-Id", "35")
+                        .param("fiscalYear", "2026"))
+                .andExpect(status().isNotFound());
+
         mvc.perform(get("/api/v1/budgets/{planId}/versions/{versionId}", planId, versionId)
                         .with(actor("other-tenant", "tenant-b", 35, "SCOPE_budget:read"))
                         .header("X-Company-Id", "35"))
