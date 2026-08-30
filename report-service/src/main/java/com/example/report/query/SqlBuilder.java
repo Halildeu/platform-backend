@@ -194,7 +194,9 @@ public class SqlBuilder {
             sql.append(" ORDER BY (SELECT NULL)");
         }
 
-        int offset = (page - 1) * pageSize;
+        // 1-indexed contract; floor at 0 so a stray page<=0 can never reach
+        // MSSQL as a negative OFFSET (error 10742 — measured live 2026-08-30).
+        int offset = Math.max(page - 1, 0) * pageSize;
         sql.append(" OFFSET :_offset ROWS FETCH NEXT :_pageSize ROWS ONLY");
         params.addValue("_offset", offset);
         params.addValue("_pageSize", pageSize);
@@ -779,7 +781,9 @@ public class SqlBuilder {
         String orderBy = translateGroupedSort(sortModel, groupColumn, sanitized);
         sql.append(" ORDER BY ").append(orderBy);
 
-        int offset = (page - 1) * pageSize;
+        // 1-indexed contract; floor at 0 so a stray page<=0 can never reach
+        // MSSQL as a negative OFFSET (error 10742 — measured live 2026-08-30).
+        int offset = Math.max(page - 1, 0) * pageSize;
         sql.append(" OFFSET :_offset ROWS FETCH NEXT :_pageSize ROWS ONLY");
         params.addValue("_offset", offset);
         params.addValue("_pageSize", pageSize);
@@ -1621,7 +1625,9 @@ public class SqlBuilder {
                 pivotResultFields);
         sql.append(" ORDER BY ").append(orderBy);
 
-        int offset = (page - 1) * pageSize;
+        // 1-indexed contract; floor at 0 so a stray page<=0 can never reach
+        // MSSQL as a negative OFFSET (error 10742 — measured live 2026-08-30).
+        int offset = Math.max(page - 1, 0) * pageSize;
         sql.append(" OFFSET :_offset ROWS FETCH NEXT :_pageSize ROWS ONLY");
         params.addValue("_offset", offset);
         params.addValue("_pageSize", pageSize);

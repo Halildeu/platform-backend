@@ -164,6 +164,30 @@ class SqlBuilderMssqlIntegrationTest {
     }
 
     @Test
+    void pageZeroFloorsToTheFirstPageInsteadOfANegativeOffset() {
+        // Measured live 2026-08-30 on fin-gerceklesen-maliyet: page=0 reached
+        // MSSQL as OFFSET -N and blew up with error 10742. The floor keeps a
+        // stray page<=0 on page 1 semantics.
+        ReportDefinition def = scratch(
+                "txz",
+                List.of(new ColumnDefinition("id", "ID", "number", 50, false)),
+                "CREATE TABLE [{schema}].[txz] (id INT NOT NULL PRIMARY KEY)",
+                List.of(
+                        "INSERT INTO [{schema}].[txz] VALUES (1)",
+                        "INSERT INTO [{schema}].[txz] VALUES (2)"));
+
+        SqlBuilder.BuiltQuery q = builder.buildDataQuery(
+                def, null, List.of("id"),
+                Collections.emptyMap(),
+                List.of(Map.of("colId", "id", "sort", "asc")),
+                null, null, 0, 2);
+
+        List<Map<String, Object>> rows = jdbc.queryForList(q.sql(), q.params());
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).get("id")).isEqualTo(1);
+    }
+
+    @Test
     void buildCountQuery_returnsRowCount_overRealMssql() {
         ReportDefinition def = scratch(
                 "tx_count",
