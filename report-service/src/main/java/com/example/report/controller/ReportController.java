@@ -298,6 +298,10 @@ public class ReportController {
         List<Map<String, String>> sortModel = parseJson(sort, new TypeReference<>() {});
 
         pageSize = Math.min(Math.max(pageSize, 1), 500);
+        // SqlBuilder pagination is 1-indexed ((page-1)*pageSize); an unclamped
+        // page<=0 reached MSSQL as a negative OFFSET and surfaced as a raw 500
+        // (error 10742, measured live on fin-gerceklesen-maliyet 2026-08-30).
+        page = Math.max(page, 1);
 
         // PR-D2.1c2 (ADR-0015): dispatch to remote-http executor when
         // the report declares execution.kind=REMOTE_HTTP. Falls back to
