@@ -177,6 +177,36 @@ public final class MeetingEventValidator {
                             + " for " + p.eventType().wireValue());
                 }
             }
+            case MeetingEventPayload.ActionReassigned p -> {
+                requireNotNull(errors, p.actionId(), "payload.actionId");
+                // Same contract-level guard as action.assigned: the fact is
+                // "someone now owns this action" — no owner, no event.
+                if (!MeetingEventKeys.hasText(p.assigneeSubject())) {
+                    errors.add("payload.assigneeSubject is required on "
+                            + MeetingEventType.ACTION_REASSIGNED.wireValue()
+                            + " (an unassignment must not be emitted)");
+                }
+                if (p.actionRevision() < 0) {
+                    errors.add("payload.actionRevision must be >= 0 but was "
+                            + p.actionRevision());
+                }
+                if (!"meeting.action".equals(envelope.aggregateType())) {
+                    errors.add("aggregateType must be meeting.action for "
+                            + p.eventType().wireValue());
+                }
+                if (envelope.aggregateId() != null
+                        && p.actionId() != null
+                        && !envelope.aggregateId().equals(p.actionId())) {
+                    errors.add("aggregateId " + envelope.aggregateId()
+                            + " must equal payload.actionId " + p.actionId()
+                            + " for " + p.eventType().wireValue());
+                }
+                if (envelope.aggregateRevision() != p.actionRevision()) {
+                    errors.add("aggregateRevision " + envelope.aggregateRevision()
+                            + " must equal payload.actionRevision " + p.actionRevision()
+                            + " for " + p.eventType().wireValue());
+                }
+            }
             case MeetingEventPayload.TranscriptFailed p -> {
                 requireNotNull(errors, p.transcriptSessionId(), "payload.transcriptSessionId");
                 if (p.finalizationVersion() < 1) {

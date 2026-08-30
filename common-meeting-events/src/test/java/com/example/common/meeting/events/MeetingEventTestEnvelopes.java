@@ -93,6 +93,26 @@ final class MeetingEventTestEnvelopes {
                 .build();
     }
 
+    static MeetingEventEnvelope actionReassigned() {
+        return MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.ACTION_REASSIGNED)
+                .producer("meeting-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .orgId(MeetingEventGoldens.ORG_ID)
+                .occurredAt(MeetingEventGoldens.GENERATED_AT)
+                .aggregateType("meeting.action")
+                .aggregateId(MeetingEventGoldens.ACTION_ID)
+                .aggregateRevision(MeetingEventGoldens.ACTION_REVISION)
+                .payload(new MeetingEventPayload.ActionReassigned(
+                        MeetingEventGoldens.ACTION_ID,
+                        MeetingEventGoldens.ASSIGNEE,
+                        MeetingEventGoldens.PREVIOUS_ASSIGNEE,
+                        MeetingEventGoldens.DUE_AT,
+                        MeetingEventGoldens.ACTION_REVISION))
+                .build();
+    }
+
     static MeetingEventEnvelope transcriptFailed() {
         return transcriptFailed(MeetingEventPayload.TranscriptFailed.NO_VALID_SEGMENTS_BEFORE_DEADLINE);
     }

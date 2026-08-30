@@ -75,7 +75,8 @@ class MeetingAgendaLifecycleServiceTest {
                 .thenReturn(Optional.of(meeting()));
         when(agenda.save(org.mockito.ArgumentMatchers.any(MeetingAgendaItem.class)))
                 .thenAnswer(invocation -> persistAgenda(invocation.getArgument(0)));
-        when(actions.save(org.mockito.ArgumentMatchers.any(MeetingAction.class)))
+        // dilim-4: the service flushes the action (the @Version feeds the event key).
+        when(actions.saveAndFlush(org.mockito.ArgumentMatchers.any(MeetingAction.class)))
                 .thenAnswer(invocation -> persistAction(invocation.getArgument(0)));
     }
 

@@ -124,6 +124,11 @@ public final class MeetingEventKeys {
                     p.transcriptSessionId(),
                     MeetingEventType.TRANSCRIPT_FAILED,
                     p.finalizationVersion());
+            case MeetingEventPayload.ActionReassigned p -> occurrenceKey(
+                    "meeting.action",
+                    p.actionId(),
+                    MeetingEventType.ACTION_REASSIGNED,
+                    p.actionRevision());
         };
     }
 

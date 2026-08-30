@@ -32,7 +32,14 @@ public enum MeetingEventType {
     TRANSCRIPT_READY("meeting.transcript.ready"),
 
     /** Canonical transcript finalization ended in a bounded metadata-only failure. */
-    TRANSCRIPT_FAILED("meeting.transcript.failed");
+    TRANSCRIPT_FAILED("meeting.transcript.failed"),
+
+    /**
+     * A meeting action acquired or changed its human assignee through the manual
+     * task CRUD (Faz 24 Görevler dilim-4) — as opposed to {@link #ACTION_ASSIGNED},
+     * which is the AI-attribution fact of an analysis run.
+     */
+    ACTION_REASSIGNED("meeting.action.reassigned");
 
     private final String wireValue;
 

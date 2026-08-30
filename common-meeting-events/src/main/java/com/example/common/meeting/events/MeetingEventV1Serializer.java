@@ -115,6 +115,13 @@ public final class MeetingEventV1Serializer {
                 json.put("finalizationVersion", p.finalizationVersion());
                 json.put("reasonCode", p.reasonCode());
             }
+            case MeetingEventPayload.ActionReassigned p -> {
+                json.put("actionId", text(p.actionId()));
+                json.put("assigneeSubject", p.assigneeSubject());
+                json.put("previousAssigneeSubject", p.previousAssigneeSubject());
+                json.put("dueAt", text(p.dueAt()));
+                json.put("actionRevision", p.actionRevision());
+            }
         }
         return json;
     }

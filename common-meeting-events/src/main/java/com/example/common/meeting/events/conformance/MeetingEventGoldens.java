@@ -57,6 +57,12 @@ public final class MeetingEventGoldens {
     public static final String GROUNDING_STATUS = "verified";
     /** Ordinal of the null-holes action. */
     public static final int ORDINAL_NULL_HOLES = 9;
+    /** Fixture meeting action id for action-reassigned. */
+    public static final UUID ACTION_ID = UUID.fromString("77777777-7777-4777-8777-777777777777");
+    /** Fixture previous owner for action-reassigned. */
+    public static final String PREVIOUS_ASSIGNEE = "veli@example.com";
+    /** Fixture post-save optimistic-lock version for action-reassigned. */
+    public static final long ACTION_REVISION = 3L;
 
     private static final String BASE = "/golden/meeting.event.v1/";
 
@@ -107,6 +113,11 @@ public final class MeetingEventGoldens {
     /** Invalid canonical segment variant of {@code meeting.transcript.failed}. */
     public static String transcriptFailedInvalidCanonicalSegment() {
         return read("transcript-failed-invalid-canonical-segment.json");
+    }
+
+    /** Fully populated {@code meeting.action.reassigned} (Faz 24 Görevler dilim-4). */
+    public static String actionReassigned() {
+        return read("action-reassigned.json");
     }
 
     /** The frozen v1 event key for the fixture summary event. */

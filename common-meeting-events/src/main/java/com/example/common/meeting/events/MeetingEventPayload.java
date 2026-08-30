@@ -21,7 +21,8 @@ import java.util.UUID;
 public sealed interface MeetingEventPayload
         permits MeetingEventPayload.SummaryReady, MeetingEventPayload.ActionAssigned,
         MeetingEventPayload.ConsentRevoked, MeetingEventPayload.RecordingFinished,
-        MeetingEventPayload.TranscriptReady, MeetingEventPayload.TranscriptFailed {
+        MeetingEventPayload.TranscriptReady, MeetingEventPayload.TranscriptFailed,
+        MeetingEventPayload.ActionReassigned {
 
     /** The event type this payload belongs to — cross-checked against the envelope. */
     MeetingEventType eventType();
@@ -66,6 +67,40 @@ public sealed interface MeetingEventPayload
         @Override
         public MeetingEventType eventType() {
             return MeetingEventType.ACTION_ASSIGNED;
+        }
+    }
+
+    /**
+     * {@code meeting.action.reassigned} — a meeting action gained or changed its
+     * assignee through the manual task CRUD (Faz 24 Görevler dilim-4).
+     *
+     * <p>Keyed on the ACTION aggregate with the action's optimistic-lock version as
+     * the occurrence counter: the action id is stable across re-assignments, so the
+     * version is what makes assignment #2 distinct from assignment #1. Clearing an
+     * assignee emits nothing — the notification fact is "someone now owns this",
+     * and an unassignment has no recipient.
+     *
+     * @param actionId the meeting action; the stable aggregate id
+     * @param assigneeSubject the NEW owner; never null/blank for an emitted event
+     * @param previousAssigneeSubject the previous owner; null on first assignment
+     * @param dueAt optional due date at assignment time; nullable
+     * @param actionRevision the action's post-save optimistic-lock version (&gt;= 0)
+     */
+    record ActionReassigned(
+            UUID actionId,
+            String assigneeSubject,
+            String previousAssigneeSubject,
+            Instant dueAt,
+            long actionRevision) implements MeetingEventPayload {
+
+        @Override
+        public MeetingEventType eventType() {
+            return MeetingEventType.ACTION_REASSIGNED;
+        }
+
+        @Override
+        public UUID analysisRunId() {
+            return null;
         }
     }
 

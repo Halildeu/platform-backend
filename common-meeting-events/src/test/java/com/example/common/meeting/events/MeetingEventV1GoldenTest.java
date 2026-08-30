@@ -48,6 +48,15 @@ class MeetingEventV1GoldenTest {
     }
 
     @Test
+    void actionReassigned_rendersTheGoldenBytes_andOccurrenceKey() {
+        assertThat(MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.actionReassigned()))
+                .isEqualTo(MeetingEventGoldens.actionReassigned());
+        assertThat(MeetingEventTestEnvelopes.actionReassigned().eventKey())
+                .isEqualTo("meeting.action|" + MeetingEventGoldens.ACTION_ID
+                        + "|meeting.action.reassigned|" + MeetingEventGoldens.ACTION_REVISION);
+    }
+
+    @Test
     void summaryReady_nullableFieldsRenderAsExplicitNulls_notOmitted() {
         String json = MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.summaryReadyNullHoles());
 
