@@ -90,8 +90,17 @@ class MeetingServiceActionAssigneeResolveTest {
         stubMeeting();
         when(assigneeDirectoryClient.resolveKcSubject(42L))
                 .thenReturn(Optional.of("kc-subject-42"));
-        when(actionRepository.save(any(MeetingAction.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(actionRepository.saveAndFlush(any(MeetingAction.class)))
+                .thenAnswer(invocation -> {
+                    MeetingAction a = invocation.getArgument(0);
+                    // JPA would mint these on flush; the unit stub mirrors that so the
+                    // dilim-4 outbox factory (which needs id + version) can build.
+                    if (a.getId() == null) {
+                        org.springframework.test.util.ReflectionTestUtils
+                                .setField(a, "id", UUID.randomUUID());
+                    }
+                    return a;
+                });
 
         service().createAction(TENANT, MEETING_ID,
                 new MeetingActionCreateRequest("Raporu hazırla", null, 42L, null));
@@ -99,7 +108,7 @@ class MeetingServiceActionAssigneeResolveTest {
         // The persisted row carries the STABLE subject, never the numeric id.
         org.mockito.ArgumentCaptor<MeetingAction> saved =
                 org.mockito.ArgumentCaptor.forClass(MeetingAction.class);
-        org.mockito.Mockito.verify(actionRepository).save(saved.capture());
+        org.mockito.Mockito.verify(actionRepository).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getAssigneeSubject()).isEqualTo("kc-subject-42");
     }
 
@@ -143,8 +152,17 @@ class MeetingServiceActionAssigneeResolveTest {
     @Test
     void createWithPlainSubjectStaysBackwardCompatible() {
         stubMeeting();
-        when(actionRepository.save(any(MeetingAction.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(actionRepository.saveAndFlush(any(MeetingAction.class)))
+                .thenAnswer(invocation -> {
+                    MeetingAction a = invocation.getArgument(0);
+                    // JPA would mint these on flush; the unit stub mirrors that so the
+                    // dilim-4 outbox factory (which needs id + version) can build.
+                    if (a.getId() == null) {
+                        org.springframework.test.util.ReflectionTestUtils
+                                .setField(a, "id", UUID.randomUUID());
+                    }
+                    return a;
+                });
 
         service().createAction(TENANT, MEETING_ID,
                 new MeetingActionCreateRequest("Raporu hazırla", "srv-subject", null, null));

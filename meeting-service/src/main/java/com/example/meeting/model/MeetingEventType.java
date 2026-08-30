@@ -19,7 +19,10 @@ public enum MeetingEventType {
     ACTION_ASSIGNED("meeting.action.assigned"),
 
     /** A recording session acquired its first immutable end timestamp. */
-    RECORDING_FINISHED("meeting.recording.finished");
+    RECORDING_FINISHED("meeting.recording.finished"),
+
+    /** A meeting action gained/changed its assignee via the manual task CRUD (dilim-4). */
+    ACTION_REASSIGNED("meeting.action.reassigned");
 
     private final String wireValue;
 

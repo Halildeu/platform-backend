@@ -581,7 +581,13 @@ public class MeetingService {
         action.setDueAt(request.dueAt());
         action.setCreatedBySubject(tenant.subject());
         action.setLastUpdatedBySubject(tenant.subject());
-        return toActionResponse(actionRepository.save(action));
+        // saveAndFlush so the optimistic-lock version below is the PERSISTED one —
+        // it is the occurrence counter in the event key (Görevler dilim-4).
+        MeetingAction saved = actionRepository.saveAndFlush(action);
+        if (MeetingEventOutboxFactory.hasText(saved.getAssigneeSubject())) {
+            eventOutboxRepository.save(eventOutboxFactory.buildActionAssignment(saved, null));
+        }
+        return toActionResponse(saved);
     }
 
     @Transactional
@@ -590,13 +596,24 @@ public class MeetingService {
         requireMeeting(tenant, meetingId);
         MeetingAction action = requireAction(tenant, meetingId, actionId);
         requireExpectedVersion(request.expectedVersion(), action.getVersion());
+        String previousAssignee = action.getAssigneeSubject();
         action.setDescription(request.description());
         action.setAssigneeSubject(
                 resolveAssigneeSubject(request.assigneeSubject(), request.assigneeUserId()));
         action.setStatus(request.status());
         action.setDueAt(request.dueAt());
         action.setLastUpdatedBySubject(tenant.subject());
-        return toActionResponse(actionRepository.save(action));
+        // saveAndFlush: the flushed @Version is the event key's occurrence counter.
+        MeetingAction saved = actionRepository.saveAndFlush(action);
+        String nextAssignee = saved.getAssigneeSubject();
+        // Emit only when a real NEW owner appears (first assignment or hand-over).
+        // Clearing an assignee is not a notification fact — there is no recipient.
+        if (MeetingEventOutboxFactory.hasText(nextAssignee)
+                && !nextAssignee.equals(previousAssignee)) {
+            eventOutboxRepository.save(
+                    eventOutboxFactory.buildActionAssignment(saved, previousAssignee));
+        }
+        return toActionResponse(saved);
     }
 
 

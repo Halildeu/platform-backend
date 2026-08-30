@@ -153,6 +153,55 @@ public final class MeetingEventOutboxFactory {
         return outbox;
     }
 
+    /**
+     * Build the outbox row for a manual assignment/re-assignment (Faz 24 Görevler
+     * dilim-4). Caller decides WHETHER the fact exists (new assignee non-blank and
+     * different from the previous one) and saves the row in the SAME transaction as
+     * the action; this method only maps it onto the shared contract.
+     *
+     * <p>Aggregate = the ACTION, revision = its post-flush optimistic-lock version:
+     * the id is stable across re-assignments, so the version is the occurrence
+     * counter that keeps assignment #2 from colliding with assignment #1.
+     */
+    public MeetingEventOutbox buildActionAssignment(
+            final com.example.meeting.model.MeetingAction action,
+            final String previousAssigneeSubject) {
+        final String aggregateType = "meeting.action";
+        final long revision = action.getVersion() == null ? 0L : action.getVersion();
+        final MeetingEventPayload payload = new MeetingEventPayload.ActionReassigned(
+                action.getId(),
+                action.getAssigneeSubject(),
+                previousAssigneeSubject,
+                action.getDueAt(),
+                revision);
+        final MeetingEventEnvelope envelope = MeetingEventEnvelope.builder()
+                .eventType(com.example.common.meeting.events.MeetingEventType.ACTION_REASSIGNED)
+                .producer(PRODUCER)
+                .meetingId(action.getMeetingId())
+                .tenantId(action.getTenantId())
+                .orgId(action.getOrgId())
+                .occurredAt(action.getUpdatedAt())
+                .aggregateType(aggregateType)
+                .aggregateId(action.getId())
+                .aggregateRevision(revision)
+                .payload(payload)
+                .build();
+
+        final MeetingEventOutbox outbox = new MeetingEventOutbox();
+        outbox.setEventType(MeetingEventType.ACTION_REASSIGNED.wireValue());
+        outbox.setAggregateType(aggregateType);
+        outbox.setAggregateId(action.getId());
+        outbox.setAggregateRevision(revision);
+        outbox.setMeetingId(action.getMeetingId());
+        outbox.setTenantId(action.getTenantId());
+        outbox.setOrgId(action.getOrgId());
+        outbox.setEventKey(envelope.eventKey());
+        final String payloadJson = MeetingEventV1Serializer.toJson(envelope);
+        outbox.setPayload(payloadJson);
+        outbox.setPayloadRaw(payloadJson);
+        return outbox;
+    }
+
     /** Build the metadata-only marker for the first FINISHED transition. */
     public MeetingEventOutbox buildRecordingFinished(
             final MeetingSession session,
