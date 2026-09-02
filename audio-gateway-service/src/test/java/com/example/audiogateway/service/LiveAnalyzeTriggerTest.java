@@ -80,7 +80,24 @@ class LiveAnalyzeTriggerTest {
         trigger.offer("m-1", resultWith("Yeni segment devamı."));
         final RecordedRequest second = server.takeRequest(2, TimeUnit.SECONDS);
         assertThat(second).isNotNull();
-        assertThat(second.getBody().readUtf8()).contains("\"segment_seq\":2");
+        final String body2 = second.getBody().readUtf8();
+        assertThat(body2).contains("\"segment_seq\":2");
+        // Cumulative window (Zeynep 2026-08-31 finding 1): the second flush must
+        // still carry the earlier fragments, not just the last window.
+        assertThat(body2).contains("Bütçe kararlaştırıldı.");
+        assertThat(body2).contains("Yeni segment devamı.");
+    }
+
+    @Test
+    void cumulativeWindowDropsOldestTextBeyondTheCharBudget() {
+        final LiveAnalyzeTrigger.Aggregation agg = new LiveAnalyzeTrigger.Aggregation(1);
+        final String big = "x".repeat(LiveAnalyzeTrigger.Aggregation.MAX_CUMULATIVE_CHARS - 10);
+        assertThat(agg.appendAndMaybeFlush(big).transcript()).hasSize(big.length());
+        final LiveAnalyzeTrigger.Aggregation.Snapshot next = agg.appendAndMaybeFlush("tail fragment");
+        assertThat(next.transcript()).endsWith("tail fragment");
+        assertThat(next.transcript().length())
+                .isLessThanOrEqualTo(LiveAnalyzeTrigger.Aggregation.MAX_CUMULATIVE_CHARS);
+        assertThat(next.segmentSeq()).isEqualTo(2);
     }
 
     @Test

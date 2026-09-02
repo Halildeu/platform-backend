@@ -5,7 +5,6 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -176,30 +175,61 @@ public final class LiveAnalyzeTrigger {
     }
 
     /**
-     * Per-meeting append-and-flush accumulator. Buffers transcript
-     * fragments; on each Nth append it exposes a snapshot for the caller
-     * to publish, then resets. Segment seq monotonically increases across
-     * the meeting's lifetime.
+     * Per-meeting cumulative accumulator. Buffers transcript fragments; on
+     * each Nth append it exposes a snapshot of everything heard so far (size
+     * bounded) for the caller to publish. Segment seq monotonically increases
+     * across the meeting's lifetime.
      */
     static final class Aggregation {
+        /**
+         * Upper bound on the cumulative transcript handed to meeting-ai per flush.
+         * meeting-ai rejects bodies above its {@code max_transcript_chars}
+         * (100k default); we keep a comfortable margin and drop the OLDEST text
+         * first, so a long meeting still analyses its recent hour rather than
+         * failing outright.
+         */
+        static final int MAX_CUMULATIVE_CHARS = 60_000;
+
         private final int window;
         private final AtomicInteger seq = new AtomicInteger(0);
         // Guarded by `this`.
-        private final List<String> pending = new java.util.ArrayList<>();
+        private int sinceFlush = 0;
+        private final StringBuilder history = new StringBuilder();
 
         Aggregation(final int window) {
             this.window = window;
         }
 
+        /**
+         * Appends a fragment; every {@code window} fragments exposes a snapshot of
+         * the CUMULATIVE transcript so far (bounded by
+         * {@link #MAX_CUMULATIVE_CHARS}, oldest text dropped).
+         *
+         * <p>Faz 24 Görevler dilim-4 / Zeynep 2026-08-31 finding 1: the previous
+         * implementation reset the buffer on every flush, so each live analysis
+         * only ever saw the last {@code window} fragments and the "live summary"
+         * degraded to "the latest sentence". Live analysis is meant to answer
+         * "what has been decided SO FAR", which needs the accumulated context.
+         */
         synchronized Snapshot appendAndMaybeFlush(final String fragment) {
-            pending.add(fragment);
-            if (pending.size() < window) {
+            if (history.length() > 0) {
+                history.append(' ');
+            }
+            history.append(fragment);
+            if (history.length() > MAX_CUMULATIVE_CHARS) {
+                final int cut = history.length() - MAX_CUMULATIVE_CHARS;
+                // Drop whole leading fragments: advance to the next space so the
+                // retained text never starts mid-word.
+                int boundary = history.indexOf(" ", cut);
+                history.delete(0, boundary < 0 ? cut : boundary + 1);
+            }
+            sinceFlush++;
+            if (sinceFlush < window) {
                 return null;
             }
-            final String joined = String.join(" ", pending);
-            pending.clear();
+            sinceFlush = 0;
             final int nextSeq = seq.incrementAndGet();
-            return new Snapshot(joined, nextSeq);
+            return new Snapshot(history.toString(), nextSeq);
         }
 
         record Snapshot(String transcript, int segmentSeq) {}
