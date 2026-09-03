@@ -124,6 +124,17 @@ meeting:
     client-secret: ${MEETING_ASSIGNEE_DIRECTORY_CLIENT_SECRET:${MEETING_SESSION_ERASURE_CLIENT_SECRET:}}
     connect-timeout-millis: ${MEETING_ASSIGNEE_DIRECTORY_CONNECT_TIMEOUT_MS:2000}
     response-timeout-millis: ${MEETING_ASSIGNEE_DIRECTORY_RESPONSE_TIMEOUT_MS:10000}
+  notify:
+    enabled: ${MEETING_NOTIFY_ENABLED:false}
+    orchestrator-base-url: ${MEETING_NOTIFY_ORCHESTRATOR_URL:http://notification-orchestrator:8089}
+    token-url: ${MEETING_NOTIFY_TOKEN_URL:http://auth-service:8088/oauth2/token}
+    client-id: ${MEETING_NOTIFY_CLIENT_ID:meeting-service}
+    client-secret: ${MEETING_NOTIFY_CLIENT_SECRET:${MEETING_ASSIGNEE_DIRECTORY_CLIENT_SECRET:${MEETING_SESSION_ERASURE_CLIENT_SECRET:}}}
+    subject-issuer: ${MEETING_NOTIFY_SUBJECT_ISSUER:${KEYCLOAK_ISSUER_URI:}}
+    locale: ${MEETING_NOTIFY_LOCALE:tr-TR}
+    channel: ${MEETING_NOTIFY_CHANNEL:in-app}
+    connect-timeout-millis: ${MEETING_NOTIFY_CONNECT_TIMEOUT_MS:2000}
+    response-timeout-millis: ${MEETING_NOTIFY_RESPONSE_TIMEOUT_MS:10000}
   events:
     redis:
       enabled: ${MEETING_EVENTS_REDIS_ENABLED:false}

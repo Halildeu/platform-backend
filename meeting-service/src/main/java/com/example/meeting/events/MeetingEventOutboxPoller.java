@@ -2,9 +2,11 @@ package com.example.meeting.events;
 
 import com.example.meeting.model.MeetingEventOutbox;
 import com.example.meeting.model.MeetingEventOutboxStatus;
+import com.example.meeting.notify.AssignmentNotificationSink;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -49,6 +51,7 @@ public class MeetingEventOutboxPoller {
 
     private final MeetingEventOutboxRepository repository;
     private final MeetingEventPublisher publisher;
+    private final AssignmentNotificationSink notificationSink;
     private final int batchSize;
     private final long leaseDurationMs;
     private final int maxAttempts;
@@ -65,6 +68,7 @@ public class MeetingEventOutboxPoller {
     public MeetingEventOutboxPoller(
             final MeetingEventOutboxRepository repository,
             final MeetingEventPublisher publisher,
+            final ObjectProvider<AssignmentNotificationSink> notificationSink,
             @Value("${meeting.events.outbox.batch-size:100}") final int batchSize,
             @Value("${meeting.events.outbox.lease-duration-ms:60000}") final long leaseDurationMs,
             @Value("${meeting.events.outbox.max-attempts:8}") final int maxAttempts,
@@ -72,6 +76,11 @@ public class MeetingEventOutboxPoller {
             @Value("${meeting.events.outbox.scheduling-enabled:true}") final boolean schedulingEnabled) {
         this.repository = repository;
         this.publisher = publisher;
+        // Default-off: contexts without a sink bean (integration slices, notify disabled)
+        // keep the pure Redis publish path.
+        this.notificationSink = notificationSink == null
+                ? AssignmentNotificationSink.NOOP
+                : notificationSink.getIfAvailable(() -> AssignmentNotificationSink.NOOP);
         this.batchSize = batchSize;
         this.leaseDurationMs = leaseDurationMs;
         this.maxAttempts = maxAttempts;
@@ -134,7 +143,15 @@ public class MeetingEventOutboxPoller {
 
     private void publishOne(final MeetingEventOutbox row) {
         try {
-            publisher.publish(MeetingEventMessage.from(row));
+            final MeetingEventMessage message = MeetingEventMessage.from(row);
+            publisher.publish(message);
+            // Faz 24 Görevler dilim-4b: assignment events also reach the assignee's
+            // inbox. The sink is idempotent per event key, so a failure here leaves the
+            // row PENDING and the retry republishes to Redis (consumers de-duplicate)
+            // and re-submits the intent (orchestrator replays by idempotency key).
+            if (notificationSink.handles(row.getEventType())) {
+                notificationSink.deliver(message);
+            }
             self.markPublished(row.getId(), row.getClaimToken());
         } catch (RuntimeException e) {
             // Safe telemetry only — the exception class, never the payload.

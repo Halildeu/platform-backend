@@ -112,6 +112,18 @@ meeting:
     client-secret: ""
     connect-timeout-millis: 2000
     response-timeout-millis: 10000
+  notify:
+    # Faz 24 Görevler dilim-4b: assignment / hand-over intents to notification-orchestrator.
+    enabled: false
+    orchestrator-base-url: http://notification-orchestrator:8089
+    token-url: http://auth-service:8088/oauth2/token
+    client-id: meeting-service
+    client-secret: ""
+    subject-issuer: ""
+    locale: tr-TR
+    channel: in-app
+    connect-timeout-millis: 2000
+    response-timeout-millis: 10000
   events:
     redis:
       # Publisher + poller form one rollout unit. Both are default-off and a
