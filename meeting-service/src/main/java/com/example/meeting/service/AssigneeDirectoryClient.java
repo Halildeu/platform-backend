@@ -19,6 +19,16 @@ public interface AssigneeDirectoryClient {
      */
     Optional<String> resolveKcSubject(long userId);
 
+    /**
+     * Reverse lookup for notifications (Faz 24 Görevler dilim-4b): the platform
+     * numeric user id behind a Keycloak subject, via user-service's canonical
+     * {@code POST /api/users/internal/authenticated-principal/resolve}. Empty when the
+     * subject is unknown to the directory. Default (test doubles, lambdas): unknown.
+     */
+    default Optional<Long> resolveUserId(String issuer, String kcSubject) {
+        return Optional.empty();
+    }
+
     class ResolutionUnavailableException extends RuntimeException {
         public ResolutionUnavailableException(String message) {
             super(message);

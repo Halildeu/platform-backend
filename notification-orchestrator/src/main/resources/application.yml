@@ -174,6 +174,22 @@ notify:
         criticalEligible: false
         description: "Aylık ürün ve sektör güncellemeleri."
         defaultFrequencyHint: 2
+      # Faz 24 Görevler dilim-4b (gitops#3486/#3537): a meeting action was assigned
+      # to / handed over to the subscriber. Fixed-copy templates, no meeting content.
+      - topicKey: meeting.action.assigned
+        label: "Toplantı Görevi Atandı"
+        category: meeting
+        supportedChannels: [IN_APP, EMAIL]
+        criticalEligible: false
+        description: "Bir toplantı aksiyonu size görev olarak atandığında bildirim."
+        defaultFrequencyHint: null
+      - topicKey: meeting.action.reassigned
+        label: "Toplantı Görevi Devredildi"
+        category: meeting
+        supportedChannels: [IN_APP, EMAIL]
+        criticalEligible: false
+        description: "Üzerinizdeki bir toplantı görevi başka bir kişiye devredildiğinde veya size devredildiğinde bildirim."
+        defaultFrequencyHint: null
       - topicKey: system.notification
         label: "Sistem Bildirimleri"
         category: system
