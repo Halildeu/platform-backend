@@ -28,6 +28,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.web.server.ResponseStatusException;
+import java.util.List;
 
 @WebMvcTest(MeetingRecordingAccessController.class)
 @ActiveProfiles("test")
@@ -56,7 +57,8 @@ class MeetingRecordingAccessControllerTest {
     void setUp() {
         when(tenantContextResolver.resolveRequired()).thenReturn(TENANT);
         when(meetingService.requireRecordingAccess(TENANT, MEETING_ID))
-                .thenReturn(new MeetingRecordingAccessResponse(MEETING_ID, TENANT_ID, ORG_ID));
+                .thenReturn(new MeetingRecordingAccessResponse(
+                        MEETING_ID, TENANT_ID, ORG_ID, List.of("Acme Holding", "OpenFGA")));
     }
 
     @Test
@@ -67,6 +69,9 @@ class MeetingRecordingAccessControllerTest {
                 .andExpect(jsonPath("$.meetingId").value(MEETING_ID.toString()))
                 .andExpect(jsonPath("$.tenantId").value(TENANT_ID.toString()))
                 .andExpect(jsonPath("$.orgId").value(ORG_ID.toString()))
+                .andExpect(jsonPath("$.speechContextTerms.length()").value(2))
+                .andExpect(jsonPath("$.speechContextTerms[0]").value("Acme Holding"))
+                .andExpect(jsonPath("$.speechContextTerms[1]").value("OpenFGA"))
                 .andExpect(jsonPath("$.title").doesNotExist())
                 .andExpect(jsonPath("$.transcript").doesNotExist());
 

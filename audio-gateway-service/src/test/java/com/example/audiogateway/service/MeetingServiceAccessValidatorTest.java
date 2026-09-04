@@ -49,6 +49,53 @@ class MeetingServiceAccessValidatorTest {
     }
 
     @Test
+    void enabledValidation_parsesConsentBoundSpeechContextTerms_andIgnoresUnknownFields() {
+        WebClient webClient = WebClient.builder()
+                .baseUrl("http://meeting-service:8097")
+                .exchangeFunction(request -> Mono.just(ClientResponse.create(HttpStatus.OK)
+                        .header(HttpHeaders.CONTENT_TYPE, "application/json")
+                        .body("{\"meetingId\":\"" + MEETING_ID + "\","
+                                + "\"tenantId\":\"" + TENANT_ID + "\","
+                                + "\"orgId\":\"" + ORG_ID + "\","
+                                + "\"speechContextTerms\":[\"Acme Holding\",\"OpenFGA\"],"
+                                + "\"futureField\":\"ignored\"}")
+                        .build()))
+                .build();
+
+        Decision decision = new MeetingServiceAccessValidator(props(true), webClient)
+                .validate(MEETING_ID, jwt(), "corr-terms")
+                .block();
+
+        assertThat(decision).isNotNull();
+        assertThat(decision.allowed()).isTrue();
+        assertThat(decision.tenantId()).isEqualTo(TENANT_ID);
+        assertThat(decision.speechContextTerms()).containsExactly("Acme Holding", "OpenFGA");
+    }
+
+    @Test
+    void enabledValidation_scopeWithoutTerms_yieldsEmptyTermList() {
+        // Mixed-version compatibility: a meeting-service predating platform-backend#1024
+        // omits the field entirely; session start proceeds with no meeting vocabulary.
+        WebClient webClient = WebClient.builder()
+                .baseUrl("http://meeting-service:8097")
+                .exchangeFunction(request -> Mono.just(ClientResponse.create(HttpStatus.OK)
+                        .header(HttpHeaders.CONTENT_TYPE, "application/json")
+                        .body("{\"meetingId\":\"" + MEETING_ID + "\","
+                                + "\"tenantId\":\"" + TENANT_ID + "\","
+                                + "\"orgId\":\"" + ORG_ID + "\"}")
+                        .build()))
+                .build();
+
+        Decision decision = new MeetingServiceAccessValidator(props(true), webClient)
+                .validate(MEETING_ID, jwt(), "corr-no-terms")
+                .block();
+
+        assertThat(decision).isNotNull();
+        assertThat(decision.allowed()).isTrue();
+        assertThat(decision.speechContextTerms()).isEmpty();
+    }
+
+    @Test
     void enabledValidation_forwardsBearerAndCorrelation_allows2xx() {
         AtomicReference<ClientRequest> captured = new AtomicReference<>();
         String body = "{\"meetingId\":\"" + MEETING_ID + "\","
