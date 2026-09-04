@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import java.util.List;
 
 /**
  * meeting-service backed access check for canonical meeting UUIDs.
@@ -86,7 +87,7 @@ public class MeetingServiceAccessValidator implements MeetingAccessValidator {
                 || !requestedMeetingId.equals(scope.meetingId())) {
             return Decision.unavailable("Canonical meeting scope unavailable");
         }
-        return Decision.granted(scope.tenantId(), scope.orgId());
+        return Decision.granted(scope.tenantId(), scope.orgId(), scope.speechContextTerms());
     }
 
     private static Decision decisionFor(final HttpStatusCode status) {
@@ -97,6 +98,12 @@ public class MeetingServiceAccessValidator implements MeetingAccessValidator {
         return Decision.unavailable("Meeting access validation unavailable");
     }
 
-    private record RecordingAccessContext(UUID meetingId, UUID tenantId, UUID orgId) {
+    /**
+     * Wire shape of {@code GET /api/v1/meetings/{id}/recording-access}. Unknown fields are
+     * ignored by the WebClient's default Jackson decoder, and {@code speechContextTerms} is
+     * absent (null) on meeting-service builds predating platform-backend#1024.
+     */
+    private record RecordingAccessContext(
+            UUID meetingId, UUID tenantId, UUID orgId, List<String> speechContextTerms) {
     }
 }

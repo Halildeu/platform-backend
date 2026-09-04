@@ -207,7 +207,8 @@ public class MeetingService {
 
     private static MeetingRecordingAccessResponse recordingAccessResponse(Meeting meeting) {
         return new MeetingRecordingAccessResponse(
-                meeting.getId(), meeting.getTenantId(), meeting.getEffectiveOrgId());
+                meeting.getId(), meeting.getTenantId(), meeting.getEffectiveOrgId(),
+                SpeechContextTerms.fromJson(meeting.getSpeechContextTerms()));
     }
 
     @Transactional

@@ -9,6 +9,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.dto.v1.admin.MeetingCreateRequest;
@@ -32,6 +33,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import com.example.meeting.dto.MeetingRecordingAccessResponse;
 
 @ExtendWith(MockitoExtension.class)
 class MeetingServiceRecordingAccessTest {
@@ -94,6 +96,27 @@ class MeetingServiceRecordingAccessTest {
 
         verify(authzService).checkPrincipal(
                 "user:stable-sub-3", MeetingAuthz.CAN_RECORD, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString());
+    }
+
+    @Test
+    void requireRecordingAccessReturnsConsentBoundSpeechContextTerms() {
+        // platform-backend#1024 slice 2: the recorder preflight carries the meeting's
+        // consent-bound vocabulary so the gateway can bias live STT from the contract.
+        Meeting meeting = meetingCreatedBy("stable-sub-3");
+        meeting.setSpeechContextTerms("[\"Acme Holding\",\"OpenFGA\"]");
+        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
+                .thenReturn(Optional.of(meeting));
+        when(authzProvider.getIfAvailable()).thenReturn(authzService);
+        when(authzService.isEnabled()).thenReturn(true);
+        when(authzService.checkPrincipal(
+                "user:stable-sub-3", MeetingAuthz.CAN_RECORD, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString()))
+                .thenReturn(true);
+
+        MeetingRecordingAccessResponse response = meetingService.requireRecordingAccess(TENANT, MEETING_ID);
+
+        // The mocked repository fixture carries no generated id; the scope fields are
+        // covered by MeetingRecordingAccessControllerTest — this test pins the terms.
+        assertThat(response.speechContextTerms()).containsExactly("Acme Holding", "OpenFGA");
     }
 
     @Test

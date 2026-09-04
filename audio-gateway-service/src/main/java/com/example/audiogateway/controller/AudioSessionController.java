@@ -66,6 +66,7 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import com.example.audiogateway.service.SpeechContextTermMerger;
 
 /**
  * Audio Gateway Contract 1.0 — session lifecycle + chunk admission endpoints.
@@ -314,7 +315,8 @@ public class AudioSessionController {
 
         return meetingAccessValidator.validate(req.meetingId(), jwt, corrId)
                 .map(decision -> decision.allowed()
-                        ? createSession(req, sttProvider, idempotencyKey, tenantId, userId, corrId)
+                        ? createSession(req, sttProvider, idempotencyKey, tenantId, userId,
+                                decision.speechContextTerms(), corrId)
                         : meetingAccessError(decision, corrId));
     }
 
@@ -324,6 +326,7 @@ public class AudioSessionController {
             final String idempotencyKey,
             final Long tenantId,
             final Long userId,
+            final java.util.List<String> meetingSpeechContextTerms,
             final String corrId) {
         final long now = Instant.now().toEpochMilli();
         final String transcriptionMode = req.transcriptionMode() == null
@@ -331,7 +334,10 @@ public class AudioSessionController {
                 : req.transcriptionMode();
         final CreateOutcome outcome = registry.create(new SessionCreateCommand(
                 tenantId, userId, req.meetingId(), req.deviceId(), req.language(),
-                sttProvider, transcriptionMode, req.contextTerms(),
+                sttProvider, transcriptionMode,
+                // platform-backend#1024 slice 2: consent-bound meeting vocabulary leads,
+                // the recorder's own terms follow (see SpeechContextTermMerger).
+                SpeechContextTermMerger.merge(meetingSpeechContextTerms, req.contextTerms()),
                 req.audioFormat(), req.sampleRateHz(), req.channels(),
                 idempotencyKey, now));
 

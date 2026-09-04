@@ -23,6 +23,9 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import reactor.core.publisher.Mono;
+import com.example.audiogateway.service.AudioSessionRegistry;
+import java.util.List;
+import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -59,6 +62,9 @@ class StartSessionContractTest {
 
     @Autowired
     private WebTestClient client;
+
+    @Autowired
+    private AudioSessionRegistry registry;
 
     @MockitoBean
     private MeetingAccessValidator meetingAccessValidator;
@@ -587,5 +593,34 @@ class StartSessionContractTest {
                 .bodyValue(validRequest())
                 .exchange()
                 .expectHeader().valueEquals("X-Correlation-Id", corrId);
+    }
+
+    @Test
+    void meetingSpeechContextTerms_mergeAheadOfClientTerms_onSessionCreate() {
+        // platform-backend#1024 slice 2: the consent-bound vocabulary on the canonical
+        // meeting contract leads; the recorder's own terms follow; duplicates collapse.
+        when(meetingAccessValidator.validate(any(), any(), any()))
+                .thenReturn(Mono.just(Decision.granted(
+                        UUID.fromString("33333333-3333-4333-8333-333333333333"),
+                        UUID.fromString("44444444-4444-4444-8444-444444444444"),
+                        List.of("Acme Holding", "OpenFGA"))));
+        StartSessionRequest req = new StartSessionRequest(
+                VALID_MEETING_ID, "device-1", "tr", AudioFormat.WAV, 16000, 1,
+                null, null, List.of("Zanzibar", "OpenFGA"));
+
+        StartSessionResponse body = withClaims().post()
+                .uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, "fixture-1024-slice2-merge-1")
+                .bodyValue(req)
+                .exchange()
+                .expectStatus().isCreated()
+                .expectBody(StartSessionResponse.class)
+                .returnResult()
+                .getResponseBody();
+
+        assertThat(body).isNotNull();
+        assertThat(registry.get(body.sessionId()))
+                .hasValueSatisfying(record -> assertThat(record.contextTerms())
+                        .containsExactly("Acme Holding", "OpenFGA", "Zanzibar"));
     }
 }
