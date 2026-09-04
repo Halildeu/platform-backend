@@ -3,6 +3,7 @@ package com.example.meeting.dto.v1.admin;
 import com.example.meeting.model.MeetingStatus;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -23,5 +24,6 @@ public record MeetingResponse(
         Instant createdAt,
         String lastUpdatedBySubject,
         Instant updatedAt,
-        Long version) {
+        Long version,
+        List<String> speechContextTerms) {
 }

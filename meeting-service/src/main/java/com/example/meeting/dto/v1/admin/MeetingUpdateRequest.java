@@ -6,6 +6,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
+import java.util.List;
 
 /**
  * Update-meeting request body — Faz 24 (#410). Unlike create, the status
@@ -24,5 +25,6 @@ public record MeetingUpdateRequest(
         @Size(max = 255) String organizerSubject,
         Instant scheduledStart,
         Instant scheduledEnd,
-        Long expectedVersion) {
+        Long expectedVersion,
+        @Size(max = 64) List<@Size(max = 64) String> speechContextTerms) {
 }

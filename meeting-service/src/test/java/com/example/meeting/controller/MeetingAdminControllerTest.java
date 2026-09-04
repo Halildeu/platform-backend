@@ -23,6 +23,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpStatus;
+import static org.mockito.ArgumentMatchers.argThat;
+import com.example.meeting.dto.v1.admin.MeetingCreateRequest;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -83,7 +87,8 @@ class MeetingAdminControllerTest {
                 Instant.parse("2026-06-16T08:00:00Z"),
                 "admin@example.com",
                 Instant.parse("2026-06-16T08:00:00Z"),
-                0L);
+                0L,
+                null);
     }
 
     @Test
@@ -248,5 +253,50 @@ class MeetingAdminControllerTest {
                 .andExpect(status().isNoContent());
 
         verify(meetingService).deleteMeeting(ctx, MEETING_ID);
+    }
+
+    @Test
+    void create_acceptsSpeechContextTermsAndEchoesNormalisedList() throws Exception {
+        AdminTenantContext ctx = tenant();
+        MeetingResponse withTerms = new MeetingResponse(
+                MEETING_ID, TENANT_ID, "weekly sync", "desc",
+                MeetingStatus.SCHEDULED,
+                Instant.parse("2026-06-16T09:00:00Z"),
+                Instant.parse("2026-06-16T09:00:00Z"),
+                Instant.parse("2026-06-16T10:00:00Z"),
+                "organizer@example.com", "admin@example.com",
+                Instant.parse("2026-06-16T08:00:00Z"),
+                "admin@example.com",
+                Instant.parse("2026-06-16T08:00:00Z"),
+                0L,
+                List.of("Açık Holding", "Sergen Bediroğlu"));
+        when(meetingService.createMeeting(eq(ctx), argThat((MeetingCreateRequest r) ->
+                r != null && r.speechContextTerms() != null && r.speechContextTerms().size() == 2)))
+                .thenReturn(withTerms);
+
+        mockMvc.perform(post("/api/v1/admin/meetings")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"weekly sync","description":"desc",
+                                 "speechContextTerms":["Açık Holding","Sergen Bediroğlu"]}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.speechContextTerms[0]").value("Açık Holding"))
+                .andExpect(jsonPath("$.speechContextTerms[1]").value("Sergen Bediroğlu"));
+    }
+
+    @Test
+    void create_rejectsInvalidSpeechContextTermsWithStableReason() throws Exception {
+        AdminTenantContext ctx = tenant();
+        when(meetingService.createMeeting(eq(ctx), any(MeetingCreateRequest.class)))
+                .thenThrow(new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "SPEECH_CONTEXT_TERMS_UNSUPPORTED_CHARACTER"));
+
+        mockMvc.perform(post("/api/v1/admin/meetings")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title":"weekly sync","speechContextTerms":["<script>"]}
+                                """))
+                .andExpect(status().isBadRequest());
     }
 }
