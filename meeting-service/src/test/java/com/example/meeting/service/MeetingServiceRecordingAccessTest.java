@@ -276,7 +276,7 @@ class MeetingServiceRecordingAccessTest {
         when(authzService.isEnabled()).thenReturn(true);
 
         meetingService.createMeeting(TENANT,
-                new MeetingCreateRequest("Title", null, null, null, null));
+                new MeetingCreateRequest("Title", null, null, null, null, null));
 
         verify(authzService).writeTuple(
                 "stable-sub-3", MeetingAuthz.OWNER, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString());
@@ -299,7 +299,7 @@ class MeetingServiceRecordingAccessTest {
                         "legacy-user-3", MeetingAuthz.OWNER, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString());
 
         assertThatThrownBy(() -> meetingService.createMeeting(TENANT,
-                new MeetingCreateRequest("Title", null, null, null, null)))
+                new MeetingCreateRequest("Title", null, null, null, null, null)))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("legacy write failed");
 
@@ -316,7 +316,7 @@ class MeetingServiceRecordingAccessTest {
         when(authzService.isEnabled()).thenReturn(true);
 
         meetingService.createMeeting(TENANT,
-                new MeetingCreateRequest("Title", null, null, null, null));
+                new MeetingCreateRequest("Title", null, null, null, null, null));
 
         verify(authzService).writeTuple(
                 "stable-sub-3", MeetingAuthz.OWNER, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString());
@@ -336,7 +336,7 @@ class MeetingServiceRecordingAccessTest {
         when(authzService.isEnabled()).thenReturn(true);
 
         meetingService.createMeeting(equivalentPrincipals,
-                new MeetingCreateRequest("Title", null, null, null, null));
+                new MeetingCreateRequest("Title", null, null, null, null, null));
 
         verify(authzService).writeTuple(
                 "stable-sub-3", MeetingAuthz.OWNER, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString());

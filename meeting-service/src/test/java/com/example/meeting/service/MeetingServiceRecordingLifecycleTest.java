@@ -278,6 +278,7 @@ class MeetingServiceRecordingLifecycleTest {
                         meeting.getOrganizerSubject(),
                         rescheduledStart,
                         null,
+                        null,
                         null));
 
         assertThat(meeting.getStartedAt()).isEqualTo(STARTED_AT);

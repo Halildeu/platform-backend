@@ -208,6 +208,7 @@ class MeetingAdminAuthorizationSecurityTest {
                 Instant.parse("2026-06-16T08:00:00Z"),
                 "admin@example.com",
                 Instant.parse("2026-06-16T08:00:00Z"),
-                0L);
+                0L,
+                null);
     }
 }

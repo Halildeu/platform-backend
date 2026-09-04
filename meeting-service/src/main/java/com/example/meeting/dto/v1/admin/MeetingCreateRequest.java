@@ -4,6 +4,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
+import java.util.List;
 
 /**
  * Create-meeting request body — Faz 24 (#410).
@@ -19,5 +20,6 @@ public record MeetingCreateRequest(
         @Size(max = 4000) String description,
         @Size(max = 255) String organizerSubject,
         Instant scheduledStart,
-        Instant scheduledEnd) {
+        Instant scheduledEnd,
+        @Size(max = 64) List<@Size(max = 64) String> speechContextTerms) {
 }

@@ -12,6 +12,8 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 import java.util.Objects;
@@ -58,6 +60,15 @@ public class Meeting {
 
     @Column(name = "description", length = 4000)
     private String description;
+
+    /**
+     * Consent-bound speech-context terms (platform-backend#1024): JSON array of
+     * normalised vocabulary hints for STT, or {@code null} when absent. Retained
+     * and erased with the meeting row; never copied into events, logs or metrics.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "speech_context_terms")
+    private String speechContextTerms;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
@@ -158,6 +169,14 @@ public class Meeting {
 
     public void setDescription(String description) {
         this.description = description;
+    }
+
+    public String getSpeechContextTerms() {
+        return speechContextTerms;
+    }
+
+    public void setSpeechContextTerms(String speechContextTerms) {
+        this.speechContextTerms = speechContextTerms;
     }
 
     public MeetingStatus getStatus() {

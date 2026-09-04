@@ -217,6 +217,8 @@ public class MeetingService {
         meeting.setOrgId(tenant.tenantId()); // canonical writer sets BOTH columns (trigger is backstop)
         meeting.setTitle(request.title());
         meeting.setDescription(request.description());
+        meeting.setSpeechContextTerms(
+                SpeechContextTerms.toJson(SpeechContextTerms.normalize(request.speechContextTerms())));
         meeting.setStatus(MeetingStatus.SCHEDULED);
         meeting.setScheduledStart(request.scheduledStart());
         meeting.setScheduledEnd(request.scheduledEnd());
@@ -252,6 +254,8 @@ public class MeetingService {
         requireExpectedVersion(request.expectedVersion(), meeting.getVersion());
         meeting.setTitle(request.title());
         meeting.setDescription(request.description());
+        meeting.setSpeechContextTerms(
+                SpeechContextTerms.toJson(SpeechContextTerms.normalize(request.speechContextTerms())));
         meeting.setStatus(request.status());
         if (!isBlank(request.organizerSubject())) {
             meeting.setOrganizerSubject(request.organizerSubject().trim());
@@ -832,7 +836,8 @@ public class MeetingService {
                 m.getCreatedAt(),
                 m.getLastUpdatedBySubject(),
                 m.getUpdatedAt(),
-                m.getVersion());
+                m.getVersion(),
+                SpeechContextTerms.fromJson(m.getSpeechContextTerms()));
     }
 
     private MeetingSessionResponse toSessionResponse(MeetingSession s) {
