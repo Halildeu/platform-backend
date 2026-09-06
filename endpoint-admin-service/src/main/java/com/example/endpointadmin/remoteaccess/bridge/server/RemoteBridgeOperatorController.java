@@ -31,6 +31,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -224,6 +225,31 @@ public class RemoteBridgeOperatorController {
             return ResponseEntity.unprocessableEntity().body(new RejectedResponse("open-session-refused"));
         }
         return ResponseEntity.ok(new OpenSessionResponse(outcome.sessionId(), outcome.consentPromptSent()));
+    }
+
+    /** Read-only lifecycle metadata; this snapshot is never an operation permit or approval. */
+    @GetMapping("/sessions/{sessionId}")
+    public ResponseEntity<?> sessionStatus(@PathVariable String sessionId, HttpServletRequest request) {
+        OperatorIdentity identity = authenticate(request);
+        if (!identity.isAuthenticated()) {
+            return unauthenticated();
+        }
+        Optional<RemoteBridgeSession> owned = ownedSession(sessionId, identity);
+        if (owned.isEmpty()) {
+            return notFound();
+        }
+        RemoteBridgeSession session = owned.get();
+        // Use the same monitor as consent and lifecycle writes; never combine two different states.
+        synchronized (session) {
+            long now = clock.getAsLong();
+            var state = session.state();
+            var lease = session.lease();
+            return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(new SessionStatusResponse(
+                    session.sessionId(), session.deviceId(), state.name(), state.isTerminal(),
+                    !state.isTerminal() && lease.isActive(now), lease.expiryEpochMillis(),
+                    session.promptExpiryEpochMillis(), session.stepUpStrength().name(),
+                    session.lastStepUpEpochMillis(), now));
+        }
     }
 
     /** Explicitly close the operator's own attended session once the approved operation flow is finished. */
@@ -500,6 +526,12 @@ public class RemoteBridgeOperatorController {
     }
 
     public record OpenSessionResponse(String sessionId, boolean consentPromptSent) {
+    }
+
+    public record SessionStatusResponse(String sessionId, String deviceId, String state, boolean terminal,
+                                        boolean consentActive, long consentExpiresAtEpochMillis,
+                                        long promptExpiresAtEpochMillis, String stepUpStrength,
+                                        long lastStepUpAtEpochMillis, long observedAtEpochMillis) {
     }
 
     public record ChallengeResponse(String challengeB64, String expectedOrigin, long issuedAtEpochMillis) {

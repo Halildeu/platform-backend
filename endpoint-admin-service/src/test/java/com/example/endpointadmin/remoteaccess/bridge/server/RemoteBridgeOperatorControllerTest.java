@@ -47,6 +47,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -97,6 +99,64 @@ class RemoteBridgeOperatorControllerTest {
     }
 
     // ---- authenticate first ----
+
+    @Test
+    void lifecycleStatusRequiresAuthentication() throws Exception {
+        mvc.perform(get(BASE + "s-owned")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void lifecycleStatusHidesMissingForeignAndCrossTenantSessions() throws Exception {
+        for (String id : List.of("s-missing", "s-foreign", "s-cross-tenant")) {
+            mvc.perform(get(BASE + id).header("Authorization", AUTH)).andExpect(status().isNotFound());
+        }
+    }
+
+    @Test
+    void lifecycleStatusExposesOnlyNonCacheableOwnedMetadata() throws Exception {
+        mvc.perform(get(BASE + "s-owned").header("Authorization", AUTH))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.sessionId").value("s-owned"))
+                .andExpect(jsonPath("$.deviceId").value("dev-owned"))
+                .andExpect(jsonPath("$.state").value("CONSENT_PENDING"))
+                .andExpect(jsonPath("$.terminal").value(false))
+                .andExpect(jsonPath("$.consentActive").value(false))
+                .andExpect(jsonPath("$.stepUpStrength").value("NONE"))
+                .andExpect(jsonPath("$.lastStepUpAtEpochMillis").value(0))
+                .andExpect(jsonPath("$.observedAtEpochMillis").value(NOW))
+                .andExpect(jsonPath("$.transportPeerKey").doesNotExist())
+                .andExpect(jsonPath("$.operatorSubject").doesNotExist())
+                .andExpect(jsonPath("$.policyEnvelopeDigest").doesNotExist());
+        verify(operatorService, never()).handleOperationRequest(any());
+        verify(stepUpHandler, never()).issueChallenge(any(), anyLong());
+    }
+
+    @Test
+    void lifecycleStatusUsesLeaseExpiryNotJustGrantedFlag() throws Exception {
+        var session = store.bySessionId("s-owned").orElseThrow();
+        session.grantConsent(true, NOW + 1);
+        mvc.perform(get(BASE + "s-owned").header("Authorization", AUTH))
+                .andExpect(jsonPath("$.consentActive").value(true));
+        session.grantConsent(true, NOW);
+        mvc.perform(get(BASE + "s-owned").header("Authorization", AUTH))
+                .andExpect(jsonPath("$.consentActive").value(false));
+    }
+
+    @Test
+    void lifecycleStatusNeverShowsConsentActiveAfterLocalAbortOrKill() throws Exception {
+        var session = store.bySessionId("s-owned").orElseThrow();
+        session.grantConsent(true, NOW + 60_000);
+        session.abortLeaseLocally();
+        mvc.perform(get(BASE + "s-owned").header("Authorization", AUTH))
+                .andExpect(jsonPath("$.consentActive").value(false));
+        session.grantConsent(true, NOW + 60_000);
+        session.transition(com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event.KILL);
+        mvc.perform(get(BASE + "s-owned").header("Authorization", AUTH))
+                .andExpect(jsonPath("$.state").value("KILLED"))
+                .andExpect(jsonPath("$.terminal").value(true))
+                .andExpect(jsonPath("$.consentActive").value(false));
+    }
 
     @Test
     void anUnauthenticatedChallengeIs401AndTouchesNoHandler() throws Exception {
