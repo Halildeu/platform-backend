@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
@@ -40,6 +41,7 @@ class MeetingCanonicalTranscriptServiceTest {
     private static final UUID MEETING = UUID.fromString("22222222-2222-4222-8222-222222222222");
     private static final UUID SESSION = UUID.fromString("33333333-3333-4333-8333-333333333333");
     private static final UUID RUN = UUID.fromString("44444444-4444-4444-8444-444444444444");
+    private static final String SPEC = "meeting-intelligence-v1";
     private static final Instant FINALIZED_AT = Instant.parse("2026-07-18T12:00:00Z");
     private static final String HASH = "a".repeat(64);
     private static final AdminTenantContext TENANT_CONTEXT =
@@ -79,7 +81,7 @@ class MeetingCanonicalTranscriptServiceTest {
     @Test
     void ownerReadsOnlyExactPersistedRunTupleAndWritesMetadataAudit() {
         when(analysisRuns.findVisibleExactRun(RUN, MEETING, TENANT)).thenReturn(Optional.of(run));
-        when(transcriptClient.read(TENANT, MEETING, SESSION, 7L)).thenReturn(snapshot(HASH));
+        when(transcriptClient.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC)).thenReturn(snapshot(HASH));
 
         var response = service.read(TENANT_CONTEXT, MEETING, RUN);
 
@@ -95,6 +97,21 @@ class MeetingCanonicalTranscriptServiceTest {
     }
 
     @Test
+    void incompleteAnalysisBindingFailsBeforeRemoteReadOrAudit() {
+        when(analysisRuns.findVisibleExactRun(RUN, MEETING, TENANT)).thenReturn(Optional.of(run));
+        for (String invalidSpec : new String[] {null, "", "   ", "x".repeat(65)}) {
+            run.setAnalysisSpecVersion(invalidSpec);
+            assertStatus(() -> service.read(TENANT_CONTEXT, MEETING, RUN),
+                    409, "TRANSCRIPT_OCCURRENCE_TUPLE_UNAVAILABLE");
+        }
+        run.setAnalysisSpecVersion(SPEC);
+        run.setAnalysisRunId(null);
+        assertStatus(() -> service.read(TENANT_CONTEXT, MEETING, RUN),
+                409, "TRANSCRIPT_OCCURRENCE_TUPLE_UNAVAILABLE");
+        verifyNoInteractions(transcriptClient, auditService);
+    }
+
+    @Test
     void nonOwnerIsForbiddenBeforeRunOrTranscriptDisclosure() {
         when(authz.checkPrincipal(
                 "user:stable-sub", MeetingAuthz.OWNER,
@@ -105,7 +122,7 @@ class MeetingCanonicalTranscriptServiceTest {
 
         verify(analysisRuns, never()).findVisibleExactRun(any(), any(), any());
         verify(transcriptClient, never()).read(any(), any(), any(),
-                org.mockito.ArgumentMatchers.anyLong());
+                org.mockito.ArgumentMatchers.anyLong(), any(), any());
     }
 
     @Test
@@ -136,18 +153,18 @@ class MeetingCanonicalTranscriptServiceTest {
         assertStatus(() -> service.read(TENANT_CONTEXT, MEETING, RUN),
                 423, "TRANSCRIPT_ERASURE_PENDING");
         verify(transcriptClient, never()).read(any(), any(), any(),
-                org.mockito.ArgumentMatchers.anyLong());
+                org.mockito.ArgumentMatchers.anyLong(), any(), any());
 
         run.setLegalHold(true);
         erasure.setStatus(MeetingSessionErasureStatus.HELD);
-        when(transcriptClient.read(TENANT, MEETING, SESSION, 7L)).thenReturn(snapshot(HASH));
+        when(transcriptClient.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC)).thenReturn(snapshot(HASH));
         assertThat(service.read(TENANT_CONTEXT, MEETING, RUN).state()).isEqualTo("LEGAL_HOLD");
     }
 
     @Test
     void mismatchedRemoteHashFailsWithoutAuditOrContentResponse() {
         when(analysisRuns.findVisibleExactRun(RUN, MEETING, TENANT)).thenReturn(Optional.of(run));
-        when(transcriptClient.read(TENANT, MEETING, SESSION, 7L))
+        when(transcriptClient.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC))
                 .thenReturn(snapshot("b".repeat(64)));
 
         assertStatus(() -> service.read(TENANT_CONTEXT, MEETING, RUN),
@@ -175,6 +192,7 @@ class MeetingCanonicalTranscriptServiceTest {
     private static MeetingAnalysisRun run() {
         MeetingAnalysisRun run = new MeetingAnalysisRun();
         run.setAnalysisRunId(RUN);
+        run.setAnalysisSpecVersion(SPEC);
         run.setTenantId(TENANT);
         run.setOrgId(TENANT);
         run.setMeetingId(MEETING);

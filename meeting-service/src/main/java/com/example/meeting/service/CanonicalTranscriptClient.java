@@ -7,7 +7,8 @@ import java.util.UUID;
 /** Internal exact-tuple canonical transcript read port. */
 public interface CanonicalTranscriptClient {
 
-    Snapshot read(UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion);
+    Snapshot read(UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion,
+            UUID analysisRunId, String analysisSpecVersion);
 
     record Snapshot(
             UUID tenantId,
