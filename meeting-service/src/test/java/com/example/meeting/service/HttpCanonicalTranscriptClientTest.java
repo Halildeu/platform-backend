@@ -29,6 +29,8 @@ class HttpCanonicalTranscriptClientTest {
     private static final UUID TENANT = UUID.fromString("11111111-1111-4111-8111-111111111111");
     private static final UUID MEETING = UUID.fromString("22222222-2222-4222-8222-222222222222");
     private static final UUID SESSION = UUID.fromString("33333333-3333-4333-8333-333333333333");
+    private static final UUID RUN = UUID.fromString("44444444-4444-4444-8444-444444444444");
+    private static final String SPEC = "meeting-intelligence-v1";
     private static final String URL = "http://transcript-service:8098/api/v1/internal/tenants/"
             + TENANT + "/meetings/" + MEETING + "/sessions/" + SESSION + "/finalizations/7";
 
@@ -52,9 +54,11 @@ class HttpCanonicalTranscriptClientTest {
                 .andExpect(request -> assertThat(request.getMethod()).isEqualTo(HttpMethod.GET))
                 .andExpect(header("Authorization", "Bearer read-token"))
                 .andExpect(header("X-Tenant-Id", TENANT.toString()))
+                .andExpect(header("X-Analysis-Run-Id", RUN.toString()))
+                .andExpect(header("X-Analysis-Spec-Version", SPEC))
                 .andRespond(withSuccess(json(), MediaType.APPLICATION_JSON));
 
-        var snapshot = client.read(TENANT, MEETING, SESSION, 7L);
+        var snapshot = client.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC);
 
         assertThat(snapshot.meetingId()).isEqualTo(MEETING);
         assertThat(snapshot.transcript()).isEqualTo("canonical text");
@@ -120,12 +124,16 @@ class HttpCanonicalTranscriptClientTest {
         when(tokens.token()).thenReturn("expired-token", "refreshed-token");
         server.expect(once(), requestTo(URL))
                 .andExpect(header("Authorization", "Bearer expired-token"))
+                .andExpect(header("X-Analysis-Run-Id", RUN.toString()))
+                .andExpect(header("X-Analysis-Spec-Version", SPEC))
                 .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
         server.expect(once(), requestTo(URL))
                 .andExpect(header("Authorization", "Bearer refreshed-token"))
+                .andExpect(header("X-Analysis-Run-Id", RUN.toString()))
+                .andExpect(header("X-Analysis-Spec-Version", SPEC))
                 .andRespond(withSuccess(json(), MediaType.APPLICATION_JSON));
 
-        assertThat(client.read(TENANT, MEETING, SESSION, 7L).transcript())
+        assertThat(client.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC).transcript())
                 .isEqualTo("canonical text");
 
         verify(tokens).invalidate();
@@ -133,7 +141,7 @@ class HttpCanonicalTranscriptClientTest {
     }
 
     private void assertFailure(CanonicalTranscriptClient.Failure failure) {
-        assertThatThrownBy(() -> client.read(TENANT, MEETING, SESSION, 7L))
+        assertThatThrownBy(() -> client.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC))
                 .isInstanceOfSatisfying(CanonicalTranscriptClient.ReadFailure.class,
                         ex -> assertThat(ex.failure()).isEqualTo(failure));
     }

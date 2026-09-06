@@ -48,19 +48,22 @@ public class HttpCanonicalTranscriptClient implements CanonicalTranscriptClient 
 
     @Override
     public Snapshot read(
-            UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion) {
+            UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion,
+            UUID analysisRunId, String analysisSpecVersion) {
         if (!properties.isEnabled()) {
             throw new ReadFailure(Failure.UNAVAILABLE);
         }
         try {
-            return call(tenantId, meetingId, sessionId, finalizationVersion);
+            return call(tenantId, meetingId, sessionId, finalizationVersion,
+                    analysisRunId, analysisSpecVersion);
         } catch (ReadFailure ex) {
             throw ex;
         } catch (RestClientResponseException ex) {
             if (ex.getStatusCode().value() == HttpStatus.UNAUTHORIZED.value()) {
                 tokens.invalidate();
                 try {
-                    return call(tenantId, meetingId, sessionId, finalizationVersion);
+                    return call(tenantId, meetingId, sessionId, finalizationVersion,
+                            analysisRunId, analysisSpecVersion);
                 } catch (ReadFailure retryFailure) {
                     throw retryFailure;
                 } catch (RestClientResponseException retryFailure) {
@@ -76,7 +79,8 @@ public class HttpCanonicalTranscriptClient implements CanonicalTranscriptClient 
     }
 
     private Snapshot call(
-            UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion) {
+            UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion,
+            UUID analysisRunId, String analysisSpecVersion) {
         ResponseEntity<Snapshot> response = restClient.get()
                 .uri(properties.getTranscriptServiceBaseUrl()
                                 + "/api/v1/internal/tenants/{tenantId}/meetings/{meetingId}"
@@ -84,6 +88,8 @@ public class HttpCanonicalTranscriptClient implements CanonicalTranscriptClient 
                         tenantId, meetingId, sessionId, finalizationVersion)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.token())
                 .header("X-Tenant-Id", tenantId.toString())
+                .header("X-Analysis-Run-Id", analysisRunId.toString())
+                .header("X-Analysis-Spec-Version", analysisSpecVersion)
                 .retrieve()
                 .toEntity(Snapshot.class);
         if (response.getHeaders().getFirst(CAPABILITY_HEADER) != null

@@ -75,14 +75,18 @@ public class MeetingCanonicalTranscriptService {
         UUID sessionId = canonicalSessionId(run);
         requireReadableErasureState(tenant.tenantId(), meetingId, sessionId, run);
         if (run.getFinalizationVersion() == null || run.getFinalizationVersion() < 1
-                || run.getFinalizedAt() == null || !validHash(run.getTranscriptSha256())) {
+                || run.getFinalizedAt() == null || !validHash(run.getTranscriptSha256())
+                || run.getAnalysisRunId() == null
+                || run.getAnalysisSpecVersion() == null || run.getAnalysisSpecVersion().isBlank()
+                || run.getAnalysisSpecVersion().length() > 64) {
             throw status(HttpStatus.CONFLICT, "TRANSCRIPT_OCCURRENCE_TUPLE_UNAVAILABLE");
         }
 
         CanonicalTranscriptClient.Snapshot snapshot;
         try {
             snapshot = transcriptClient.read(
-                    tenant.tenantId(), meetingId, sessionId, run.getFinalizationVersion());
+                    tenant.tenantId(), meetingId, sessionId, run.getFinalizationVersion(),
+                    run.getAnalysisRunId(), run.getAnalysisSpecVersion());
         } catch (CanonicalTranscriptClient.ReadFailure failure) {
             throw map(failure.failure());
         }
