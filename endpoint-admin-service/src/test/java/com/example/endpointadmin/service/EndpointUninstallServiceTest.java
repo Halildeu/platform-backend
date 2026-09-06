@@ -115,6 +115,59 @@ class EndpointUninstallServiceTest {
     @Autowired
     private EndpointCommandRepository commandRepository;
 
+    @Autowired
+    private org.springframework.core.env.ConfigurableEnvironment environment;
+
+    @Test
+    void exactTestOwnerExceptionDispatchesOnceAndAuditsItsTrueAuthority() {
+        Fixture f = setupFullFixture(TENANT, SUBJECT_ALICE, "owner-exception");
+        AdminTenantContext context = new AdminTenantContext(TENANT, SUBJECT_ALICE);
+        AdminUninstallRequestResponse proposed = uninstallService.propose(context, f.deviceId(),
+                new AdminUninstallRequestCreate(f.catalogSlug(), null, "test cleanup"));
+        String prefix = "endpoint-admin.uninstall.owner-exception.";
+        Instant now = Instant.now();
+        Map<String, Object> config = Map.of(
+                "POD_NAMESPACE", "platform-test",
+                prefix + "tenant-id", TENANT.toString(),
+                prefix + "device-id", f.deviceId().toString(),
+                prefix + "catalog-item-id", f.catalogUuid().toString(),
+                prefix + "request-id", proposed.requestId().toString(),
+                prefix + "actor-id", SUBJECT_ALICE,
+                prefix + "issued-at", now.minusSeconds(60).toString(),
+                prefix + "expires-at", now.plusSeconds(3600).toString(),
+                prefix + "decision-ref", "https://github.com/Halildeu/platform-k8s-gitops/issues/2828#issuecomment-1");
+        environment.getPropertySources().addFirst(new org.springframework.core.env.MapPropertySource("owner-exception-test", config));
+        try {
+            assertThat(uninstallService.get(context, f.deviceId(), proposed.requestId()).ownerException()).isNotNull();
+            assertThat(uninstallService.listForDevice(context, f.deviceId(), 0, 50))
+                    .anyMatch(request -> request.requestId().equals(proposed.requestId()) && request.ownerException() != null);
+            assertThat(uninstallService.listForDevice(new AdminTenantContext(TENANT, SUBJECT_BOB), f.deviceId(), 0, 50))
+                    .allMatch(request -> request.ownerException() == null);
+            EndpointSoftwareCatalogItem item = catalogRepository.findByTenantIdAndId(TENANT, f.catalogUuid()).orElseThrow();
+            item.setUninstallProtected(true);
+            catalogRepository.saveAndFlush(item);
+            assertThatThrownBy(() -> uninstallService.approve(context, f.deviceId(), proposed.requestId(), null))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .hasFieldOrPropertyWithValue("statusCode", HttpStatus.UNPROCESSABLE_ENTITY);
+            assertThat(uninstallService.get(context, f.deviceId(), proposed.requestId()).commandId()).isNull();
+            item.setUninstallProtected(false);
+            catalogRepository.saveAndFlush(item);
+            AdminUninstallRequestResponse approved = uninstallService.approve(context, f.deviceId(), proposed.requestId(),
+                    new AdminUninstallRequestApproval("owner authorized TEST cleanup"));
+            EndpointCommand command = commandRepository.findById(approved.commandId()).orElseThrow();
+            assertThat(approved.approvedBy()).isEqualTo(SUBJECT_ALICE);
+            assertThat(command.getPayload()).containsEntry("approvalMode", "TEST_OWNER_EXCEPTION");
+            assertThat(command.getExpiresAt()).isEqualTo(now.plusSeconds(3600));
+            assertThat(uninstallService.get(context, f.deviceId(), proposed.requestId()).ownerException()).isNull();
+            assertThat(auditEventRepository.findAll()).anyMatch(event ->
+                    "ENDPOINT_UNINSTALL_TEST_OWNER_EXCEPTION_USED".equals(event.getEventType()));
+            assertThatThrownBy(() -> uninstallService.approve(context, f.deviceId(), proposed.requestId(), null))
+                    .isInstanceOf(ResponseStatusException.class);
+        } finally {
+            environment.getPropertySources().remove("owner-exception-test");
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // Happy path
 
