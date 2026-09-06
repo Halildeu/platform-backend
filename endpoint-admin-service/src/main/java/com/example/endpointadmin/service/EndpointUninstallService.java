@@ -23,6 +23,7 @@ import com.example.endpointadmin.repository.EndpointUninstallAuditRepository;
 import com.example.endpointadmin.repository.EndpointUninstallRequestRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -134,6 +135,7 @@ public class EndpointUninstallService {
     private final EndpointHeartbeatRepository heartbeatRepository;
     private final EndpointAuditService auditService;
     private final Clock clock;
+    private final UninstallOwnerExceptionPolicy ownerExceptionPolicy;
 
     private final boolean featureEnabled;
     private final Duration heartbeatFreshnessTtl;
@@ -149,6 +151,7 @@ public class EndpointUninstallService {
             EndpointHeartbeatRepository heartbeatRepository,
             EndpointAuditService auditService,
             Clock clock,
+            Environment environment,
             @Value("${endpoint-admin.uninstall.enabled:false}") boolean featureEnabled,
             @Value("${endpoint-admin.uninstall.heartbeat-freshness-ttl:PT5M}")
                     Duration heartbeatFreshnessTtl,
@@ -163,6 +166,7 @@ public class EndpointUninstallService {
         this.heartbeatRepository = heartbeatRepository;
         this.auditService = auditService;
         this.clock = clock;
+        this.ownerExceptionPolicy = new UninstallOwnerExceptionPolicy(environment, clock);
         this.featureEnabled = featureEnabled;
         this.heartbeatFreshnessTtl = heartbeatFreshnessTtl == null
                 ? Duration.ofMinutes(5) : heartbeatFreshnessTtl;
@@ -369,7 +373,8 @@ public class EndpointUninstallService {
                     "Uninstall request is not in PENDING_APPROVAL state; current state="
                             + req.getState());
         }
-        if (Objects.equals(req.getCreatedBy(), subject)) {
+        UninstallOwnerExceptionPolicy.Grant ownerException = ownerExceptionPolicy.resolve(req, subject);
+        if (Objects.equals(req.getCreatedBy(), subject) && ownerException == null) {
             // Maker-checker violation — durable audit BEFORE throwing.
             auditService.record(
                     tenantId,
@@ -418,6 +423,9 @@ public class EndpointUninstallService {
         // {@code device.lastSeenAt} timestamp.
         Instant now = Instant.now(clock);
         assertHeartbeatFreshAndCapable(req, device, now, subject);
+        if (ownerException != null && !clock.instant().isBefore(ownerException.expiresAt())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "TEST owner exception expired.");
+        }
 
         // (6) Transition request state BEFORE building the dispatch payload
         // so {@code approvedBy} is non-null in the payload Codex iter-1
@@ -433,6 +441,18 @@ public class EndpointUninstallService {
         // identical to the install path (Codex iter-1 must-fix #5).
         Map<String, Object> payload = buildUninstallPayload(catalogItem, req,
                 trimToNull(body == null ? null : body.reason()));
+        if (ownerException != null) {
+            payload.put("approvalMode", "TEST_OWNER_EXCEPTION");
+            payload.put("ownerDecisionRef", ownerException.decisionRef());
+            auditService.record(tenantId, device, null,
+                    "ENDPOINT_UNINSTALL_TEST_OWNER_EXCEPTION_USED", ACTION_APPROVE,
+                    subject, req.getIdempotencyKey(),
+                    Map.of("requestId", req.getId().toString(),
+                            "catalogItemId", req.getCatalogItemId().toString(),
+                            "decisionRef", ownerException.decisionRef(),
+                            "expiresAt", ownerException.expiresAt().toString(),
+                            "approvalMode", "TEST_OWNER_EXCEPTION"), null, null);
+        }
 
         // (8) Create the UNINSTALL_SOFTWARE command — the agent will claim it
         // via the existing endpoint_commands queue + lifecycle. Approval gate
@@ -450,7 +470,7 @@ public class EndpointUninstallService {
         command.setAttemptCount(0);
         command.setMaxAttempts(3);
         command.setVisibleAfterAt(now);
-        command.setExpiresAt(null);
+        command.setExpiresAt(ownerException == null ? null : ownerException.expiresAt());
         command.setIssuedBySubject(subject);
         command.setIssuedAt(now);
         EndpointCommand savedCommand = commandRepository.saveAndFlush(command);
@@ -492,7 +512,9 @@ public class EndpointUninstallService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND,
                     "Uninstall request not found for this device.");
         }
-        return AdminUninstallRequestResponse.from(req);
+        UninstallOwnerExceptionPolicy.Grant grant = ownerExceptionPolicy.resolve(req, resolveSubject(context));
+        return AdminUninstallRequestResponse.from(req, grant == null ? null
+                : new AdminUninstallRequestResponse.OwnerException(grant.decisionRef(), grant.expiresAt()));
     }
 
     @Transactional(readOnly = true)
@@ -509,7 +531,11 @@ public class EndpointUninstallService {
         Pageable pageable = PageRequest.of(Math.max(0, page), Math.min(Math.max(size, 1), 200));
         return requestRepository
                 .findByTenantIdAndDeviceIdOrderByCreatedAtDesc(tenantId, deviceId, pageable)
-                .map(AdminUninstallRequestResponse::from)
+                .map(req -> {
+                    UninstallOwnerExceptionPolicy.Grant grant = ownerExceptionPolicy.resolve(req, resolveSubject(context));
+                    return AdminUninstallRequestResponse.from(req, grant == null ? null
+                            : new AdminUninstallRequestResponse.OwnerException(grant.decisionRef(), grant.expiresAt()));
+                })
                 .getContent();
     }
 

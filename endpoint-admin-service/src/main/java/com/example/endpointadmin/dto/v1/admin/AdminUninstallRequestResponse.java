@@ -33,9 +33,16 @@ public record AdminUninstallRequestResponse(
         String createdBy,
         String approvedBy,
         Instant createdAt,
-        Instant stateUpdatedAt) {
+        Instant stateUpdatedAt,
+        OwnerException ownerException) {
+
+    public record OwnerException(String decisionRef, Instant expiresAt) { }
 
     public static AdminUninstallRequestResponse from(EndpointUninstallRequest request) {
+        return from(request, null);
+    }
+
+    public static AdminUninstallRequestResponse from(EndpointUninstallRequest request, OwnerException exception) {
         return new AdminUninstallRequestResponse(
                 request.getId(),
                 request.getTenantId(),
@@ -48,6 +55,7 @@ public record AdminUninstallRequestResponse(
                 request.getCreatedBy(),
                 request.getApprovedBy(),
                 request.getCreatedAt(),
-                request.getStateUpdatedAt());
+                request.getStateUpdatedAt(),
+                exception);
     }
 }
