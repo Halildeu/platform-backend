@@ -71,11 +71,13 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
               and (r.orgId = :orgId or (r.orgId is null and r.tenantId = :orgId))
               and r.finalizedAt is not null
               and r.finalizationVersion is not null
+              and lower(r.transcriptSessionId) = :sessionId
             order by r.finalizedAt desc, r.finalizationVersion desc, r.createdAt desc
             limit 1
             """)
-    Optional<MeetingAnalysisRun> findLatestCanonicalOccurrence(
-            @Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId);
+    Optional<MeetingAnalysisRun> findLatestCanonicalOccurrenceForSession(
+            @Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId,
+            @Param("sessionId") String sessionId);
 
     @Query("""
             select r.analysisRunId
