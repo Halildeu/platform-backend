@@ -118,4 +118,19 @@ class SchemaSnapshotServiceTest {
                 .hasMessageContaining("workcube_mikrolink")
                 .cause().hasMessageContaining("base extraction down");
     }
+
+    /**
+     * metadata.dbType must be the engine of the reader that produced the
+     * snapshot. It was the literal "mssql" for every source, so an IFS Oracle
+     * snapshot introduced itself as MSSQL (measured live after #1143, whose
+     * commit message claimed the fix but whose diff did not contain it).
+     */
+    @Test
+    void metadataDbTypeIsTheReadersEngine() {
+        when(extract.engine()).thenReturn("oracle");
+
+        SchemaSnapshot snap = service.buildSnapshot(null, "IFSAPP");
+
+        assertThat(snap.metadata().dbType()).isEqualTo("oracle");
+    }
 }

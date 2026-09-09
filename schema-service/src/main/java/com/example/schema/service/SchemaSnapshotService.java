@@ -204,7 +204,10 @@ public class SchemaSnapshotService {
         SchemaSnapshot snapshot = SchemaSnapshot.builder()
             .version("1.1")
             .metadata(new SchemaSnapshot.Metadata(
-                "mssql", "", "", schema, Instant.now(),
+                // The engine of the source that was read, not a literal: an IFS
+                // snapshot says "oracle". (#1143 claimed this and did not ship it —
+                // the replacement missed the line break before the literal.)
+                extractService.engine(), "", "", schema, Instant.now(),
                 tables.size(), totalCols, relationships.size(), domains.size()))
             .tables(tables)
             .relationships(relationships)
