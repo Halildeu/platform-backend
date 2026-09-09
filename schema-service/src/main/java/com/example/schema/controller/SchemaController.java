@@ -110,10 +110,7 @@ public class SchemaController {
         // key, the log line and any error must carry the real owner. Passing
         // null through cached an Oracle snapshot under 'ifs|null' and made the
         // failure surface as schema 'null' (measured live).
-        String target = (schema != null && !schema.isBlank())
-            ? schema
-            : sources.resolve(source).defaultSchema();
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(source, target);
+        SchemaSnapshot snapshot = snapshotFor(source, schema);
         return ResponseEntity.ok()
             .cacheControl(CacheControl.maxAge(cacheTtlMinutes, TimeUnit.MINUTES))
             .body(snapshot);
@@ -128,6 +125,26 @@ public class SchemaController {
     @GetMapping("/sources")
     public ResponseEntity<List<Map<String, Object>>> listSources() {
         return ResponseEntity.ok(sources.describe());
+    }
+
+    /**
+     * Every snapshot-backed endpoint goes through here so the Explorer's panels
+     * — table detail, column search, impact, domains, hubs, path, health,
+     * drift, suggestions — all read the source the user picked. Until
+     * gitops#3605 only {@code /snapshot} and {@code /schemas} honoured
+     * {@code source}; the rest built the primary (Workcube) snapshot, so an
+     * Explorer pointed at IFS would have shown Workcube's table detail under an
+     * IFS table's name. The effective schema is resolved here, before the
+     * cache, so the key, the log line and any error carry the real owner.
+     */
+    private SchemaSnapshot snapshotFor(String source, String schema) {
+        return snapshotService.buildSnapshot(source, targetSchema(source, schema));
+    }
+
+    private String targetSchema(String source, String schema) {
+        return (schema != null && !schema.isBlank())
+            ? schema
+            : sources.resolve(source).defaultSchema();
     }
 
     /**
@@ -189,9 +206,9 @@ public class SchemaController {
     @GetMapping("/tables/{tableName}")
     public ResponseEntity<Map<String, Object>> getTable(
             @PathVariable String tableName,
-            @RequestParam(required = false) String schema) {
-        String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
+            @RequestParam(required = false) String schema,
+            @RequestParam(required = false) String source) {
+        SchemaSnapshot snapshot = snapshotFor(source, schema);
 
         TableInfo table = snapshot.tables().get(tableName);
         if (table == null) {
@@ -225,9 +242,9 @@ public class SchemaController {
     @GetMapping("/search/columns")
     public ResponseEntity<Map<String, Object>> searchColumns(
             @RequestParam String q,
-            @RequestParam(required = false) String schema) {
-        String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
+            @RequestParam(required = false) String schema,
+            @RequestParam(required = false) String source) {
+        SchemaSnapshot snapshot = snapshotFor(source, schema);
         String query = q.toUpperCase();
 
         Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
@@ -271,9 +288,9 @@ public class SchemaController {
     public ResponseEntity<Map<String, Object>> getImpact(
             @PathVariable String tableName,
             @RequestParam(defaultValue = "2") int hops,
-            @RequestParam(required = false) String schema) {
-        String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
+            @RequestParam(required = false) String schema,
+            @RequestParam(required = false) String source) {
+        SchemaSnapshot snapshot = snapshotFor(source, schema);
 
         if (!snapshot.tables().containsKey(tableName)) {
             return ResponseEntity.notFound().build();
@@ -313,9 +330,9 @@ public class SchemaController {
      */
     @GetMapping("/domains")
     public ResponseEntity<Map<String, Object>> getDomains(
-            @RequestParam(required = false) String schema) {
-        String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
+            @RequestParam(required = false) String schema,
+            @RequestParam(required = false) String source) {
+        SchemaSnapshot snapshot = snapshotFor(source, schema);
 
         List<Map<String, Object>> domains = snapshot.domains().entrySet().stream()
             .sorted((a, b) -> b.getValue().size() - a.getValue().size())
@@ -337,9 +354,9 @@ public class SchemaController {
      */
     @GetMapping("/hubs")
     public ResponseEntity<List<SchemaSnapshot.HubTable>> getHubs(
-            @RequestParam(required = false) String schema) {
-        String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
+            @RequestParam(required = false) String schema,
+            @RequestParam(required = false) String source) {
+        SchemaSnapshot snapshot = snapshotFor(source, schema);
         return ResponseEntity.ok(snapshot.analysis().hubTables());
     }
 
@@ -352,9 +369,9 @@ public class SchemaController {
             @RequestParam String from,
             @RequestParam String to,
             @RequestParam(defaultValue = "3") int limit,
-            @RequestParam(required = false) String schema) {
-        String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
+            @RequestParam(required = false) String schema,
+            @RequestParam(required = false) String source) {
+        SchemaSnapshot snapshot = snapshotFor(source, schema);
 
         if (!snapshot.tables().containsKey(from)) {
             return ResponseEntity.badRequest().body(Map.of("error", "Table not found: " + from));
@@ -378,9 +395,9 @@ public class SchemaController {
      */
     @GetMapping("/health-score")
     public ResponseEntity<SchemaHealthService.HealthReport> getHealthScore(
-            @RequestParam(required = false) String schema) {
-        String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
+            @RequestParam(required = false) String schema,
+            @RequestParam(required = false) String source) {
+        SchemaSnapshot snapshot = snapshotFor(source, schema);
         return ResponseEntity.ok(healthService.evaluate(snapshot));
     }
 
@@ -389,10 +406,10 @@ public class SchemaController {
      */
     @GetMapping("/drift")
     public ResponseEntity<SchemaDriftService.DriftReport> getDrift(
-            @RequestParam(required = false) String schema) {
-        String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
-        return ResponseEntity.ok(driftService.computeDrift(snapshot, target));
+            @RequestParam(required = false) String schema,
+            @RequestParam(required = false) String source) {
+        SchemaSnapshot snapshot = snapshotFor(source, schema);
+        return ResponseEntity.ok(driftService.computeDrift(snapshot, targetSchema(source, schema)));
     }
 
     /**
@@ -414,9 +431,9 @@ public class SchemaController {
     @GetMapping("/suggestions/{tableName}")
     public ResponseEntity<List<QuerySuggestionService.QuerySuggestion>> getQuerySuggestions(
             @PathVariable String tableName,
-            @RequestParam(required = false) String schema) {
-        String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
+            @RequestParam(required = false) String schema,
+            @RequestParam(required = false) String source) {
+        SchemaSnapshot snapshot = snapshotFor(source, schema);
         if (!snapshot.tables().containsKey(tableName)) {
             return ResponseEntity.notFound().build();
         }

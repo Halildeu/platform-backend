@@ -45,6 +45,14 @@ class SchemaControllerAuthTest {
         return r;
     }
 
+    private static com.example.schema.catalog.CatalogReader ifsReader() {
+        com.example.schema.catalog.CatalogReader r = org.mockito.Mockito.mock(com.example.schema.catalog.CatalogReader.class);
+        org.mockito.Mockito.when(r.sourceId()).thenReturn("ifs");
+        org.mockito.Mockito.when(r.engine()).thenReturn("oracle");
+        org.mockito.Mockito.when(r.defaultSchema()).thenReturn("IFSAPP");
+        return r;
+    }
+
     @BeforeEach
     void setUp() {
         snapshotService = mock(SchemaSnapshotService.class);
@@ -69,7 +77,7 @@ class SchemaControllerAuthTest {
                 mock(com.example.schema.service.SchemaDriftService.class),
                 mock(com.example.schema.service.QuerySuggestionService.class),
                 mock(com.example.schema.service.ReportingContractService.class),
-                new com.example.schema.catalog.CatalogSourceRegistry(java.util.List.of(primaryReader())));
+                new com.example.schema.catalog.CatalogSourceRegistry(java.util.List.of(primaryReader(), ifsReader())));
         ReflectionTestUtils.setField(controller, "defaultSchema", "workcube_mikrolink");
         ReflectionTestUtils.setField(controller, "cacheTtlMinutes", 60);
     }
@@ -129,5 +137,26 @@ class SchemaControllerAuthTest {
                 controller.getSnapshot(null, null, "wrong-key", null);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    /**
+     * gitops#3605: every snapshot-backed endpoint must build the snapshot of the
+     * source the caller named, resolving THAT source's default schema. Before,
+     * only /snapshot honoured `source`; /tables and friends silently built the
+     * Workcube snapshot, so an Explorer pointed at IFS would show Workcube's
+     * table detail under an IFS table's name.
+     */
+    @org.junit.jupiter.api.Test
+    void snapshotBackedEndpointsResolveTheNamedSourceAndItsDefaultSchema() {
+        com.example.schema.model.SchemaSnapshot snap = org.mockito.Mockito.mock(com.example.schema.model.SchemaSnapshot.class);
+        org.mockito.Mockito.when(snap.tables()).thenReturn(java.util.Map.of());
+        org.mockito.Mockito.when(snapshotService.buildSnapshot(org.mockito.ArgumentMatchers.eq("ifs"), org.mockito.ArgumentMatchers.eq("IFSAPP")))
+            .thenReturn(snap);
+
+        controller.getTable("TRYPE_ALL_VOUCHER_QRY", null, "ifs");
+
+        org.mockito.Mockito.verify(snapshotService).buildSnapshot("ifs", "IFSAPP");
+        org.mockito.Mockito.verify(snapshotService, org.mockito.Mockito.never())
+            .buildSnapshot(org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.anyString());
     }
 }
