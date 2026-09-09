@@ -193,16 +193,29 @@ public class RelationshipDiscoveryService {
 
         for (var entry : viewDefs.entrySet()) {
             if (entry.getValue() == null) continue;
-            Matcher m = JOIN_PATTERN.matcher(entry.getValue());
+            // One upper-casing and one alias scan per view, not one per JOIN
+            // match. The previous shape re-upper-cased the whole definition and
+            // scanned it once per known table for every match: on the IFS ERP
+            // dictionary (10,886 objects, 18MB of view text) that is billions of
+            // character comparisons and pinned the pod's CPU limit until the
+            // liveness probe killed it (measured live, exit 143).
+            // Locale.ROOT, deliberately: on a Turkish-locale JVM the default
+            // toUpperCase() turns 'i' into U+0130 (dotted capital I), which is
+            // outside [A-Z] and \w, so every identifier containing an 'i' stops
+            // matching and this parser silently finds nothing. Caught by running
+            // the tests on a tr_TR machine.
+            String upper = entry.getValue().toUpperCase(Locale.ROOT);
+            Map<String, String> aliases = aliasMapFor(upper, tableNames);
+            Matcher m = JOIN_PATTERN.matcher(upper);
             while (m.find()) {
-                String t1 = m.group(1).toUpperCase();
-                String c1 = m.group(2).toUpperCase();
-                String t2 = m.group(3).toUpperCase();
-                String c2 = m.group(4).toUpperCase();
+                String t1 = m.group(1);
+                String c1 = m.group(2);
+                String t2 = m.group(3);
+                String c2 = m.group(4);
 
                 // Resolve to actual table names
-                String resolved1 = resolveAlias(t1, entry.getValue(), tableNames);
-                String resolved2 = resolveAlias(t2, entry.getValue(), tableNames);
+                String resolved1 = resolveAlias(t1, aliases, tableNames);
+                String resolved2 = resolveAlias(t2, aliases, tableNames);
                 if (resolved1 == null || resolved2 == null || resolved1.equals(resolved2)) continue;
 
                 String key = resolved1 + "." + c1 + "=" + resolved2 + "." + c2;
@@ -216,15 +229,31 @@ public class RelationshipDiscoveryService {
         return rels;
     }
 
-    private String resolveAlias(String alias, String sql, Set<String> tableNames) {
-        if (tableNames.contains(alias)) return alias;
-        String upper = sql.toUpperCase();
-        for (String tbl : tableNames) {
-            if (upper.contains(tbl + " " + alias) || upper.contains(tbl + " AS " + alias)) {
-                return tbl;
+    /**
+     * {@code <table> <alias>} and {@code <table> AS <alias>} pairs in one pass.
+     * The alias is captured inside a lookahead so consecutive pairs may share a
+     * word ({@code FROM A a JOIN B b}: the match for {@code A a} must not consume
+     * {@code a} before {@code JOIN B b} is considered). Word boundaries also
+     * close a hole the substring search had: {@code PREFIX_X co} used to resolve
+     * alias {@code co} to table {@code X}.
+     */
+    private static final Pattern ALIAS_DEF_PATTERN = Pattern.compile(
+        "\\b([A-Z0-9_$#]+)\\s+(?:AS\\s+)?(?=([A-Z0-9_$#]+)\\b)");
+
+    private static Map<String, String> aliasMapFor(String upperSql, Set<String> tableNames) {
+        Map<String, String> aliases = new HashMap<>();
+        Matcher m = ALIAS_DEF_PATTERN.matcher(upperSql);
+        while (m.find()) {
+            if (tableNames.contains(m.group(1))) {
+                aliases.putIfAbsent(m.group(2), m.group(1));
             }
         }
-        return null;
+        return aliases;
+    }
+
+    private static String resolveAlias(String alias, Map<String, String> aliases, Set<String> tableNames) {
+        if (tableNames.contains(alias)) return alias;
+        return aliases.get(alias);
     }
 
     private List<Relationship> deduplicateAndScore(List<Relationship> all) {
