@@ -10,6 +10,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.method.MethodValidationResult;
 import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.http.HttpMethod;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.mock.web.MockHttpServletRequest;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -23,6 +27,45 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GlobalExceptionHandlerSliceETest {
 
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
+
+    @Test
+    void unknownRoute_returns404_notGeneric500() {
+        // gitops#3606: GET /api/v1/permissions/me (no such mapping) surfaced as
+        // INTERNAL_ERROR 500 because NoResourceFoundException fell through to handleGeneric.
+        NoResourceFoundException ex = new NoResourceFoundException(HttpMethod.GET, "api/v1/permissions/me");
+
+        ResponseEntity<ErrorResponse> resp = handler.handleNotFound(ex);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(resp.getBody()).isNotNull();
+        assertThat(resp.getBody().getError()).isEqualTo("NOT_FOUND");
+    }
+
+    @Test
+    void wrongMethod_returns405_withAllowHeader() {
+        HttpRequestMethodNotSupportedException ex =
+                new HttpRequestMethodNotSupportedException("PUT", java.util.List.of("GET", "POST"));
+
+        ResponseEntity<ErrorResponse> resp = handler.handleMethodNotSupported(ex);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(resp.getHeaders().getAllow()).extracting(HttpMethod::name).containsExactlyInAnyOrder("GET", "POST");
+        assertThat(resp.getBody()).isNotNull();
+        assertThat(resp.getBody().getError()).isEqualTo("METHOD_NOT_ALLOWED");
+    }
+
+    @Test
+    void authzMeUnexpectedError_stays503() {
+        // B2 (Rev 19) contract: /authz/me failures are 503, never a cached-empty 200 or a 500.
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/api/v1/authz/me");
+        req.setRequestURI("/api/v1/authz/me");
+
+        ResponseEntity<ErrorResponse> resp = handler.handleGeneric(new RuntimeException("boom"), req);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(resp.getBody()).isNotNull();
+        assertThat(resp.getBody().getError()).isEqualTo("AUTHZ_DEGRADED");
+    }
 
     @Test
     void handleHandlerMethodValidation_returns400_emptyResults() throws Exception {
