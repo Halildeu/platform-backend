@@ -129,14 +129,15 @@ schema:
     api-key: ${SCHEMA_AI_API_KEY:}
     api-url: ${SCHEMA_AI_API_URL:https://api.anthropic.com/v1/messages}
     model: ${SCHEMA_AI_MODEL:claude-sonnet-4-20250514}
-
-# gitops#3608 — REPORT module gate on /api/v1/schema/** (ReportModuleAccessGate).
-# Off by default so local/unit contexts need no OpenFGA; the k8s profile flips
-# the default to on and gitops pins ERP_OPENFGA_ENABLED explicitly.
-erp:
-  openfga:
-    enabled: ${ERP_OPENFGA_ENABLED:false}
-    api-url: ${ERP_OPENFGA_API_URL:http://openfga:8080}
-    store-id: ${ERP_OPENFGA_STORE_ID:}
-    model-id: ${ERP_OPENFGA_MODEL_ID:}
-    check-cache-ttl-seconds: ${ERP_OPENFGA_CHECK_CACHE_TTL_SECONDS:10}
+  report-gate:
+    # gitops#3608 — REPORT module gate on /api/v1/schema/**: the caller's own
+    # bearer is resolved through permission-service /authz/me and the request
+    # is allowed only when that projection grants the REPORT module (the same
+    # answer the shell's route guard uses). On everywhere; the k8s profile
+    # refuses to start with it off (ReportModuleGateConfig).
+    enabled: ${SCHEMA_REPORT_GATE_ENABLED:true}
+    permission-service-base-url: ${PERMISSION_SERVICE_BASE_URL:http://permission-service:8090}
+    cache-ttl: ${SCHEMA_REPORT_GATE_CACHE_TTL:10s}
+    connect-timeout: 2s
+    request-timeout: 3s
+    revision-memo-ms: 5000

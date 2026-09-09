@@ -1,134 +1,163 @@
 package com.example.schema.config;
 
-import com.example.commonauth.openfga.OpenFgaAuthzService;
+import com.example.commonauth.scope.AuthzVersionProvider;
+import com.example.schema.config.AuthzMeClient.AuthzMeResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
- * gitops#3608 — the gate must agree with permission-service's
- * {@code /authz/me.modules.REPORT} projection and fail closed when OpenFGA
- * cannot answer.
+ * gitops#3608 — the gate is the frontend's {@code hasModule("REPORT")} applied to
+ * permission-service's own projection, fails closed on every non-answer, and
+ * memoises per token only while the authorization revision stands.
  */
 class ReportModuleAccessGateTest {
 
-    private static final String USER = "42";
+    private static final String TOKEN = "eyJ.token.one";
 
-    private OpenFgaAuthzService fga;
+    private final AtomicReference<AuthzMeResult> next = new AtomicReference<>();
+    private final AtomicInteger calls = new AtomicInteger();
+    private final AtomicLong revision = new AtomicLong(7L);
+    private final AuthzMeClient client = token -> {
+        calls.incrementAndGet();
+        return next.get();
+    };
+    private final AuthzVersionProvider versions = revision::get;
+
     private ReportModuleAccessGate gate;
 
     @BeforeEach
     void setUp() {
-        fga = mock(OpenFgaAuthzService.class);
-        when(fga.isEnabled()).thenReturn(true);
-        when(fga.check(any(), any(), any(), any())).thenReturn(false);
-        when(fga.listObjectsResult(any(), any(), any()))
-                .thenReturn(new OpenFgaAuthzService.ObjectListResult(true, List.of(), "no_objects"));
-        gate = new ReportModuleAccessGate(fga);
+        gate = new ReportModuleAccessGate(client, versions, true, false, Duration.ofMinutes(1));
+    }
+
+    private static AuthzMeResult projection(boolean superAdmin, Map<String, String> modules, List<String> legacy) {
+        return AuthzMeResult.ok(superAdmin, modules, legacy, 7L);
     }
 
     @Test
-    void explicitModuleGrantAllows() {
-        when(fga.check(USER, "can_view", "module", "REPORT")).thenReturn(true);
-
-        var d = gate.decide(USER);
-
+    void reportViewAllows() {
+        next.set(projection(false, Map.of("REPORT", "VIEW"), List.of()));
+        var d = gate.decide(TOKEN);
         assertThat(d.allowed()).isTrue();
-        assertThat(d.reason()).isEqualTo("module_grant");
-        verify(fga, never()).listObjectsResult(any(), any(), any());
+        assertThat(d.reason()).isEqualTo("module_view");
     }
 
     @Test
-    void noGrantAnywhereDenies() {
-        var d = gate.decide(USER);
+    void reportManageAllows() {
+        next.set(projection(false, Map.of("REPORT", "MANAGE", "THEME", "VIEW"), List.of()));
+        assertThat(gate.decide(TOKEN).reason()).isEqualTo("module_manage");
+    }
 
+    @Test
+    void otherModulesOnlyDenies() {
+        next.set(projection(false, Map.of("THEME", "MANAGE"), List.of()));
+        var d = gate.decide(TOKEN);
         assertThat(d.allowed()).isFalse();
-        assertThat(d.reason()).isEqualTo("no_report_grant");
-        verify(fga).listObjectsResult(USER, "can_view", "report");
-        verify(fga).listObjectsResult(USER, "can_view", "report_group");
+        assertThat(d.reason()).isEqualTo("no_report_module");
     }
 
     @Test
-    void reportLevelGrantSurfacesTheModuleLikeAuthzMeDoes() {
-        when(fga.listObjectsResult(USER, "can_view", "report"))
-                .thenReturn(new OpenFgaAuthzService.ObjectListResult(true, List.of("FIN_ANALYTICS"), "ok"));
-
-        var d = gate.decide(USER);
-
-        assertThat(d.allowed()).isTrue();
-        assertThat(d.reason()).isEqualTo("derived:report");
-    }
-
-    @Test
-    void reportGroupGrantSurfacesTheModuleToo() {
-        when(fga.listObjectsResult(USER, "can_view", "report_group"))
-                .thenReturn(new OpenFgaAuthzService.ObjectListResult(true, List.of("FINANCE_REPORTS"), "ok"));
-
-        var d = gate.decide(USER);
-
-        assertThat(d.allowed()).isTrue();
-        assertThat(d.reason()).isEqualTo("derived:report_group");
-    }
-
-    @Test
-    void explicitModuleDenyWinsOverReportGrants() {
-        when(fga.check(USER, "blocked", "module", "REPORT")).thenReturn(true);
-        when(fga.listObjectsResult(USER, "can_view", "report"))
-                .thenReturn(new OpenFgaAuthzService.ObjectListResult(true, List.of("FIN_ANALYTICS"), "ok"));
-
-        var d = gate.decide(USER);
-
+    void explicitDenyLevelDenies() {
+        next.set(projection(false, Map.of("REPORT", "DENY"), List.of()));
+        var d = gate.decide(TOKEN);
         assertThat(d.allowed()).isFalse();
-        assertThat(d.reason()).isEqualTo("module_blocked");
-        verify(fga, never()).listObjectsResult(any(), any(), any());
+        assertThat(d.reason()).isEqualTo("report_module_deny");
     }
 
     @Test
-    void organizationAdminAllowedOutright() {
-        when(fga.check(USER, "admin", "organization", "default")).thenReturn(true);
-
-        var d = gate.decide(USER);
-
-        assertThat(d.allowed()).isTrue();
-        assertThat(d.reason()).isEqualTo("org_admin");
-        verify(fga, never()).check(eq(USER), eq("can_view"), any(), any());
+    void superAdminAllowsRegardlessOfModules() {
+        next.set(projection(true, Map.of(), List.of()));
+        assertThat(gate.decide(TOKEN).reason()).isEqualTo("super_admin");
     }
 
     @Test
-    void openFgaUnavailableFailsClosed() {
-        when(fga.listObjectsResult(USER, "can_view", "report"))
-                .thenReturn(OpenFgaAuthzService.ObjectListResult.unavailable("circuit_open"));
+    void legacyAllowedModulesOnlyConsultedWhenModulesMapIsEmpty() {
+        next.set(projection(false, Map.of(), List.of("REPORT")));
+        assertThat(gate.decide(TOKEN).reason()).isEqualTo("legacy_allowed_modules");
 
-        var d = gate.decide(USER);
+        gate.invalidateAll();
+        next.set(projection(false, Map.of("THEME", "VIEW"), List.of("REPORT")));
+        assertThat(gate.decide(TOKEN).allowed()).as("modules map present wins over legacy list").isFalse();
+    }
 
+    @Test
+    void refusedTokenDenies() {
+        next.set(AuthzMeResult.rejected(401));
+        var d = gate.decide(TOKEN);
         assertThat(d.allowed()).isFalse();
-        assertThat(d.reason()).isEqualTo("openfga_unavailable:circuit_open");
+        assertThat(d.reason()).isEqualTo("authz_me_http_401");
     }
 
     @Test
-    void disabledOpenFgaPassesThrough() {
-        when(fga.isEnabled()).thenReturn(false);
-
-        var d = gate.decide(USER);
-
-        assertThat(d.allowed()).isTrue();
-        assertThat(d.reason()).isEqualTo("openfga_disabled");
-        verify(fga, never()).check(any(), any(), any(), any());
+    void unavailablePermissionServiceDeniesNotAllows() {
+        next.set(AuthzMeResult.unavailable("transport:ConnectException"));
+        var d = gate.decide(TOKEN);
+        assertThat(d.allowed()).isFalse();
+        assertThat(d.reason()).isEqualTo("authz_unavailable:transport:ConnectException");
     }
 
     @Test
-    void missingUserIdDeniesBeforeAskingOpenFga() {
-        assertThat(gate.decide(null).reason()).isEqualTo("no_user_id");
-        assertThat(gate.decide(" ").allowed()).isFalse();
-        verify(fga, never()).check(any(), any(), any(), any());
+    void decisionIsMemoisedPerTokenWhileTheRevisionStands() {
+        next.set(projection(false, Map.of("REPORT", "VIEW"), List.of()));
+        gate.decide(TOKEN);
+        gate.decide(TOKEN);
+        assertThat(calls.get()).isEqualTo(1);
+
+        gate.decide("eyJ.token.two");
+        assertThat(calls.get()).as("a different token is a different caller").isEqualTo(2);
+    }
+
+    @Test
+    void revisionBumpInvalidatesTheMemo() {
+        next.set(projection(false, Map.of("REPORT", "VIEW"), List.of()));
+        assertThat(gate.decide(TOKEN).allowed()).isTrue();
+
+        revision.set(8L);
+        next.set(projection(false, Map.of(), List.of()));
+        assertThat(gate.decide(TOKEN).allowed()).as("revoke shows up after the revision moves").isFalse();
+        assertThat(calls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void denialsAreMemoisedToo() {
+        next.set(AuthzMeResult.rejected(403));
+        gate.decide(TOKEN);
+        gate.decide(TOKEN);
+        assertThat(calls.get()).isEqualTo(1);
+    }
+
+    @Test
+    void blankTokenDeniesWithoutCalling() {
+        assertThat(gate.decide(" ").reason()).isEqualTo("no_token");
+        assertThat(gate.decide(null).allowed()).isFalse();
+        assertThat(calls.get()).isZero();
+    }
+
+    @Test
+    void disabledGateOnlyPassesThroughInDevProfiles() {
+        var dev = new ReportModuleAccessGate(client, versions, false, true, Duration.ofSeconds(1));
+        assertThat(dev.decide(TOKEN).reason()).isEqualTo("gate_disabled_dev");
+
+        var nonDev = new ReportModuleAccessGate(client, versions, false, false, Duration.ofSeconds(1));
+        var d = nonDev.decide(TOKEN);
+        assertThat(d.allowed()).isFalse();
+        assertThat(d.reason()).isEqualTo("gate_disabled");
+        assertThat(calls.get()).isZero();
+    }
+
+    @Test
+    void tokenKeyIsADigestNotTheToken() {
+        String key = ReportModuleAccessGate.tokenKey(TOKEN);
+        assertThat(key).hasSize(64).doesNotContain(TOKEN);
+        assertThat(ReportModuleAccessGate.tokenKey(TOKEN)).isEqualTo(key);
     }
 }

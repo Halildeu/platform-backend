@@ -21,11 +21,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * gitops#3608 — JWT callers are module-gated; JWT-less in-cluster callers keep
- * their controller-side internal-key guard; a JWT without a numeric user id is
- * refused, not guessed.
+ * gitops#3608 — JWT callers are gated with their own token; JWT-less in-cluster
+ * callers keep their controller-side internal-key guard.
  */
 class ReportModuleInterceptorTest {
+
+    private static final String TOKEN = "eyJ.raw.token";
 
     private ReportModuleAccessGate gate;
     private ReportModuleInterceptor interceptor;
@@ -49,50 +50,26 @@ class ReportModuleInterceptorTest {
     }
 
     @Test
-    void allowedUserPassesThrough() throws Exception {
-        authenticate(jwt("42"));
-        when(gate.decide("42")).thenReturn(new ReportModuleAccessGate.Decision(true, "module_grant"));
+    void allowedCallerPassesThroughAndTheGateSawTheRawToken() throws Exception {
+        authenticate(jwt());
+        when(gate.decide(TOKEN)).thenReturn(new ReportModuleAccessGate.Decision(true, "module_view"));
 
         assertThat(interceptor.preHandle(request, response, handler)).isTrue();
         assertThat(response.getStatus()).isEqualTo(200);
-        verify(gate).decide("42");
+        verify(gate).decide(TOKEN);
     }
 
     @Test
-    void deniedUserGets403WithReason() throws Exception {
-        authenticate(jwt("42"));
-        when(gate.decide("42")).thenReturn(new ReportModuleAccessGate.Decision(false, "no_report_grant"));
+    void deniedCallerGets403WithReason() throws Exception {
+        authenticate(jwt());
+        when(gate.decide(TOKEN)).thenReturn(new ReportModuleAccessGate.Decision(false, "no_report_module"));
 
         assertThat(interceptor.preHandle(request, response, handler)).isFalse();
         assertThat(response.getStatus()).isEqualTo(403);
         assertThat(response.getContentType()).startsWith("application/json");
         assertThat(response.getContentAsString())
                 .contains("\"error\":\"forbidden\"")
-                .contains("\"reason\":\"no_report_grant\"");
-    }
-
-    @Test
-    void jwtWithoutNumericUserIdIsRefusedNotGuessedFromSubject() throws Exception {
-        authenticate(Jwt.withTokenValue("t").header("alg", "none").subject("keycloak-uuid").build());
-        when(gate.decide(null)).thenReturn(new ReportModuleAccessGate.Decision(false, "no_user_id"));
-
-        assertThat(interceptor.preHandle(request, response, handler)).isFalse();
-        assertThat(response.getStatus()).isEqualTo(403);
-        verify(gate).decide(null);
-    }
-
-    @Test
-    void numericClaimShapesAreNormalised() {
-        assertThat(ReportModuleInterceptor.numericUserId(jwt("42"))).isEqualTo("42");
-        assertThat(ReportModuleInterceptor.numericUserId(
-                Jwt.withTokenValue("t").header("alg", "none").subject("s").claim("userId", 7L).build()))
-                .isEqualTo("7");
-        assertThat(ReportModuleInterceptor.numericUserId(
-                Jwt.withTokenValue("t").header("alg", "none").subject("s").claim("uid", " 9 ").build()))
-                .isEqualTo("9");
-        assertThat(ReportModuleInterceptor.numericUserId(
-                Jwt.withTokenValue("t").header("alg", "none").subject("s").claim("userId", "someone@example").build()))
-                .isNull();
+                .contains("\"reason\":\"no_report_module\"");
     }
 
     @Test
@@ -102,21 +79,29 @@ class ReportModuleInterceptorTest {
     }
 
     @Test
+    void unauthenticatedTokenInContextIsNotTrusted() throws Exception {
+        // single-arg JwtAuthenticationToken leaves isAuthenticated()=false — treated as no principal
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt()));
+
+        assertThat(interceptor.preHandle(request, response, handler)).isTrue();
+        verify(gate, never()).decide(any());
+    }
+
+    @Test
     void nonHandlerMethodsAreIgnored() throws Exception {
-        authenticate(jwt("42"));
+        authenticate(jwt());
 
         assertThat(interceptor.preHandle(request, response, new Object())).isTrue();
         verify(gate, never()).decide(any());
     }
 
-    private static Jwt jwt(String userId) {
-        return Jwt.withTokenValue("t").header("alg", "none").subject("s").claim("userId", userId).build();
+    private static Jwt jwt() {
+        return Jwt.withTokenValue(TOKEN).header("alg", "none").subject("keycloak-uuid").build();
     }
 
     private static void authenticate(Jwt jwt) {
         // The authorities variant is what the resource-server filter installs and the
-        // only one that marks the token authenticated; the single-arg one leaves
-        // isAuthenticated()=false and would make the interceptor skip the caller.
+        // only one that marks the token authenticated.
         SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt, List.of()));
     }
 

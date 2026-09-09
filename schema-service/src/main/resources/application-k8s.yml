@@ -58,12 +58,6 @@ management:
     sampling:
       probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}
 
-# gitops#3608 — in-cluster the REPORT module gate is on unless gitops says
-# otherwise; a ConfigMap that forgets the key must not silently fail-open.
-erp:
-  openfga:
-    enabled: ${ERP_OPENFGA_ENABLED:true}
-
 logging:
   level:
     root: ${LOGGING_LEVEL_ROOT:INFO}

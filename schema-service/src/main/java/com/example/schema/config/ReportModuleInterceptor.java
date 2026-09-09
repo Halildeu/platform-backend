@@ -23,14 +23,13 @@ import java.nio.charset.StandardCharsets;
  * {@code /master-data/**}); those keep their controller-side
  * {@code X-Internal-Api-Key} guard and are not module-gated here.
  *
- * <p>The OpenFGA subject is the numeric {@code userId} (or {@code uid}) claim the
- * frontend also uses; a JWT without it cannot be mapped to a tuple and is
- * refused rather than guessed from {@code sub}.
+ * <p>The gate is asked with the caller's own bearer token, which
+ * permission-service resolves to the canonical user itself — no claim is
+ * trusted or guessed here.
  */
 public class ReportModuleInterceptor implements HandlerInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(ReportModuleInterceptor.class);
-    private static final String[] USER_ID_CLAIMS = {"userId", "uid"};
 
     private final ReportModuleAccessGate gate;
 
@@ -48,12 +47,12 @@ public class ReportModuleInterceptor implements HandlerInterceptor {
         if (jwt == null) {
             return true;
         }
-        String userId = numericUserId(jwt);
-        ReportModuleAccessGate.Decision decision = gate.decide(userId);
+        ReportModuleAccessGate.Decision decision = gate.decide(jwt.getTokenValue());
         if (decision.allowed()) {
             return true;
         }
-        log.info("schema.authz denied user={} path={} reason={}", userId, request.getRequestURI(), decision.reason());
+        log.info("schema.authz denied sub={} path={} reason={}", jwt.getSubject(), request.getRequestURI(),
+                decision.reason());
         response.setStatus(HttpServletResponse.SC_FORBIDDEN);
         response.setContentType("application/json");
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
@@ -68,19 +67,5 @@ public class ReportModuleInterceptor implements HandlerInterceptor {
             return null;
         }
         return authentication.getPrincipal() instanceof Jwt jwt ? jwt : null;
-    }
-
-    static String numericUserId(Jwt jwt) {
-        for (String name : USER_ID_CLAIMS) {
-            Object raw = jwt.getClaim(name);
-            if (raw == null) {
-                continue;
-            }
-            String value = raw instanceof Number n ? Long.toString(n.longValue()) : String.valueOf(raw).trim();
-            if (!value.isEmpty() && value.chars().allMatch(Character::isDigit)) {
-                return value;
-            }
-        }
-        return null;
     }
 }
