@@ -5,6 +5,7 @@ import com.example.schema.catalog.OracleCatalogReader;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -78,8 +79,14 @@ public class OracleSourceConfig {
         return ds;
     }
 
+    /**
+     * Qualified by name on purpose. Two {@link HikariDataSource} beans live in
+     * this context and the MSSQL one is primary; by-type injection here would
+     * hand the Oracle reader the Workcube pool.
+     */
     @Bean
-    public CatalogReader oracleCatalogReader(HikariDataSource oracleSourceDataSource) {
+    public CatalogReader oracleCatalogReader(
+            @Qualifier("oracleSourceDataSource") HikariDataSource oracleSourceDataSource) {
         NamedParameterJdbcTemplate jdbc = new NamedParameterJdbcTemplate(oracleSourceDataSource);
         jdbc.getJdbcTemplate().setQueryTimeout(queryTimeoutSeconds);
         return new OracleCatalogReader(sourceId, jdbc, defaultSchema);

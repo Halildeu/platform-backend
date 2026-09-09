@@ -44,6 +44,15 @@ public interface CatalogReader {
     String engine();
 
     /**
+     * The schema (MSSQL) or owner (Oracle) this source reads when a caller
+     * names none. Resolved by the caller BEFORE the snapshot is built, so the
+     * cache key, the log line and any error all carry the real name: an
+     * Oracle snapshot cached and reported as schema 'null' is what happens
+     * otherwise, and the MSSQL default is the wrong fallback for Oracle.
+     */
+    String defaultSchema();
+
+    /**
      * Tables with their columns and primary keys. The one mandatory surface:
      * a failure here genuinely blocks the snapshot and propagates as 503.
      */

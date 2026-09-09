@@ -82,11 +82,20 @@ public class OracleCatalogReader implements CatalogReader {
         return "oracle";
     }
 
+    @Override
+    public String defaultSchema() {
+        return defaultSchema;
+    }
+
     private String target(String schema) {
         // Oracle folds unquoted identifiers to upper case; the dictionary stores
         // them that way, so a lower-case owner from the caller finds nothing.
         String value = (schema == null || schema.isBlank()) ? defaultSchema : schema;
         return value == null ? null : value.toUpperCase(java.util.Locale.ROOT);
+    }
+
+    private static Integer integerOrNull(Object value) {
+        return value instanceof Number n ? n.intValue() : null;
     }
 
     // ---------------------------------------------------------------- tables
@@ -135,8 +144,13 @@ public class OracleCatalogReader implements CatalogReader {
         Map<String, List<ColumnInfo>> columnsByObject = new LinkedHashMap<>();
         jdbc.query(sql, Map.of("owner", owner), rs -> {
             String objectName = rs.getString("object_name");
-            Integer precision = (Integer) rs.getObject("data_precision");
-            Integer scale = (Integer) rs.getObject("data_scale");
+            // Oracle JDBC surfaces every NUMBER column as BigDecimal, never as
+            // Integer, so a direct (Integer) cast is a ClassCastException on the
+            // very first row. Measured live: the dictionary query ran for 21s
+            // (the ORDER BY sorts 205,874 rows before the first one arrives) and
+            // then the snapshot collapsed on that cast.
+            Integer precision = integerOrNull(rs.getObject("data_precision"));
+            Integer scale = integerOrNull(rs.getObject("data_scale"));
             columnsByObject.computeIfAbsent(objectName, k -> new ArrayList<>())
                 .add(new ColumnInfo(
                     rs.getString("column_name"),

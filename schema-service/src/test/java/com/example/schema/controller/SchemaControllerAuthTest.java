@@ -37,6 +37,14 @@ class SchemaControllerAuthTest {
     private SchemaController controller;
     private SchemaSnapshotService snapshotService;
 
+    private static com.example.schema.catalog.CatalogReader primaryReader() {
+        com.example.schema.catalog.CatalogReader r = org.mockito.Mockito.mock(com.example.schema.catalog.CatalogReader.class);
+        org.mockito.Mockito.when(r.sourceId()).thenReturn(com.example.schema.catalog.CatalogSourceRegistry.PRIMARY_SOURCE_ID);
+        org.mockito.Mockito.when(r.engine()).thenReturn("mssql");
+        org.mockito.Mockito.when(r.defaultSchema()).thenReturn("workcube_mikrolink");
+        return r;
+    }
+
     @BeforeEach
     void setUp() {
         snapshotService = mock(SchemaSnapshotService.class);
@@ -61,7 +69,7 @@ class SchemaControllerAuthTest {
                 mock(com.example.schema.service.SchemaDriftService.class),
                 mock(com.example.schema.service.QuerySuggestionService.class),
                 mock(com.example.schema.service.ReportingContractService.class),
-                new com.example.schema.catalog.CatalogSourceRegistry(java.util.List.of()));
+                new com.example.schema.catalog.CatalogSourceRegistry(java.util.List.of(primaryReader())));
         ReflectionTestUtils.setField(controller, "defaultSchema", "workcube_mikrolink");
         ReflectionTestUtils.setField(controller, "cacheTtlMinutes", 60);
     }

@@ -1,9 +1,7 @@
 package com.example.schema.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
-import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -20,9 +18,17 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
  */
 class MssqlConfigTest {
 
+    // MssqlConfig now builds the MSSQL pool itself (gitops#3594), so the context
+    // needs real connection properties rather than a mocked DataSource. The pool
+    // is lazy and initialization-fail-timeout=-1, so nothing connects here.
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(MssqlConfig.class)
-            .withBean(DataSource.class, () -> mock(DataSource.class));
+            .withPropertyValues(
+                "spring.datasource.url=jdbc:sqlserver://mssql.invalid:1433;databaseName=workcube_mikrolink",
+                "spring.datasource.username=u",
+                "spring.datasource.password=p",
+                "spring.datasource.driver-class-name=com.microsoft.sqlserver.jdbc.SQLServerDriver",
+                "spring.datasource.hikari.initialization-fail-timeout=-1");
 
     @Test
     void queryTimeout_defaultsTo60_whenPropertyAbsent() {

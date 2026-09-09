@@ -106,7 +106,14 @@ public class SchemaController {
             return ResponseEntity.status(401).build();
         }
 
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(source, defaultSchemaFor(source, schema));
+        // Resolve the effective schema here, not inside the reader: the cache
+        // key, the log line and any error must carry the real owner. Passing
+        // null through cached an Oracle snapshot under 'ifs|null' and made the
+        // failure surface as schema 'null' (measured live).
+        String target = (schema != null && !schema.isBlank())
+            ? schema
+            : sources.resolve(source).defaultSchema();
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(source, target);
         return ResponseEntity.ok()
             .cacheControl(CacheControl.maxAge(cacheTtlMinutes, TimeUnit.MINUTES))
             .body(snapshot);
@@ -121,24 +128,6 @@ public class SchemaController {
     @GetMapping("/sources")
     public ResponseEntity<List<Map<String, Object>>> listSources() {
         return ResponseEntity.ok(sources.describe());
-    }
-
-    /**
-     * Resolves the schema to read.
-     *
-     * <p>{@code schema.default-schema} names a Workcube MSSQL schema, so it is
-     * only a sensible fallback for the primary source. For any other source the
-     * absent schema is passed through as null and that source's own reader
-     * supplies its default — substituting the MSSQL name would send Oracle
-     * looking for an owner that cannot exist.
-     */
-    private String defaultSchemaFor(String source, String schema) {
-        if (schema != null && !schema.isBlank()) {
-            return schema;
-        }
-        boolean primary = source == null || source.isBlank()
-            || CatalogSourceRegistry.PRIMARY_SOURCE_ID.equalsIgnoreCase(source.trim());
-        return primary ? defaultSchema : null;
     }
 
     /**
