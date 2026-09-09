@@ -81,6 +81,31 @@ class SnapshotWarmupTest {
     }
 
     @Test
+    void productionConstructorDoesNotBlockTheListenerAndUsesADaemonWorker() throws Exception {
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Thread> worker = new java.util.concurrent.atomic.AtomicReference<>();
+        when(snapshots.buildSnapshot(anyString(), anyString())).thenAnswer(inv -> {
+            worker.set(Thread.currentThread());
+            entered.countDown();
+            release.await(5, java.util.concurrent.TimeUnit.SECONDS);
+            return snapshot();
+        });
+        SnapshotWarmup warmup = new SnapshotWarmup(registry, snapshots, true);
+
+        long t0 = System.nanoTime();
+        warmup.onReady();
+        long listenerMs = (System.nanoTime() - t0) / 1_000_000;
+
+        org.assertj.core.api.Assertions.assertThat(entered.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        org.assertj.core.api.Assertions.assertThat(listenerMs).as("ApplicationReadyEvent listener returns at once").isLessThan(1000);
+        org.assertj.core.api.Assertions.assertThat(worker.get()).isNotSameAs(Thread.currentThread());
+        org.assertj.core.api.Assertions.assertThat(worker.get().isDaemon()).isTrue();
+        org.assertj.core.api.Assertions.assertThat(worker.get().getName()).isEqualTo("snapshot-warmup");
+        release.countDown();
+    }
+
+    @Test
     void runsOffTheCallingThread() {
         when(snapshots.buildSnapshot(anyString(), anyString())).thenReturn(snapshot());
         List<Runnable> submitted = new java.util.ArrayList<>();

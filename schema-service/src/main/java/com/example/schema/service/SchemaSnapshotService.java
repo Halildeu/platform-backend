@@ -63,7 +63,10 @@ public class SchemaSnapshotService {
     // one that says "workcube" reach the same reader and must share one entry —
     // otherwise the start-up warm-up (SnapshotWarmup) and the Explorer's primary
     // lane would each build the same 100 s snapshot.
-    @Cacheable(value = "snapshot", key = SNAPSHOT_CACHE_KEY)
+    // sync=true: while the start-up warm-up (or an earlier request) is building a
+    // key, a second caller waits for that entry instead of starting a second
+    // 100 s build of the same 69 MB snapshot (Codex 01a08856 P1).
+    @Cacheable(value = "snapshot", key = SNAPSHOT_CACHE_KEY, sync = true)
     public SchemaSnapshot buildSnapshot(String source, String schema) {
         CatalogReader extractService = sources.resolve(source);
         log.info("Building schema snapshot for '{}' from source '{}' ({})...",
