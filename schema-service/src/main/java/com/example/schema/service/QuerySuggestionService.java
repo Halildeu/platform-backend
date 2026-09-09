@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.Locale;
 
 /**
  * Generates contextual SQL query suggestions based on schema patterns.
@@ -72,7 +73,7 @@ public class QuerySuggestionService {
 
         // 5. Date distribution (if date columns exist)
         Optional<ColumnInfo> dateCol = table.columns().stream()
-            .filter(c -> c.dataType().toLowerCase().contains("date") || c.dataType().toLowerCase().contains("datetime"))
+            .filter(c -> c.dataType().toLowerCase(Locale.ROOT).contains("date") || c.dataType().toLowerCase(Locale.ROOT).contains("datetime"))
             .findFirst();
 
         dateCol.ifPresent(col -> suggestions.add(new QuerySuggestion(

@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import java.util.Locale;
 
 @RestController
 @RequestMapping("/api/v1/schema")
@@ -245,13 +246,13 @@ public class SchemaController {
             @RequestParam(required = false) String schema,
             @RequestParam(required = false) String source) {
         SchemaSnapshot snapshot = snapshotFor(source, schema);
-        String query = q.toUpperCase();
+        String query = q.toUpperCase(Locale.ROOT);
 
         Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
 
         for (var entry : snapshot.tables().entrySet()) {
             for (var col : entry.getValue().columns()) {
-                if (col.name().toUpperCase().contains(query)) {
+                if (col.name().toUpperCase(Locale.ROOT).contains(query)) {
                     grouped.computeIfAbsent(col.name(), k -> new ArrayList<>())
                         .add(Map.of(
                             "table", entry.getKey(),

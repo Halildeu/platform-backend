@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.Locale;
 
 /**
  * AI-powered auto-description generation for tables and columns.
@@ -105,7 +106,7 @@ public class AiDescriptionService {
         if (col.identity()) desc.append("Otomatik artan (identity). ");
 
         // Naming patterns
-        String name = col.name().toUpperCase();
+        String name = col.name().toUpperCase(Locale.ROOT);
         if (name.endsWith("_DATE") || name.contains("DATE")) desc.append("Tarih alanı. ");
         else if (name.endsWith("_AMOUNT") || name.equals("AMOUNT")) desc.append("Tutar/miktar alanı. ");
         else if (name.endsWith("_NAME") || name.equals("NAME")) desc.append("İsim/ad alanı. ");

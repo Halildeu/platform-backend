@@ -13,6 +13,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.Locale;
 
 /**
  * AI-powered schema chat — answers natural language questions about the database.
@@ -73,12 +74,12 @@ public class AiChatService {
      * Try to answer common questions without LLM.
      */
     private ChatResponse tryLocalAnswer(String message, SchemaSnapshot snapshot) {
-        String lower = message.toLowerCase().trim();
+        String lower = message.toLowerCase(Locale.ROOT).trim();
 
         // "COLUMN_NAME hangi tablolarda var?"
         if (lower.contains("hangi tablo") || lower.contains("which table") || lower.contains("nerede")) {
             // Extract potential column name (uppercase word ending in _ID or _CODE)
-            String[] words = message.toUpperCase().split("[\\s,?.!]+");
+            String[] words = message.toUpperCase(Locale.ROOT).split("[\\s,?.!]+");
             for (String word : words) {
                 if ((word.endsWith("_ID") || word.endsWith("_CODE") || word.endsWith("_NAME")) && word.length() > 3) {
                     return searchColumn(word, snapshot);
@@ -100,7 +101,7 @@ public class AiChatService {
 
         // "TABLENAME tablosu hakkında bilgi"
         for (String tableName : snapshot.tables().keySet()) {
-            if (lower.contains(tableName.toLowerCase())) {
+            if (lower.contains(tableName.toLowerCase(Locale.ROOT))) {
                 return describeTable(tableName, snapshot);
             }
         }
@@ -188,7 +189,7 @@ public class AiChatService {
         );
 
         // Include relevant tables (mentioned in question)
-        String upper = question.toUpperCase();
+        String upper = question.toUpperCase(Locale.ROOT);
         for (var entry : snapshot.tables().entrySet()) {
             if (upper.contains(entry.getKey())) {
                 ctx.append(String.format("\nTable %s columns: %s\n", entry.getKey(),
@@ -242,7 +243,7 @@ public class AiChatService {
 
                     // Extract referenced tables
                     List<String> refs = snapshot.tables().keySet().stream()
-                        .filter(t -> text.toUpperCase().contains(t))
+                        .filter(t -> text.toUpperCase(Locale.ROOT).contains(t))
                         .limit(10)
                         .toList();
 

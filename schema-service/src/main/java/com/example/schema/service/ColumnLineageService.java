@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.Locale;
 
 /**
  * Column-level lineage — traces data flow through views and relationships.
@@ -55,16 +56,16 @@ public class ColumnLineageService {
                 if (sql == null) continue;
 
                 // Check if view references this table.column
-                String upper = sql.toUpperCase();
-                if (upper.contains(tableName.toUpperCase()) && upper.contains(columnName.toUpperCase())) {
+                String upper = sql.toUpperCase(Locale.ROOT);
+                if (upper.contains(tableName.toUpperCase(Locale.ROOT)) && upper.contains(columnName.toUpperCase(Locale.ROOT))) {
                     // Parse the view to find column mappings
                     Matcher m = SELECT_COL.matcher(sql);
                     while (m.find()) {
-                        String srcTable = m.group(1).toUpperCase();
-                        String srcCol = m.group(2).toUpperCase();
-                        String alias = m.group(3).toUpperCase();
+                        String srcTable = m.group(1).toUpperCase(Locale.ROOT);
+                        String srcCol = m.group(2).toUpperCase(Locale.ROOT);
+                        String alias = m.group(3).toUpperCase(Locale.ROOT);
 
-                        if (alias.equals(columnName.toUpperCase()) || srcCol.equals(columnName.toUpperCase())) {
+                        if (alias.equals(columnName.toUpperCase(Locale.ROOT)) || srcCol.equals(columnName.toUpperCase(Locale.ROOT))) {
                             String key = viewName + "." + srcTable + "." + srcCol;
                             if (visited.add(key)) {
                                 LineageNode viewNode = new LineageNode(viewName, alias, "transform");
