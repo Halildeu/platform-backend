@@ -129,3 +129,16 @@ schema:
     api-key: ${SCHEMA_AI_API_KEY:}
     api-url: ${SCHEMA_AI_API_URL:https://api.anthropic.com/v1/messages}
     model: ${SCHEMA_AI_MODEL:claude-sonnet-4-20250514}
+  report-gate:
+    # gitops#3608 — REPORT module gate on /api/v1/schema/**: the caller's own
+    # bearer is resolved through permission-service /authz/me and the request
+    # is allowed only when that projection grants the REPORT module (the same
+    # answer the shell's route guard uses). On everywhere; the k8s profile
+    # refuses to start with it off (ReportModuleGateConfig).
+    enabled: ${SCHEMA_REPORT_GATE_ENABLED:true}
+    permission-service-base-url: ${PERMISSION_SERVICE_BASE_URL:http://permission-service:8090}
+    cache-ttl: ${SCHEMA_REPORT_GATE_CACHE_TTL:10s}
+    # /authz/version is re-read at most this often; a revoke is honoured within it.
+    revision-memo: ${SCHEMA_REPORT_GATE_REVISION_MEMO:5s}
+    connect-timeout: 2s
+    request-timeout: 3s
