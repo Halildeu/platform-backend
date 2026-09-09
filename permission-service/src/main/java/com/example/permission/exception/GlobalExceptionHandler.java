@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.List;
 import java.util.UUID;
@@ -121,6 +122,16 @@ public class GlobalExceptionHandler {
             HttpMessageNotReadableException ex) {
         return build(HttpStatus.BAD_REQUEST, "BAD_REQUEST",
                 "İstek gövdesi okunamadı (geçersiz JSON).");
+    }
+
+    // gitops#3606: a request for a path no controller maps (e.g. GET
+    // /api/v1/permissions/me — the projection lives at /api/v1/authz/me) falls
+    // to the static-resource handler, which throws NoResourceFoundException;
+    // handleGeneric turned that into a 500 with a stack trace. Same controlled
+    // 404 the other services' handlers already return.
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(NoResourceFoundException ex) {
+        return build(HttpStatus.NOT_FOUND, "NOT_FOUND", "Kaynak bulunamadı.");
     }
 
     @ExceptionHandler(Exception.class)

@@ -10,6 +10,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.method.MethodValidationResult;
 import org.springframework.validation.method.ParameterValidationResult;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.http.HttpMethod;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -23,6 +25,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GlobalExceptionHandlerSliceETest {
 
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
+
+    @Test
+    void unknownRoute_returns404_notGeneric500() {
+        // gitops#3606: GET /api/v1/permissions/me (no such mapping) surfaced as
+        // INTERNAL_ERROR 500 because NoResourceFoundException fell through to handleGeneric.
+        NoResourceFoundException ex = new NoResourceFoundException(HttpMethod.GET, "api/v1/permissions/me");
+
+        ResponseEntity<ErrorResponse> resp = handler.handleNotFound(ex);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(resp.getBody()).isNotNull();
+        assertThat(resp.getBody().getError()).isEqualTo("NOT_FOUND");
+    }
 
     @Test
     void handleHandlerMethodValidation_returns400_emptyResults() throws Exception {
