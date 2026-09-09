@@ -57,6 +57,9 @@ public class OracleSourceConfig {
     @Value("${schema.sources.oracle.query-timeout-seconds:120}")
     private int queryTimeoutSeconds;
 
+    @Value("${schema.sources.oracle.fetch-size:1000}")
+    private int fetchSize;
+
     @Bean(destroyMethod = "close")
     public HikariDataSource oracleSourceDataSource() {
         HikariDataSource ds = new HikariDataSource();
@@ -74,6 +77,13 @@ public class OracleSourceConfig {
         // fast when the ERP is briefly unreachable and takes the whole service
         // down with it, even though every other source is healthy.
         ds.setInitializationFailTimeout(-1);
+        // Oracle JDBC silently drops the fetch size to 1 for any SELECT that
+        // projects a LONG column — and ALL_VIEWS.TEXT is one. Measured live in
+        // the test cluster: 10,885 view definitions took 138s (one round trip
+        // per row at ~13ms) against 1.5s for the same bulk read with a client
+        // that keeps its array size. This property restores the configured
+        // fetch size for LONG selects; the template below sets that size.
+        ds.addDataSourceProperty("oracle.jdbc.useFetchSizeWithLongColumn", "true");
         log.info("Oracle catalog source '{}' configured (schema {}, pool {})",
             sourceId, defaultSchema, poolSize);
         return ds;
@@ -89,6 +99,10 @@ public class OracleSourceConfig {
             @Qualifier("oracleSourceDataSource") HikariDataSource oracleSourceDataSource) {
         NamedParameterJdbcTemplate jdbc = new NamedParameterJdbcTemplate(oracleSourceDataSource);
         jdbc.getJdbcTemplate().setQueryTimeout(queryTimeoutSeconds);
+        // The driver default is 10 rows per round trip; the dictionary read is
+        // 205,874 rows. Measured live: ~60s in Java against 22s for the same
+        // query with a 1000-row array size.
+        jdbc.getJdbcTemplate().setFetchSize(fetchSize);
         return new OracleCatalogReader(sourceId, jdbc, defaultSchema);
     }
 }

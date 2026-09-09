@@ -66,6 +66,18 @@ class DataSourceWiringTest {
     }
 
     @Test
+    void oraclePoolKeepsItsFetchSizeAcrossLongColumns() {
+        runner.run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            HikariDataSource oracle = ctx.getBean("oracleSourceDataSource", HikariDataSource.class);
+            // Without this the driver fetches LONG selects one row per round trip:
+            // 138s for 10,885 view definitions, measured live.
+            assertThat(oracle.getDataSourceProperties())
+                .containsEntry("oracle.jdbc.useFetchSizeWithLongColumn", "true");
+        });
+    }
+
+    @Test
     void oracleReaderIsRegisteredAlongsideTheMssqlPool() {
         runner.run(ctx -> {
             assertThat(ctx).hasNotFailed();

@@ -69,6 +69,10 @@ schema:
       # The dictionary read spans 205,874 columns on the measured instance and
       # takes ~22s, so the MSSQL-sized 60s default is uncomfortably tight.
       query-timeout-seconds: ${SCHEMA_ORACLE_QUERY_TIMEOUT_SECONDS:120}
+      # Rows per round trip. The driver default of 10 made the 205,874-row
+      # dictionary read take ~60s; LONG selects additionally need
+      # useFetchSizeWithLongColumn (set in OracleSourceConfig) or they drop to 1.
+      fetch-size: ${SCHEMA_ORACLE_FETCH_SIZE:1000}
 
   default-schema: ${SCHEMA_DEFAULT_SCHEMA:workcube_mikrolink}
   cache-ttl-minutes: ${SCHEMA_CACHE_TTL:60}
