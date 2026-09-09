@@ -42,6 +42,7 @@ class SnapshotWarmupCacheTest {
     static class CountingSnapshotService extends SchemaSnapshotService {
         final AtomicInteger builds = new AtomicInteger();
         volatile CountDownLatch holdBuild;
+        volatile CountDownLatch entered;
         volatile boolean failNext;
 
         CountingSnapshotService(CatalogSourceRegistry sources) {
@@ -51,6 +52,10 @@ class SnapshotWarmupCacheTest {
         @Override
         public SchemaSnapshot buildSnapshot(String source, String schema) {
             builds.incrementAndGet();
+            CountDownLatch in = entered;
+            if (in != null) {
+                in.countDown();
+            }
             CountDownLatch latch = holdBuild;
             if (latch != null) {
                 try {
@@ -137,12 +142,17 @@ class SnapshotWarmupCacheTest {
     @Test
     void concurrentCallersOfOneKeyBuildOnce() throws Exception {
         CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch entered = new CountDownLatch(1);
         target.holdBuild = release;
+        target.entered = entered;
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             Future<SchemaSnapshot> warm = pool.submit(() -> proxied.buildSnapshot("workcube", "workcube_mikrolink"));
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("first caller is inside the build").isTrue();
             Future<SchemaSnapshot> user = pool.submit(() -> proxied.buildSnapshot(null, "workcube_mikrolink"));
-            Thread.sleep(200);                         // both callers are in, one is building
+            // the second caller is now blocked in the cache interceptor on the same key
+            Thread.sleep(200);
+            assertThat(user.isDone()).as("second caller waits instead of building").isFalse();
             target.holdBuild = null;
             release.countDown();
 
