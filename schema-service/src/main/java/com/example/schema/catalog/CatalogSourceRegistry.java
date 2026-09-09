@@ -63,6 +63,11 @@ public class CatalogSourceRegistry {
             .toList();
     }
 
+    /** Every registered reader, primary first (registration order). */
+    public List<CatalogReader> readers() {
+        return List.copyOf(readers.values());
+    }
+
     public boolean has(String sourceId) {
         return sourceId != null && readers.containsKey(sourceId.trim().toLowerCase(java.util.Locale.ROOT));
     }

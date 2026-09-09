@@ -76,6 +76,12 @@ schema:
 
   default-schema: ${SCHEMA_DEFAULT_SCHEMA:workcube_mikrolink}
   cache-ttl-minutes: ${SCHEMA_CACHE_TTL:60}
+  snapshot:
+    warmup:
+      # platform-backend#1149: build every source's default-schema snapshot right
+      # after start-up (sequentially, on a daemon thread) so the first Explorer
+      # user after a rollout does not wait ~100 s for Workcube / ~40 s for IFS.
+      enabled: ${SCHEMA_SNAPSHOT_WARMUP_ENABLED:true}
   max-tables: ${SCHEMA_MAX_TABLES:5000}
   mssql:
     # MSSQL JDBC query timeout (saniye) — sys.* katalog okumaları için
