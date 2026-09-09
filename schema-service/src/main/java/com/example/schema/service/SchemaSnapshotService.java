@@ -28,6 +28,11 @@ import java.util.stream.Collectors;
 @Service
 public class SchemaSnapshotService {
 
+    /** SpEL for the snapshot cache key — see the comment on {@link #buildSnapshot}; pinned by SnapshotCacheKeyTest. */
+    public static final String SNAPSHOT_CACHE_KEY =
+        "((#source == null || #source.isBlank()) ? T(com.example.schema.catalog.CatalogSourceRegistry).PRIMARY_SOURCE_ID"
+            + " : #source.trim().toLowerCase(T(java.util.Locale).ROOT)) + '|' + #schema";
+
     private static final Logger log = LoggerFactory.getLogger(SchemaSnapshotService.class);
 
     private final CatalogSourceRegistry sources;
@@ -54,7 +59,11 @@ public class SchemaSnapshotService {
      * would serve one ERP's snapshot under the other's name — a silent, very
      * confusing form of data leakage between sources.
      */
-    @Cacheable(value = "snapshot", key = "(#source == null ? '' : #source) + '|' + #schema")
+    // The key names the resolved source: a request that leaves `source` empty and
+    // one that says "workcube" reach the same reader and must share one entry —
+    // otherwise the start-up warm-up (SnapshotWarmup) and the Explorer's primary
+    // lane would each build the same 100 s snapshot.
+    @Cacheable(value = "snapshot", key = SNAPSHOT_CACHE_KEY)
     public SchemaSnapshot buildSnapshot(String source, String schema) {
         CatalogReader extractService = sources.resolve(source);
         log.info("Building schema snapshot for '{}' from source '{}' ({})...",
