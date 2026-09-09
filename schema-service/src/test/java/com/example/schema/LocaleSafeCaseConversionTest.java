@@ -15,37 +15,151 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * gitops#3603 — schema-service matches SQL identifiers by upper/lower-casing
- * them. {@code String.toUpperCase()} without a locale follows the JVM default,
- * and on {@code tr_TR} it turns {@code i} into U+0130 (dotted capital I), which
- * is outside {@code [A-Z]} and never equals the catalogue's own spelling — every
- * identifier containing an {@code i} then silently stops matching (caught live in
- * RelationshipDiscoveryService, gitops#3594). This test is the machine-enforced
- * ban: every case conversion in main sources must name {@code Locale.ROOT}.
+ * them. A case conversion that follows the JVM default locale turns {@code i}
+ * into U+0130 on {@code tr_TR}, which is outside {@code [A-Z]} and never equals
+ * the catalogue's own spelling — every identifier containing an {@code i} then
+ * silently stops matching (caught live in RelationshipDiscoveryService,
+ * gitops#3594). This test is the machine-enforced ban on default-locale case
+ * conversion in main sources: {@code toUpperCase()} / {@code toLowerCase()}
+ * without an argument (any spacing, across lines), the method references
+ * {@code ::toUpperCase} / {@code ::toLowerCase}, and the explicit
+ * {@code Locale.getDefault()} argument. Comments and string/char/text-block
+ * literals are stripped first so they neither hide nor fake a violation.
+ * Natural-language text that must follow Turkish rules names a Turkish locale
+ * explicitly (see AiChatService); that is allowed by construction.
  */
 class LocaleSafeCaseConversionTest {
 
-    private static final Pattern LOCALE_LESS = Pattern.compile("\\.(toUpperCase|toLowerCase)\\(\\)");
+    private static final Pattern DEFAULT_LOCALE_CONVERSION = Pattern.compile(
+            "\\.\\s*(toUpperCase|toLowerCase)\\s*\\(\\s*\\)"                                   // s.toUpperCase( )
+            + "|::\\s*(toUpperCase|toLowerCase)\\b"                                             // String::toUpperCase
+            + "|\\.\\s*(toUpperCase|toLowerCase)\\s*\\(\\s*Locale\\s*\\.\\s*getDefault\\s*\\(\\s*\\)\\s*\\)"); // explicit default
 
     @Test
-    void everyCaseConversionInMainSourcesNamesALocale() throws IOException {
+    void noCaseConversionInMainSourcesFollowsTheDefaultLocale() throws IOException {
         Path root = Path.of("src/main/java");
         assertThat(root).isDirectory();
         List<String> offenders = new ArrayList<>();
         try (Stream<Path> files = Files.walk(root)) {
             for (Path file : files.filter(p -> p.toString().endsWith(".java")).toList()) {
-                List<String> lines = Files.readAllLines(file);
-                for (int i = 0; i < lines.size(); i++) {
-                    String line = lines.get(i);
-                    String code = line.replaceFirst("//.*$", "");
-                    Matcher m = LOCALE_LESS.matcher(code);
-                    if (m.find()) {
-                        offenders.add(root.relativize(file) + ":" + (i + 1) + "  " + line.strip());
-                    }
+                String code = stripCommentsAndLiterals(Files.readString(file));
+                Matcher m = DEFAULT_LOCALE_CONVERSION.matcher(code);
+                while (m.find()) {
+                    offenders.add(root.relativize(file) + ":" + lineOf(code, m.start()) + "  " + m.group().strip());
                 }
             }
         }
         assertThat(offenders)
-                .as("locale-less toUpperCase()/toLowerCase() — use Locale.ROOT (gitops#3603)")
+                .as("default-locale toUpperCase/toLowerCase — name Locale.ROOT (or an explicit language) (gitops#3603)")
                 .isEmpty();
+    }
+
+    @Test
+    void scannerSeesThroughSpacingLinesAndMethodReferences() {
+        String src = """
+                class X {
+                  String a(String s) { return s.toUpperCase( ); }
+                  String b(String s) { return s
+                      .toLowerCase(
+                      ); }
+                  Object c() { return java.util.stream.Stream.of("x").map(String::toUpperCase); }
+                  String d(String s) { return s.toUpperCase(java.util.Locale.getDefault()); }
+                  String e(String s) { return s.toUpperCase(Locale.getDefault()); }
+                  String ok1(String s) { return s.toUpperCase(Locale.ROOT); }
+                  String ok2(String s) { return s.toLowerCase(Locale.forLanguageTag("tr")); }
+                }
+                """;
+        assertThat(findAll(stripCommentsAndLiterals(src))).hasSize(4);
+    }
+
+    @Test
+    void scannerIgnoresCommentsAndLiteralsButNotCodeAfterThem() {
+        String src = """
+                class Y {
+                  // s.toUpperCase() in a line comment
+                  /* s.toLowerCase() in a block
+                     comment */
+                  String lit = "s.toUpperCase()";
+                  String block = \"\"\"
+                      s.toLowerCase()
+                      \"\"\";
+                  char q = '"';
+                  String url = "https://host/"; String real = lit.toUpperCase();
+                }
+                """;
+        List<String> hits = findAll(stripCommentsAndLiterals(src));
+        assertThat(hits).as("only the real call after the string literal").hasSize(1);
+    }
+
+    private static List<String> findAll(String code) {
+        List<String> out = new ArrayList<>();
+        Matcher m = DEFAULT_LOCALE_CONVERSION.matcher(code);
+        while (m.find()) {
+            out.add(m.group());
+        }
+        return out;
+    }
+
+    private static int lineOf(String text, int offset) {
+        int line = 1;
+        for (int i = 0; i < offset; i++) {
+            if (text.charAt(i) == '\n') {
+                line++;
+            }
+        }
+        return line;
+    }
+
+    /**
+     * Replaces comments and literal contents with spaces (newlines kept so line
+     * numbers stay right). Handles {@code //}, {@code /* *}{@code /}, string,
+     * char and text-block literals with escapes.
+     */
+    static String stripCommentsAndLiterals(String s) {
+        StringBuilder out = new StringBuilder(s.length());
+        int i = 0;
+        int n = s.length();
+        while (i < n) {
+            char c = s.charAt(i);
+            if (c == '/' && i + 1 < n && s.charAt(i + 1) == '/') {
+                while (i < n && s.charAt(i) != '\n') {
+                    out.append(' ');
+                    i++;
+                }
+            } else if (c == '/' && i + 1 < n && s.charAt(i + 1) == '*') {
+                int end = s.indexOf("*/", i + 2);
+                end = end < 0 ? n : end + 2;
+                for (; i < end; i++) {
+                    out.append(s.charAt(i) == '\n' ? '\n' : ' ');
+                }
+            } else if (c == '"' && s.startsWith("\"\"\"", i)) {
+                int end = s.indexOf("\"\"\"", i + 3);
+                end = end < 0 ? n : end + 3;
+                for (; i < end; i++) {
+                    out.append(s.charAt(i) == '\n' ? '\n' : ' ');
+                }
+            } else if (c == '"' || c == '\'') {
+                char quote = c;
+                out.append(' ');
+                i++;
+                while (i < n && s.charAt(i) != quote && s.charAt(i) != '\n') {
+                    if (s.charAt(i) == '\\' && i + 1 < n) {
+                        out.append("  ");
+                        i += 2;
+                    } else {
+                        out.append(' ');
+                        i++;
+                    }
+                }
+                if (i < n) {
+                    out.append(s.charAt(i) == '\n' ? '\n' : ' ');
+                    i++;
+                }
+            } else {
+                out.append(c);
+                i++;
+            }
+        }
+        return out.toString();
     }
 }
