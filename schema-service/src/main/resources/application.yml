@@ -51,6 +51,25 @@ management:
       enabled: false
 
 schema:
+  sources:
+    # Second catalog source: IFS ERP Oracle (gitops#3594). Off by default so an
+    # environment without the credentials or the network route starts unchanged.
+    # Credentials are rendered from Vault (kv/platform/oracle-ifs) into these env
+    # vars by the schema-service ExternalSecret — never written here.
+    oracle:
+      enabled: ${SCHEMA_ORACLE_ENABLED:false}
+      id: ${SCHEMA_ORACLE_SOURCE_ID:ifs}
+      jdbc-url: ${SCHEMA_ORACLE_JDBC_URL:}
+      username: ${SCHEMA_ORACLE_USERNAME:}
+      password: ${SCHEMA_ORACLE_PASSWORD:}
+      # IFS publishes business data through the IFSAPP view layer; its base
+      # tables are not visible to a reporting account.
+      default-schema: ${SCHEMA_ORACLE_DEFAULT_SCHEMA:IFSAPP}
+      pool-size: ${SCHEMA_ORACLE_POOL_SIZE:4}
+      # The dictionary read spans 205,874 columns on the measured instance and
+      # takes ~22s, so the MSSQL-sized 60s default is uncomfortably tight.
+      query-timeout-seconds: ${SCHEMA_ORACLE_QUERY_TIMEOUT_SECONDS:120}
+
   default-schema: ${SCHEMA_DEFAULT_SCHEMA:workcube_mikrolink}
   cache-ttl-minutes: ${SCHEMA_CACHE_TTL:60}
   max-tables: ${SCHEMA_MAX_TABLES:5000}

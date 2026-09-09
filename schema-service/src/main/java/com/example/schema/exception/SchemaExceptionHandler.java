@@ -1,6 +1,7 @@
 package com.example.schema.exception;
 
 import java.util.Map;
+import java.util.NoSuchElementException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -43,5 +44,21 @@ public class SchemaExceptionHandler {
                         "error", "snapshot_unavailable",
                         "schema", ex.schema(),
                         "reason", SNAPSHOT_UNAVAILABLE_REASON));
+    }
+
+    /**
+     * An unknown {@code source} is the caller's mistake, not an outage, so it
+     * answers 400 rather than the 500 a bare {@link NoSuchElementException}
+     * would produce. The message names the configured sources — they are
+     * deployment topology, not a secret, and without them a caller who
+     * mistypes has nothing to correct against.
+     */
+    @ExceptionHandler(NoSuchElementException.class)
+    public ResponseEntity<Map<String, String>> handleUnknownSource(NoSuchElementException ex) {
+        log.warn("Unknown catalog source requested: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Map.of(
+                        "error", "unknown_source",
+                        "reason", ex.getMessage()));
     }
 }

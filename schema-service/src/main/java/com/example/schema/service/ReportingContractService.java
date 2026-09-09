@@ -69,7 +69,7 @@ public class ReportingContractService {
      * @return the allowlist-filtered, deterministically ordered contract
      */
     public ReportingContractSnapshot buildContract(String schema) {
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(schema);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, schema);
 
         List<ReportingContractTable> tables = new ArrayList<>();
         for (TableInfo table : snapshot.tables().values()) {

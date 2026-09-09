@@ -11,6 +11,8 @@ import com.example.schema.model.ObjectInfo;
 import com.example.schema.model.StorageInfo;
 import com.example.schema.model.TableInfo;
 import com.example.schema.model.UniqueConstraintInfo;
+import com.example.schema.catalog.CatalogReader;
+import com.example.schema.catalog.CatalogSourceRegistry;
 import com.example.schema.model.UniqueConstraintType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,7 +28,7 @@ import java.time.LocalDateTime;
 import java.util.*;
 
 @Service
-public class SchemaExtractService {
+public class SchemaExtractService implements CatalogReader {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaExtractService.class);
 
@@ -46,6 +48,23 @@ public class SchemaExtractService {
 
     public SchemaExtractService(NamedParameterJdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /**
+     * This reader serves the source the primary {@code spring.datasource} points
+     * at — the Workcube MSSQL instance. Naming it lets a second engine
+     * (gitops#3594 added Oracle) sit alongside without either one having to know
+     * about the other; {@link com.example.schema.catalog.CatalogSourceRegistry}
+     * resolves between them.
+     */
+    @Override
+    public String sourceId() {
+        return CatalogSourceRegistry.PRIMARY_SOURCE_ID;
+    }
+
+    @Override
+    public String engine() {
+        return "mssql";
     }
 
     @Cacheable(value = "tables", key = "#schema")

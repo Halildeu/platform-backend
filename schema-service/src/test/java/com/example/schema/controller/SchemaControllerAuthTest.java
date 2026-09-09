@@ -49,7 +49,7 @@ class SchemaControllerAuthTest {
                 .domains(Map.of())
                 .analysis(new SchemaSnapshot.Analysis(List.of(), List.of()))
                 .build();
-        when(snapshotService.buildSnapshot(org.mockito.ArgumentMatchers.anyString()))
+        when(snapshotService.buildSnapshot(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString()))
                 .thenReturn(fakeSnapshot);
 
         controller = new SchemaController(
@@ -60,7 +60,8 @@ class SchemaControllerAuthTest {
                 mock(com.example.schema.service.SchemaHealthService.class),
                 mock(com.example.schema.service.SchemaDriftService.class),
                 mock(com.example.schema.service.QuerySuggestionService.class),
-                mock(com.example.schema.service.ReportingContractService.class));
+                mock(com.example.schema.service.ReportingContractService.class),
+                new com.example.schema.catalog.CatalogSourceRegistry(java.util.List.of()));
         ReflectionTestUtils.setField(controller, "defaultSchema", "workcube_mikrolink");
         ReflectionTestUtils.setField(controller, "cacheTtlMinutes", 60);
     }
@@ -71,7 +72,7 @@ class SchemaControllerAuthTest {
         ReflectionTestUtils.setField(controller, "snapshotInternalApiKey", "");
 
         ResponseEntity<SchemaSnapshot> response =
-                controller.getSnapshot(null, null, null);
+                controller.getSnapshot(null, null, null, null);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
@@ -82,7 +83,7 @@ class SchemaControllerAuthTest {
         ReflectionTestUtils.setField(controller, "snapshotInternalApiKey", "vault-secret-key");
 
         ResponseEntity<SchemaSnapshot> response =
-                controller.getSnapshot(null, "vault-secret-key", null);
+                controller.getSnapshot(null, null, "vault-secret-key", null);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
@@ -95,7 +96,7 @@ class SchemaControllerAuthTest {
         Jwt jwt = mock(Jwt.class);
 
         ResponseEntity<SchemaSnapshot> response =
-                controller.getSnapshot(null, null, jwt);
+                controller.getSnapshot(null, null, null, jwt);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
@@ -106,7 +107,7 @@ class SchemaControllerAuthTest {
         ReflectionTestUtils.setField(controller, "snapshotInternalApiKey", "vault-secret-key");
 
         ResponseEntity<SchemaSnapshot> response =
-                controller.getSnapshot(null, null, null);
+                controller.getSnapshot(null, null, null, null);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
@@ -117,7 +118,7 @@ class SchemaControllerAuthTest {
         ReflectionTestUtils.setField(controller, "snapshotInternalApiKey", "vault-secret-key");
 
         ResponseEntity<SchemaSnapshot> response =
-                controller.getSnapshot(null, "wrong-key", null);
+                controller.getSnapshot(null, null, "wrong-key", null);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }

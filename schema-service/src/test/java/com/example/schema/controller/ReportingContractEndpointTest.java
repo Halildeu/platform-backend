@@ -57,7 +57,8 @@ class ReportingContractEndpointTest {
                 mock(com.example.schema.service.SchemaHealthService.class),
                 mock(com.example.schema.service.SchemaDriftService.class),
                 mock(com.example.schema.service.QuerySuggestionService.class),
-                reportingContractService);
+                reportingContractService,
+                new com.example.schema.catalog.CatalogSourceRegistry(java.util.List.of()));
         ReflectionTestUtils.setField(controller, "defaultSchema", "workcube_mikrolink");
         ReflectionTestUtils.setField(controller, "cacheTtlMinutes", 60);
     }

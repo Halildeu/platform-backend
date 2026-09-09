@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.example.schema.exception.SnapshotUnavailableException;
+import com.example.schema.catalog.CatalogSourceRegistry;
 import com.example.schema.model.ObjectInfo;
 import com.example.schema.model.SchemaSnapshot;
 import com.example.schema.service.discovery.RelationshipDiscoveryService;
@@ -30,15 +31,25 @@ class SchemaSnapshotServiceTest {
     private final SchemaExtractService extract = mock(SchemaExtractService.class);
     private final RelationshipDiscoveryService discovery = mock(RelationshipDiscoveryService.class);
     private final DomainClusteringService clustering = mock(DomainClusteringService.class);
+    // The snapshot builder now reaches its reader through the source registry
+    // (gitops#3594). A registry holding only the MSSQL reader reproduces the
+    // single-source topology these tests were written against.
+    private final CatalogSourceRegistry sources = registryOf(extract);
     private final SchemaSnapshotService service =
-            new SchemaSnapshotService(extract, discovery, clustering);
+            new SchemaSnapshotService(sources, discovery, clustering);
+
+    private static CatalogSourceRegistry registryOf(SchemaExtractService reader) {
+        when(reader.sourceId()).thenReturn(CatalogSourceRegistry.PRIMARY_SOURCE_ID);
+        when(reader.engine()).thenReturn("mssql");
+        return new CatalogSourceRegistry(java.util.List.of(reader));
+    }
 
     @Test
     void extractObjectsThrows_snapshotStillBuilt_objectsEmpty() {
         when(extract.extractObjects(anyString()))
                 .thenThrow(new RuntimeException("sys.objects unavailable"));
 
-        SchemaSnapshot snap = service.buildSnapshot("workcube_mikrolink");
+        SchemaSnapshot snap = service.buildSnapshot(null, "workcube_mikrolink");
 
         assertThat(snap).isNotNull();
         assertThat(snap.objects()).isEmpty();
@@ -52,7 +63,7 @@ class SchemaSnapshotServiceTest {
                 LocalDateTime.of(2021, 6, 15, 14, 30), Map.of());
         when(extract.extractObjects(anyString())).thenReturn(List.of(obj));
 
-        SchemaSnapshot snap = service.buildSnapshot("workcube_mikrolink");
+        SchemaSnapshot snap = service.buildSnapshot(null, "workcube_mikrolink");
 
         assertThat(snap.objects()).containsExactly(obj);
     }
@@ -64,7 +75,7 @@ class SchemaSnapshotServiceTest {
         when(extract.extractStorage(anyString()))
                 .thenThrow(new RuntimeException("VIEW DATABASE STATE denied"));
 
-        SchemaSnapshot snap = service.buildSnapshot("workcube_mikrolink");
+        SchemaSnapshot snap = service.buildSnapshot(null, "workcube_mikrolink");
 
         assertThat(snap).isNotNull();
         assertThat(snap.storage()).isEmpty();
@@ -75,7 +86,7 @@ class SchemaSnapshotServiceTest {
         when(extract.extractChangeData(anyString()))
                 .thenThrow(new RuntimeException("sys.change_tracking_tables unavailable"));
 
-        SchemaSnapshot snap = service.buildSnapshot("workcube_mikrolink");
+        SchemaSnapshot snap = service.buildSnapshot(null, "workcube_mikrolink");
 
         assertThat(snap).isNotNull();
         assertThat(snap.changeData()).isEmpty();
@@ -86,7 +97,7 @@ class SchemaSnapshotServiceTest {
         when(extract.extractDatabaseOptions())
                 .thenThrow(new RuntimeException("sys.databases not visible"));
 
-        SchemaSnapshot snap = service.buildSnapshot("workcube_mikrolink");
+        SchemaSnapshot snap = service.buildSnapshot(null, "workcube_mikrolink");
 
         assertThat(snap).isNotNull();
         assertThat(snap.databaseOptions()).isNull();
@@ -102,7 +113,7 @@ class SchemaSnapshotServiceTest {
         when(extract.extractTables(anyString()))
                 .thenThrow(new RuntimeException("base extraction down"));
 
-        assertThatThrownBy(() -> service.buildSnapshot("workcube_mikrolink"))
+        assertThatThrownBy(() -> service.buildSnapshot(null, "workcube_mikrolink"))
                 .isInstanceOf(SnapshotUnavailableException.class)
                 .hasMessageContaining("workcube_mikrolink")
                 .cause().hasMessageContaining("base extraction down");

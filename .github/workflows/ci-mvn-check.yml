@@ -61,12 +61,15 @@ jobs:
       - name: Install common-auth to local Maven repo (schema-service dependency)
         run: ./mvnw -q -DskipTests -pl common-auth -am install
 
-      - name: Build schema-service (standalone)
+      # Both steps used to pass -DskipTests, so schema-service's tests compiled
+      # in CI but never ran — 202 of them, silently, for as long as this job has
+      # existed. `verify` runs them now; a green check here means the suite
+      # actually passed rather than merely building.
+      - name: Build and test schema-service (standalone)
         run: |
           test -f schema-service/pom.xml || (echo "schema-service/pom.xml missing!" && exit 1)
           cd schema-service
-          ../mvnw -q -DskipTests test-compile
-          ../mvnw -q -DskipTests verify
+          ../mvnw -q -B verify
 
   notification-orchestrator-test:
     name: notification-orchestrator Testcontainers PG test (Faz 23.1 Foundation)

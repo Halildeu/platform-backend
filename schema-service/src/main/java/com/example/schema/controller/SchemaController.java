@@ -1,5 +1,6 @@
 package com.example.schema.controller;
 
+import com.example.schema.catalog.CatalogSourceRegistry;
 import com.example.schema.model.Relationship;
 import com.example.schema.model.ReportingContractSnapshot;
 import com.example.schema.model.SchemaSnapshot;
@@ -37,6 +38,7 @@ public class SchemaController {
     private final SchemaDriftService driftService;
     private final QuerySuggestionService querySuggestionService;
     private final ReportingContractService reportingContractService;
+    private final CatalogSourceRegistry sources;
 
     @Value("${schema.default-schema:workcube_mikrolink}")
     private String defaultSchema;
@@ -54,7 +56,8 @@ public class SchemaController {
                             SchemaHealthService healthService,
                             SchemaDriftService driftService,
                             QuerySuggestionService querySuggestionService,
-                            ReportingContractService reportingContractService) {
+                            ReportingContractService reportingContractService,
+                            CatalogSourceRegistry sources) {
         this.extractService = extractService;
         this.snapshotService = snapshotService;
         this.lookupService = lookupService;
@@ -63,6 +66,7 @@ public class SchemaController {
         this.driftService = driftService;
         this.querySuggestionService = querySuggestionService;
         this.reportingContractService = reportingContractService;
+        this.sources = sources;
     }
 
     /**
@@ -87,6 +91,7 @@ public class SchemaController {
     @GetMapping("/snapshot")
     public ResponseEntity<SchemaSnapshot> getSnapshot(
             @RequestParam(required = false) String schema,
+            @RequestParam(required = false) String source,
             @RequestHeader(value = INTERNAL_API_KEY_HEADER, required = false) String providedKey,
             @AuthenticationPrincipal Jwt jwt) {
 
@@ -101,11 +106,39 @@ public class SchemaController {
             return ResponseEntity.status(401).build();
         }
 
-        String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(source, defaultSchemaFor(source, schema));
         return ResponseEntity.ok()
             .cacheControl(CacheControl.maxAge(cacheTtlMinutes, TimeUnit.MINUTES))
             .body(snapshot);
+    }
+
+    /**
+     * Every catalog source this deployment can read, for the source picker.
+     *
+     * <p>A single-source deployment answers with just the primary entry, so the
+     * UI can render the picker identically whether or not a second ERP is wired.
+     */
+    @GetMapping("/sources")
+    public ResponseEntity<List<Map<String, Object>>> listSources() {
+        return ResponseEntity.ok(sources.describe());
+    }
+
+    /**
+     * Resolves the schema to read.
+     *
+     * <p>{@code schema.default-schema} names a Workcube MSSQL schema, so it is
+     * only a sensible fallback for the primary source. For any other source the
+     * absent schema is passed through as null and that source's own reader
+     * supplies its default — substituting the MSSQL name would send Oracle
+     * looking for an owner that cannot exist.
+     */
+    private String defaultSchemaFor(String source, String schema) {
+        if (schema != null && !schema.isBlank()) {
+            return schema;
+        }
+        boolean primary = source == null || source.isBlank()
+            || CatalogSourceRegistry.PRIMARY_SOURCE_ID.equalsIgnoreCase(source.trim());
+        return primary ? defaultSchema : null;
     }
 
     /**
@@ -169,7 +202,7 @@ public class SchemaController {
             @PathVariable String tableName,
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
 
         TableInfo table = snapshot.tables().get(tableName);
         if (table == null) {
@@ -205,7 +238,7 @@ public class SchemaController {
             @RequestParam String q,
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
         String query = q.toUpperCase();
 
         Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
@@ -251,7 +284,7 @@ public class SchemaController {
             @RequestParam(defaultValue = "2") int hops,
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
 
         if (!snapshot.tables().containsKey(tableName)) {
             return ResponseEntity.notFound().build();
@@ -293,7 +326,7 @@ public class SchemaController {
     public ResponseEntity<Map<String, Object>> getDomains(
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
 
         List<Map<String, Object>> domains = snapshot.domains().entrySet().stream()
             .sorted((a, b) -> b.getValue().size() - a.getValue().size())
@@ -317,7 +350,7 @@ public class SchemaController {
     public ResponseEntity<List<SchemaSnapshot.HubTable>> getHubs(
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
         return ResponseEntity.ok(snapshot.analysis().hubTables());
     }
 
@@ -332,7 +365,7 @@ public class SchemaController {
             @RequestParam(defaultValue = "3") int limit,
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
 
         if (!snapshot.tables().containsKey(from)) {
             return ResponseEntity.badRequest().body(Map.of("error", "Table not found: " + from));
@@ -358,7 +391,7 @@ public class SchemaController {
     public ResponseEntity<SchemaHealthService.HealthReport> getHealthScore(
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
         return ResponseEntity.ok(healthService.evaluate(snapshot));
     }
 
@@ -369,7 +402,7 @@ public class SchemaController {
     public ResponseEntity<SchemaDriftService.DriftReport> getDrift(
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
         return ResponseEntity.ok(driftService.computeDrift(snapshot, target));
     }
 
@@ -394,7 +427,7 @@ public class SchemaController {
             @PathVariable String tableName,
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
         if (!snapshot.tables().containsKey(tableName)) {
             return ResponseEntity.notFound().build();
         }
@@ -428,7 +461,8 @@ public class SchemaController {
      * List all available schemas with table counts.
      */
     @GetMapping("/schemas")
-    public ResponseEntity<List<Map<String, Object>>> listSchemas() {
-        return ResponseEntity.ok(extractService.listSchemas());
+    public ResponseEntity<List<Map<String, Object>>> listSchemas(
+            @RequestParam(required = false) String source) {
+        return ResponseEntity.ok(sources.resolve(source).listSchemas());
     }
 }
