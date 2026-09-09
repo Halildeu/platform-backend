@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.regex.Pattern;
+import java.util.Locale;
 
 /**
  * FK Lookup Service — resolves foreign key IDs to human-readable display values.
@@ -73,7 +74,7 @@ public class SchemaLookupService {
 
         // Resolve table metadata to find PK and display columns
         Map<String, TableInfo> tables = extractService.extractTables(targetSchema);
-        TableInfo tableInfo = tables.get(table.toUpperCase());
+        TableInfo tableInfo = tables.get(table.toUpperCase(Locale.ROOT));
         if (tableInfo == null) {
             // Try case-insensitive match
             tableInfo = tables.entrySet().stream()
@@ -172,7 +173,7 @@ public class SchemaLookupService {
 
         Set<String> columnNames = new HashSet<>();
         for (ColumnInfo col : tableInfo.columns()) {
-            columnNames.add(col.name().toUpperCase());
+            columnNames.add(col.name().toUpperCase(Locale.ROOT));
         }
 
         // Try known display column patterns
@@ -195,7 +196,7 @@ public class SchemaLookupService {
     }
 
     private boolean isTextType(String dataType) {
-        String lower = dataType.toLowerCase();
+        String lower = dataType.toLowerCase(Locale.ROOT);
         return lower.contains("char") || lower.contains("text") || lower.contains("string");
     }
 }

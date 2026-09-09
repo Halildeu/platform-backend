@@ -13,6 +13,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.Locale;
 
 /**
  * AI-powered schema chat — answers natural language questions about the database.
@@ -24,6 +25,8 @@ import java.util.stream.Collectors;
 public class AiChatService {
 
     private static final Logger log = LoggerFactory.getLogger(AiChatService.class);
+    /** Natural-language Turkish in the user's question; identifiers still use Locale.ROOT. */
+    private static final Locale TURKISH = Locale.forLanguageTag("tr");
 
     @Value("${schema.ai.api-key:}")
     private String apiKey;
@@ -73,12 +76,17 @@ public class AiChatService {
      * Try to answer common questions without LLM.
      */
     private ChatResponse tryLocalAnswer(String message, SchemaSnapshot snapshot) {
-        String lower = message.toLowerCase().trim();
+        // Two lowerings on purpose (gitops#3603): natural-language Turkish must
+        // follow Turkish rules ("HANGİ" → "hangi"; ROOT would yield "hangi̇" with a
+        // combining dot), while English phrases and SQL identifiers must use ROOT
+        // ("WHICH" → Turkish "whıch" with a dotless ı would never match).
+        String lowerTr = message.toLowerCase(TURKISH).trim();
+        String lower = message.toLowerCase(Locale.ROOT).trim();
 
         // "COLUMN_NAME hangi tablolarda var?"
-        if (lower.contains("hangi tablo") || lower.contains("which table") || lower.contains("nerede")) {
+        if (lowerTr.contains("hangi tablo") || lower.contains("which table") || lowerTr.contains("nerede")) {
             // Extract potential column name (uppercase word ending in _ID or _CODE)
-            String[] words = message.toUpperCase().split("[\\s,?.!]+");
+            String[] words = message.toUpperCase(Locale.ROOT).split("[\\s,?.!]+");
             for (String word : words) {
                 if ((word.endsWith("_ID") || word.endsWith("_CODE") || word.endsWith("_NAME")) && word.length() > 3) {
                     return searchColumn(word, snapshot);
@@ -87,7 +95,7 @@ public class AiChatService {
         }
 
         // "kaç tablo var?" / "how many tables?"
-        if (lower.contains("kaç tablo") || lower.contains("how many table")) {
+        if (lowerTr.contains("kaç tablo") || lower.contains("how many table")) {
             return new ChatResponse(
                 String.format("Veritabanında toplam **%d tablo** ve **%d kolon** bulunuyor.\n\n" +
                     "- %d ilişki keşfedildi\n- %d domain tespit edildi\n- En büyük hub: %s",
@@ -100,7 +108,7 @@ public class AiChatService {
 
         // "TABLENAME tablosu hakkında bilgi"
         for (String tableName : snapshot.tables().keySet()) {
-            if (lower.contains(tableName.toLowerCase())) {
+            if (lower.contains(tableName.toLowerCase(Locale.ROOT))) {
                 return describeTable(tableName, snapshot);
             }
         }
@@ -188,7 +196,7 @@ public class AiChatService {
         );
 
         // Include relevant tables (mentioned in question)
-        String upper = question.toUpperCase();
+        String upper = question.toUpperCase(Locale.ROOT);
         for (var entry : snapshot.tables().entrySet()) {
             if (upper.contains(entry.getKey())) {
                 ctx.append(String.format("\nTable %s columns: %s\n", entry.getKey(),
@@ -242,7 +250,7 @@ public class AiChatService {
 
                     // Extract referenced tables
                     List<String> refs = snapshot.tables().keySet().stream()
-                        .filter(t -> text.toUpperCase().contains(t))
+                        .filter(t -> text.toUpperCase(Locale.ROOT).contains(t))
                         .limit(10)
                         .toList();
 

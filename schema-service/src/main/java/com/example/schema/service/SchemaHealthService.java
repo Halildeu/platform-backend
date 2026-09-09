@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.Locale;
 
 /**
  * Schema Health Score — evaluates schema quality against best practices.
@@ -97,7 +98,7 @@ public class SchemaHealthService {
 
         // Rule 6: Tables with temp/yedek/backup in name
         for (String table : snapshot.tables().keySet()) {
-            String upper = table.toUpperCase();
+            String upper = table.toUpperCase(Locale.ROOT);
             if (upper.contains("YEDEK") || upper.contains("BACKUP") || upper.contains("TEMP")
                 || upper.contains("_OLD") || upper.contains("_BAK")) {
                 issues.add(new HealthIssue("temp_table", "medium", table,
