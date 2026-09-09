@@ -42,7 +42,10 @@ public class SchemaExceptionHandler {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(Map.of(
                         "error", "snapshot_unavailable",
-                        "schema", ex.schema(),
+                        // Map.of rejects null values: with a null schema the
+                        // handler itself threw and the client saw a raw 500 in
+                        // place of the intended 503 (measured live).
+                        "schema", ex.schema() == null ? "(unspecified)" : ex.schema(),
                         "reason", SNAPSHOT_UNAVAILABLE_REASON));
     }
 

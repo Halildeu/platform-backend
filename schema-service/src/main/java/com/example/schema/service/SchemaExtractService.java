@@ -67,6 +67,11 @@ public class SchemaExtractService implements CatalogReader {
         return "mssql";
     }
 
+    @Override
+    public String defaultSchema() {
+        return defaultSchema;
+    }
+
     @Cacheable(value = "tables", key = "#schema")
     public Map<String, TableInfo> extractTables(String schema) {
         return enrichTables(schema, extractBaseTables(schema));
