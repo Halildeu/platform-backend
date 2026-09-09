@@ -33,7 +33,7 @@ class LocaleSafeCaseConversionTest {
     private static final Pattern DEFAULT_LOCALE_CONVERSION = Pattern.compile(
             "\\.\\s*(toUpperCase|toLowerCase)\\s*\\(\\s*\\)"                                   // s.toUpperCase( )
             + "|::\\s*(toUpperCase|toLowerCase)\\b"                                             // String::toUpperCase
-            + "|\\.\\s*(toUpperCase|toLowerCase)\\s*\\(\\s*Locale\\s*\\.\\s*getDefault\\s*\\(\\s*\\)\\s*\\)"); // explicit default
+            + "|\\.\\s*(toUpperCase|toLowerCase)\\s*\\(\\s*(?:java\\s*\\.\\s*util\\s*\\.\\s*)?Locale\\s*\\.\\s*getDefault\\s*\\(\\s*\\)\\s*\\)"); // explicit default, plain or FQN
 
     @Test
     void noCaseConversionInMainSourcesFollowsTheDefaultLocale() throws IOException {
@@ -69,7 +69,21 @@ class LocaleSafeCaseConversionTest {
                   String ok2(String s) { return s.toLowerCase(Locale.forLanguageTag("tr")); }
                 }
                 """;
-        assertThat(findAll(stripCommentsAndLiterals(src))).hasSize(4);
+        assertThat(findAll(stripCommentsAndLiterals(src)))
+                .as("spacing, multi-line, method ref, FQN getDefault, plain getDefault")
+                .hasSize(5);
+    }
+
+    @Test
+    void escapedTripleQuoteInsideATextBlockDoesNotEndIt() {
+        String src = "class Z {\n"
+                + "  String block = \"\"\"\n"
+                + "      has an escaped \\\"\"\" inside\n"
+                + "      \"\"\";\n"
+                + "  String real = block.toUpperCase();\n"
+                + "}\n";
+        List<String> hits = findAll(stripCommentsAndLiterals(src));
+        assertThat(hits).as("the real call after the block is still seen").hasSize(1);
     }
 
     @Test
@@ -133,8 +147,7 @@ class LocaleSafeCaseConversionTest {
                     out.append(s.charAt(i) == '\n' ? '\n' : ' ');
                 }
             } else if (c == '"' && s.startsWith("\"\"\"", i)) {
-                int end = s.indexOf("\"\"\"", i + 3);
-                end = end < 0 ? n : end + 3;
+                int end = textBlockEnd(s, i + 3);
                 for (; i < end; i++) {
                     out.append(s.charAt(i) == '\n' ? '\n' : ' ');
                 }
@@ -161,5 +174,20 @@ class LocaleSafeCaseConversionTest {
             }
         }
         return out.toString();
+    }
+
+    /** Index just past the closing {@code """}; a backslash-escaped quote never closes the block. */
+    private static int textBlockEnd(String s, int from) {
+        int j = from;
+        while (j < s.length()) {
+            if (s.charAt(j) == '\\') {
+                j += 2;
+            } else if (s.startsWith("\"\"\"", j)) {
+                return j + 3;
+            } else {
+                j++;
+            }
+        }
+        return s.length();
     }
 }
