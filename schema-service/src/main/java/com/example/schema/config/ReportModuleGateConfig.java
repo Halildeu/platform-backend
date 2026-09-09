@@ -1,7 +1,5 @@
 package com.example.schema.config;
 
-import com.example.commonauth.scope.AuthzVersionProvider;
-import com.example.commonauth.scope.RemoteAuthzVersionProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -35,9 +33,9 @@ public class ReportModuleGateConfig {
     public record Properties(boolean enabled,
                              String permissionServiceBaseUrl,
                              Duration cacheTtl,
+                             Duration revisionMemo,
                              Duration connectTimeout,
-                             Duration requestTimeout,
-                             long revisionMemoMs) {
+                             Duration requestTimeout) {
         public Properties {
             if (permissionServiceBaseUrl == null || permissionServiceBaseUrl.isBlank()) {
                 permissionServiceBaseUrl = "http://permission-service:8090";
@@ -45,14 +43,14 @@ public class ReportModuleGateConfig {
             if (cacheTtl == null) {
                 cacheTtl = Duration.ofSeconds(10);
             }
+            if (revisionMemo == null) {
+                revisionMemo = Duration.ofSeconds(5);
+            }
             if (connectTimeout == null) {
                 connectTimeout = Duration.ofSeconds(2);
             }
             if (requestTimeout == null) {
                 requestTimeout = Duration.ofSeconds(3);
-            }
-            if (revisionMemoMs <= 0) {
-                revisionMemoMs = 5000;
             }
         }
     }
@@ -63,14 +61,7 @@ public class ReportModuleGateConfig {
     }
 
     @Bean
-    public AuthzVersionProvider schemaAuthzVersionProvider(Properties props) {
-        return new RemoteAuthzVersionProvider(
-                props.permissionServiceBaseUrl() + "/api/v1/authz/version", props.revisionMemoMs());
-    }
-
-    @Bean
     public ReportModuleAccessGate reportModuleAccessGate(Properties props, AuthzMeClient client,
-                                                         AuthzVersionProvider schemaAuthzVersionProvider,
                                                          Environment environment) {
         boolean dev = environment.acceptsProfiles(DEV_PROFILES);
         if (!props.enabled()) {
@@ -83,6 +74,6 @@ public class ReportModuleGateConfig {
                     String.join(",", environment.getActiveProfiles()),
                     dev ? "dev pass-through" : "non-dev profile: every gated call will be denied");
         }
-        return new ReportModuleAccessGate(client, schemaAuthzVersionProvider, props.enabled(), dev, props.cacheTtl());
+        return new ReportModuleAccessGate(client, props.enabled(), dev, props.cacheTtl(), props.revisionMemo());
     }
 }

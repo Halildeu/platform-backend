@@ -15,39 +15,41 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 
 /**
- * {@link AuthzMeClient} over {@code java.net.http} — same transport common-auth's
- * {@code RemoteAuthzVersionProvider} uses against permission-service.
+ * {@link AuthzMeClient} over {@code java.net.http} against permission-service.
+ *
+ * <p>A 200 body is only an answer when it names the resolved identity
+ * ({@code userId}) — the same minimum the shell applies before it trusts a
+ * projection; a positive-looking body without one is treated as no answer.
  */
 public class HttpAuthzMeClient implements AuthzMeClient {
 
     private static final Logger log = LoggerFactory.getLogger(HttpAuthzMeClient.class);
-    static final String PATH = "/api/v1/authz/me";
+    static final String ME_PATH = "/api/v1/authz/me";
+    static final String VERSION_PATH = "/api/v1/authz/version";
 
-    private final URI uri;
+    private final URI meUri;
+    private final URI versionUri;
     private final Duration requestTimeout;
     private final HttpClient http;
     private final ObjectMapper mapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     public HttpAuthzMeClient(String baseUrl, Duration connectTimeout, Duration requestTimeout) {
-        this.uri = URI.create(stripTrailingSlash(baseUrl) + PATH);
+        String base = stripTrailingSlash(baseUrl);
+        this.meUri = URI.create(base + ME_PATH);
+        this.versionUri = URI.create(base + VERSION_PATH);
         this.requestTimeout = requestTimeout;
         this.http = HttpClient.newBuilder().connectTimeout(connectTimeout).build();
     }
 
     @Override
     public AuthzMeResult fetch(String bearerToken) {
-        HttpRequest request = HttpRequest.newBuilder(uri)
-                .timeout(requestTimeout)
-                .header("Authorization", "Bearer " + bearerToken)
-                .header("Accept", "application/json")
-                .GET()
-                .build();
         HttpResponse<String> response;
         try {
-            response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            response = send(meUri, bearerToken);
         } catch (Exception e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
@@ -65,6 +67,11 @@ public class HttpAuthzMeClient implements AuthzMeClient {
         }
         try {
             JsonNode root = mapper.readTree(response.body());
+            String userId = root.path("userId").asText(null);
+            if (userId == null || userId.isBlank()) {
+                log.warn("authz/me body carries no userId — treating as no answer");
+                return AuthzMeResult.unavailable("no_identity");
+            }
             Map<String, String> modules = new LinkedHashMap<>();
             JsonNode modulesNode = root.path("modules");
             if (modulesNode.isObject()) {
@@ -81,6 +88,35 @@ public class HttpAuthzMeClient implements AuthzMeClient {
             log.warn("authz/me body unparsable: {}", e.toString());
             return AuthzMeResult.unavailable("parse");
         }
+    }
+
+    @Override
+    public OptionalLong fetchVersion(String bearerToken) {
+        try {
+            HttpResponse<String> response = send(versionUri, bearerToken);
+            if (response.statusCode() != 200) {
+                log.debug("authz/version returned {}", response.statusCode());
+                return OptionalLong.empty();
+            }
+            JsonNode v = mapper.readTree(response.body()).path("authzVersion");
+            return v.isNumber() ? OptionalLong.of(v.asLong()) : OptionalLong.empty();
+        } catch (Exception e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            log.debug("authz/version unavailable: {}", e.toString());
+            return OptionalLong.empty();
+        }
+    }
+
+    private HttpResponse<String> send(URI uri, String bearerToken) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .timeout(requestTimeout)
+                .header("Authorization", "Bearer " + bearerToken)
+                .header("Accept", "application/json")
+                .GET()
+                .build();
+        return http.send(request, HttpResponse.BodyHandlers.ofString());
     }
 
     private static String stripTrailingSlash(String s) {

@@ -138,6 +138,7 @@ schema:
     enabled: ${SCHEMA_REPORT_GATE_ENABLED:true}
     permission-service-base-url: ${PERMISSION_SERVICE_BASE_URL:http://permission-service:8090}
     cache-ttl: ${SCHEMA_REPORT_GATE_CACHE_TTL:10s}
+    # /authz/version is re-read at most this often; a revoke is honoured within it.
+    revision-memo: ${SCHEMA_REPORT_GATE_REVISION_MEMO:5s}
     connect-timeout: 2s
     request-timeout: 3s
-    revision-memo-ms: 5000

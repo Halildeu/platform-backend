@@ -2,6 +2,7 @@ package com.example.schema.config;
 
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 
 /**
  * Reads the caller's authorization projection from permission-service
@@ -17,6 +18,14 @@ public interface AuthzMeClient {
 
     AuthzMeResult fetch(String bearerToken);
 
+    /**
+     * Current platform authorization revision ({@code GET /api/v1/authz/version},
+     * bumped after every grant/revoke). Read with the caller's bearer because the
+     * endpoint is authenticated. Empty when it cannot be read — the gate then
+     * bypasses its memo rather than trusting a stale revision.
+     */
+    OptionalLong fetchVersion(String bearerToken);
+
     /** Outcome of one {@code /authz/me} call. Exactly one of the three shapes. */
     record AuthzMeResult(Kind kind,
                          boolean superAdmin,
@@ -26,11 +35,11 @@ public interface AuthzMeClient {
                          String detail) {
 
         public enum Kind {
-            /** permission-service answered 200 with a projection. */
+            /** permission-service answered 200 with a projection for a resolved identity. */
             OK,
             /** permission-service refused the token (401/403) — the caller is not a usable principal. */
             REJECTED,
-            /** transport failure, 5xx or unparsable body — no answer, never an allow. */
+            /** transport failure, 5xx, unparsable or identity-less body — no answer, never an allow. */
             UNAVAILABLE
         }
 

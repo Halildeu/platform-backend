@@ -1,6 +1,5 @@
 package com.example.schema.config;
 
-import com.example.commonauth.scope.AuthzVersionProvider;
 import com.example.schema.config.AuthzMeClient.AuthzMeResult;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -12,7 +11,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.Locale;
+import java.util.OptionalLong;
 import java.util.Set;
+import java.util.function.LongSupplier;
 
 /**
  * "May this caller use the REPORT module?" — the API-side twin of the shell's
@@ -26,11 +28,15 @@ import java.util.Set;
  * identity resolution, the REPORT module invariant and deny-wins — the menu and
  * the API therefore agree.
  *
- * <p>Fail-closed: a refused token, an unreachable permission-service, a non-200
- * or an unparsable body all deny with the reason recorded. Decisions are
- * memoised per token for a short TTL and additionally invalidated when the
- * platform authorization revision moves, so a revoke is honoured within the
- * revision-provider memo window rather than the TTL.
+ * <p>Fail-closed: a refused token, an unreachable permission-service, a non-200,
+ * an unparsable or identity-less body all deny with the reason recorded.
+ *
+ * <p>Memo: a decision is reused for the same token only while the platform
+ * authorization revision it was computed under is still current. The revision
+ * is read (with the caller's bearer — the endpoint is authenticated) and
+ * remembered for a short window; if it cannot be read, the memo is bypassed and
+ * a fresh {@code /authz/me} decides — a stale revision is never a licence to
+ * keep saying yes. A revoke is therefore honoured within the revision window.
  */
 public class ReportModuleAccessGate {
 
@@ -52,21 +58,34 @@ public class ReportModuleAccessGate {
     }
 
     private final AuthzMeClient client;
-    private final AuthzVersionProvider revision;
     private final boolean enabled;
     private final boolean devPassThrough;
     private final Cache<String, Cached> cache;
+    private final long revisionMemoNanos;
+    private final LongSupplier nanoTime;
 
-    public ReportModuleAccessGate(AuthzMeClient client, AuthzVersionProvider revision,
-                                  boolean enabled, boolean devPassThrough, Duration cacheTtl) {
+    private final Object revisionLock = new Object();
+    private long memoRevision;
+    private long memoAtNanos;
+    private boolean memoValid;
+
+    public ReportModuleAccessGate(AuthzMeClient client, boolean enabled, boolean devPassThrough,
+                                  Duration cacheTtl, Duration revisionMemo) {
+        this(client, enabled, devPassThrough, cacheTtl, revisionMemo, System::nanoTime);
+    }
+
+    ReportModuleAccessGate(AuthzMeClient client, boolean enabled, boolean devPassThrough,
+                           Duration cacheTtl, Duration revisionMemo, LongSupplier nanoTime) {
         this.client = client;
-        this.revision = revision;
         this.enabled = enabled;
         this.devPassThrough = devPassThrough;
         this.cache = Caffeine.newBuilder()
                 .expireAfterWrite(cacheTtl == null || cacheTtl.isNegative() ? Duration.ofSeconds(10) : cacheTtl)
                 .maximumSize(10_000)
                 .build();
+        this.revisionMemoNanos = (revisionMemo == null || revisionMemo.isNegative()
+                ? Duration.ofSeconds(5) : revisionMemo).toNanos();
+        this.nanoTime = nanoTime;
     }
 
     public Decision decide(String bearerToken) {
@@ -76,15 +95,42 @@ public class ReportModuleAccessGate {
         if (bearerToken == null || bearerToken.isBlank()) {
             return Decision.deny("no_token");
         }
-        long currentRevision = revision.getCurrentVersion();
         String key = tokenKey(bearerToken);
-        Cached cached = cache.getIfPresent(key);
-        if (cached != null && cached.revision() == currentRevision) {
-            return cached.decision();
+        OptionalLong revision = currentRevision(bearerToken);
+        if (revision.isPresent()) {
+            Cached cached = cache.getIfPresent(key);
+            if (cached != null && cached.revision() == revision.getAsLong()) {
+                return cached.decision();
+            }
         }
         Decision fresh = evaluate(client.fetch(bearerToken));
-        cache.put(key, new Cached(fresh, currentRevision));
+        if (revision.isPresent()) {
+            cache.put(key, new Cached(fresh, revision.getAsLong()));
+        } else {
+            cache.invalidate(key);
+        }
         return fresh;
+    }
+
+    /** Memoised revision; a failed read is never substituted with the old value. */
+    private OptionalLong currentRevision(String bearerToken) {
+        long now = nanoTime.getAsLong();
+        synchronized (revisionLock) {
+            if (memoValid && now - memoAtNanos < revisionMemoNanos) {
+                return OptionalLong.of(memoRevision);
+            }
+        }
+        OptionalLong fetched = client.fetchVersion(bearerToken);
+        synchronized (revisionLock) {
+            if (fetched.isPresent()) {
+                memoRevision = fetched.getAsLong();
+                memoAtNanos = now;
+                memoValid = true;
+            } else {
+                memoValid = false;
+            }
+        }
+        return fetched;
     }
 
     static Decision evaluate(AuthzMeResult me) {
@@ -105,9 +151,10 @@ public class ReportModuleAccessGate {
         }
         if (!me.modules().isEmpty()) {
             String level = me.modules().get(MODULE);
-            return level != null && USABLE_LEVELS.contains(level)
-                    ? Decision.allow("module_" + level.toLowerCase(java.util.Locale.ROOT))
-                    : Decision.deny(level == null ? "no_report_module" : "report_module_" + level.toLowerCase(java.util.Locale.ROOT));
+            if (level != null && USABLE_LEVELS.contains(level)) {
+                return Decision.allow("module_" + level.toLowerCase(Locale.ROOT));
+            }
+            return Decision.deny(level == null ? "no_report_module" : "report_module_" + level.toLowerCase(Locale.ROOT));
         }
         return me.allowedModules().contains(MODULE)
                 ? Decision.allow("legacy_allowed_modules")
@@ -127,5 +174,8 @@ public class ReportModuleAccessGate {
     /** Test hook. */
     void invalidateAll() {
         cache.invalidateAll();
+        synchronized (revisionLock) {
+            memoValid = false;
+        }
     }
 }
