@@ -13,6 +13,8 @@ import com.example.schema.model.SchemaSnapshot;
 import com.example.schema.model.StorageInfo;
 import com.example.schema.model.TableInfo;
 import com.example.schema.model.UniqueConstraintInfo;
+import com.example.schema.catalog.CatalogReader;
+import com.example.schema.catalog.CatalogSourceRegistry;
 import com.example.schema.service.discovery.RelationshipDiscoveryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,21 +30,35 @@ public class SchemaSnapshotService {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaSnapshotService.class);
 
-    private final SchemaExtractService extractService;
+    private final CatalogSourceRegistry sources;
     private final RelationshipDiscoveryService discoveryService;
     private final DomainClusteringService clusteringService;
 
-    public SchemaSnapshotService(SchemaExtractService extractService,
+    public SchemaSnapshotService(CatalogSourceRegistry sources,
                                   RelationshipDiscoveryService discoveryService,
                                   DomainClusteringService clusteringService) {
-        this.extractService = extractService;
+        this.sources = sources;
         this.discoveryService = discoveryService;
         this.clusteringService = clusteringService;
     }
 
-    @Cacheable(value = "snapshot", key = "#schema")
-    public SchemaSnapshot buildSnapshot(String schema) {
-        log.info("Building schema snapshot for '{}'...", schema);
+    /**
+     * Builds the snapshot for one schema of one catalog source.
+     *
+     * <p>{@code source} names which database to read; null or blank means the
+     * primary Workcube MSSQL lane, so every caller that predates the second
+     * source (gitops#3594) behaves exactly as before.
+     *
+     * <p>The cache key carries the source as well as the schema. Two sources can
+     * legitimately hold a schema of the same name, and keying on the schema alone
+     * would serve one ERP's snapshot under the other's name — a silent, very
+     * confusing form of data leakage between sources.
+     */
+    @Cacheable(value = "snapshot", key = "(#source == null ? '' : #source) + '|' + #schema")
+    public SchemaSnapshot buildSnapshot(String source, String schema) {
+        CatalogReader extractService = sources.resolve(source);
+        log.info("Building schema snapshot for '{}' from source '{}' ({})...",
+            schema, extractService.sourceId(), extractService.engine());
         long start = System.currentTimeMillis();
 
         // 1. Extract tables — MANDATORY base extraction. Q3 (Codex 019e335c):

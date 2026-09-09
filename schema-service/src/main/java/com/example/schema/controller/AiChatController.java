@@ -35,7 +35,7 @@ public class AiChatController {
             );
         }
 
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(schema);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, schema);
         return ResponseEntity.ok(chatService.chat(message, snapshot));
     }
 }

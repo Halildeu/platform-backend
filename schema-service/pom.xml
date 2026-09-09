@@ -21,6 +21,7 @@
         <java.version>21</java.version>
         <spring-cloud.version>2025.0.1</spring-cloud.version>
         <mssql-jdbc.version>12.10.2.jre11</mssql-jdbc.version>
+        <ojdbc.version>23.9.0.25.07</ojdbc.version>
     </properties>
 
     <dependencies>
@@ -75,6 +76,16 @@
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Oracle JDBC — IFS ERP reporting source (gitops#3594).
+             ojdbc11 targets JDK 11+ and is the supported driver for Oracle 19c,
+             which is what the IFS instance runs. -->
+        <dependency>
+            <groupId>com.oracle.database.jdbc</groupId>
+            <artifactId>ojdbc11</artifactId>
+            <version>${ojdbc.version}</version>
             <scope>runtime</scope>
         </dependency>
 

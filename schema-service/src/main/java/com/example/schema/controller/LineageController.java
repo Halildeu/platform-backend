@@ -35,7 +35,7 @@ public class LineageController {
             @PathVariable String columnName,
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
         Map<String, String> viewDefs = extractService.getViewDefinitions(target);
         return ResponseEntity.ok(lineageService.traceColumn(tableName, columnName, snapshot, viewDefs));
     }

@@ -31,7 +31,7 @@ public class AiDescriptionController {
             @PathVariable String tableName,
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
         return ResponseEntity.ok(descriptionService.generateForTable(tableName, snapshot));
     }
 
@@ -40,7 +40,7 @@ public class AiDescriptionController {
             @RequestParam(defaultValue = "20") int limit,
             @RequestParam(required = false) String schema) {
         String target = schema != null ? schema : defaultSchema;
-        SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
+        SchemaSnapshot snapshot = snapshotService.buildSnapshot(null, target);
         var descriptions = descriptionService.generateBatch(snapshot, limit);
         return ResponseEntity.ok(Map.of(
             "count", descriptions.size(),

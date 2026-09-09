@@ -1,6 +1,7 @@
 package com.example.schema.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -50,7 +51,7 @@ class ReportingContractServiceTest {
 
     private ReportingContractService serviceReturning(Map<String, TableInfo> tables) {
         SchemaSnapshotService snapshotService = mock(SchemaSnapshotService.class);
-        when(snapshotService.buildSnapshot(anyString())).thenReturn(snapshotOf(tables));
+        when(snapshotService.buildSnapshot(any(), anyString())).thenReturn(snapshotOf(tables));
         return new ReportingContractService(snapshotService, "1");
     }
 
@@ -196,7 +197,7 @@ class ReportingContractServiceTest {
             List.of(col("ID", "int", false, 1))));
 
         SchemaSnapshotService snapshotService = mock(SchemaSnapshotService.class);
-        when(snapshotService.buildSnapshot(anyString())).thenReturn(snapshotOf(tables));
+        when(snapshotService.buildSnapshot(any(), anyString())).thenReturn(snapshotOf(tables));
         ReportingContractService svc = new ReportingContractService(snapshotService, "2");
 
         assertThat(svc.buildContract("s").contractVersion()).isEqualTo("2");
