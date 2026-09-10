@@ -57,7 +57,13 @@ public final class IfsReferenceResolver {
     /** What resolution produced, with the counts a log line and a test want. */
     public record Result(List<ForeignKeyInfo> foreignKeys, int references, int resolved,
                          int unresolvedTarget, int unresolvedKeyShape, int unresolvedSourceColumn,
-                         int duplicates) {}
+                         int duplicates, int resolvedViaLuIndex, int ambiguousTarget) {}
+
+    /**
+     * A view that declares itself as the LU's view in its own comment ({@code LU=Name^…^TABLE=X_TAB^}).
+     * {@code base} is true when its TABLE entry is {@code <VIEW>_TAB} — the LU's primary view.
+     */
+    public record LuView(String view, boolean base) {}
 
     /** {@code Lu}, {@code Lu(a,b)}, {@code Lu/NOCHECK}, {@code Lu(a,b)/CUSTOM=(…)}. */
     record Reference(String logicalUnit, List<String> parentColumns, String tail) {}
@@ -66,9 +72,17 @@ public final class IfsReferenceResolver {
 
     private IfsReferenceResolver() {}
 
-    /** {@code AbsLegalBase} → {@code ABS_LEGAL_BASE}; digits stay attached ({@code Bill2Line} → {@code BILL2_LINE}). */
+    /**
+     * {@code AbsLegalBase} → {@code ABS_LEGAL_BASE}; digits stay attached ({@code Bill2Line} →
+     * {@code BILL2_LINE}). A name with no lower-case letter is already the view name
+     * ({@code ACCOUNTING_YEAR}, {@code ALL_LEDGER}): 346 live references write it that way and
+     * the letter-by-letter split turned them into {@code A_C_C_…} (gitops#3643).
+     */
     public static String luToViewName(String lu) {
         String trimmed = lu.trim();
+        boolean anyLower = false;
+        for (int i = 0; i < trimmed.length(); i++) if (Character.isLowerCase(trimmed.charAt(i))) { anyLower = true; break; }
+        if (!anyLower) return trimmed.toUpperCase(Locale.ROOT);
         StringBuilder out = new StringBuilder();
         for (int i = 0; i < trimmed.length(); i++) {
             char c = trimmed.charAt(i);
@@ -76,6 +90,31 @@ public final class IfsReferenceResolver {
             out.append(Character.toUpperCase(c));
         }
         return out.toString();
+    }
+
+    /** Where an LU name lands: a view, nothing, or several views none of which is the base. */
+    record Target(String view, boolean viaIndex, boolean ambiguous) {
+        static final Target NONE = new Target(null, false, false);
+        static final Target AMBIGUOUS = new Target(null, true, true);
+    }
+
+    /**
+     * The view an LU name stands for: the name rule first (5,212 of 5,214 LU-declaring views
+     * agree with it), then the {@code LU=} index — one candidate, or the one whose TABLE entry
+     * marks it as the base view; several non-base candidates are ambiguous, not guessed
+     * (live: 381 references reach the index, 103 unambiguous, 278 ambiguous).
+     */
+    static Target targetView(String lu, Set<String> views, Map<String, List<LuView>> luIndex) {
+        String byName = luToViewName(lu);
+        if (views.contains(byName)) return new Target(byName, false, false);
+        List<LuView> candidates = luIndex == null ? List.of() : luIndex.getOrDefault(lu, List.of());
+        List<LuView> known = new ArrayList<>();
+        for (LuView c : candidates) if (views.contains(c.view())) known.add(c);
+        if (known.size() == 1) return new Target(known.getFirst().view(), true, false);
+        List<LuView> base = new ArrayList<>();
+        for (LuView c : known) if (c.base()) base.add(c);
+        if (base.size() == 1) return new Target(base.getFirst().view(), true, false);
+        return known.isEmpty() ? Target.NONE : Target.AMBIGUOUS;
     }
 
     /** Parses a raw {@code REF=} value; null when it has no recognisable head. */
@@ -106,6 +145,15 @@ public final class IfsReferenceResolver {
      *                    restricts the query to {@code ALL_VIEWS}), so every target here is one
      */
     public static Result resolve(String owner, Map<String, List<ColumnMeta>> viewColumns) {
+        return resolve(owner, viewColumns, Map.of());
+    }
+
+    /**
+     * @param luIndex LU name → the views whose own comment declares that LU ({@code LU=…}),
+     *                consulted only when the name rule finds no view
+     */
+    public static Result resolve(String owner, Map<String, List<ColumnMeta>> viewColumns,
+                                 Map<String, List<LuView>> luIndex) {
         Map<String, List<KeyColumn>> keysByView = new LinkedHashMap<>();
         Map<String, List<String>> keyColumnsByView = new LinkedHashMap<>();
         for (Map.Entry<String, List<ColumnMeta>> e : viewColumns.entrySet()) {
@@ -113,6 +161,7 @@ public final class IfsReferenceResolver {
             keysByView.put(e.getKey(), keys);
             keyColumnsByView.put(e.getKey(), keys.stream().map(KeyColumn::name).toList());
         }
+        Set<String> views = keyColumnsByView.keySet();
 
         Map<String, ForeignKeyInfo> byIdentity = new LinkedHashMap<>();
         int references = 0;
@@ -120,6 +169,8 @@ public final class IfsReferenceResolver {
         int unresolvedShape = 0;
         int unresolvedSource = 0;
         int duplicates = 0;
+        int viaIndex = 0;
+        int ambiguous = 0;
         for (Map.Entry<String, List<ColumnMeta>> e : viewColumns.entrySet()) {
             String view = e.getKey();
             Set<String> viewColumnNames = new HashSet<>();
@@ -131,9 +182,11 @@ public final class IfsReferenceResolver {
                 references++;
                 Reference ref = parseReference(raw);
                 if (ref == null) { unresolvedShape++; continue; }
-                String targetView = luToViewName(ref.logicalUnit());
+                Target target = targetView(ref.logicalUnit(), views, luIndex);
+                if (target.ambiguous()) { ambiguous++; continue; }
+                if (target.view() == null) { unresolvedTarget++; continue; }
+                String targetView = target.view();
                 List<String> targetKey = keyColumnsByView.get(targetView);
-                if (targetKey == null) { unresolvedTarget++; continue; }
                 if (targetKey.isEmpty()) { unresolvedShape++; continue; }
 
                 String column = col.name().toUpperCase(Locale.ROOT);
@@ -175,10 +228,11 @@ public final class IfsReferenceResolver {
                     "NO ACTION", "NO ACTION");
                 String identity = view + "|" + fromOrdered + "|" + targetView + "|" + targetKey;
                 if (byIdentity.putIfAbsent(identity, fk) != null) duplicates++;
+                else if (target.viaIndex()) viaIndex++;   // keys the LU= index produced, not merely targets it named
             }
         }
         return new Result(List.copyOf(byIdentity.values()), references, byIdentity.size(),
-            unresolvedTarget, unresolvedShape, unresolvedSource, duplicates);
+            unresolvedTarget, unresolvedShape, unresolvedSource, duplicates, viaIndex, ambiguous);
     }
 
     /**
