@@ -726,6 +726,8 @@ public class AudioGatewayProperties {
             private String baseUrl = "";
             /** Every N transcript results per meeting trigger a POST. */
             private int segmentWindow = 5;
+            /** Minimum time between live-analysis request starts for one meeting. */
+            private int minIntervalMs = 15_000;
             /** WebClient connect + read timeout in ms (default 5s). */
             private int timeoutMs = 5_000;
             /** Optional bearer token; when empty the request goes unauthenticated. */
@@ -753,6 +755,17 @@ public class AudioGatewayProperties {
 
             public void setSegmentWindow(int segmentWindow) {
                 this.segmentWindow = segmentWindow;
+            }
+
+            public int getMinIntervalMs() {
+                return minIntervalMs;
+            }
+
+            public void setMinIntervalMs(int minIntervalMs) {
+                if (minIntervalMs < 0 || minIntervalMs > 300_000) {
+                    throw new IllegalArgumentException("live analyze minIntervalMs must be 0..300000");
+                }
+                this.minIntervalMs = minIntervalMs;
             }
 
             public int getTimeoutMs() {

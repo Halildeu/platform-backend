@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.Disposable;
+import reactor.core.Disposables;
 import reactor.core.publisher.Mono;
 
 /**
@@ -18,10 +20,10 @@ import reactor.core.publisher.Mono;
  * transcript results the direct-STT hop emits.
  *
  * <p>Aggregates transcript text per meeting; every {@code segmentWindow}
- * emissions the accumulator posts the joined transcript to meeting-ai
- * with a monotonically increasing {@code segment_seq}. The response is
- * ignored — meeting-ai fans the result out to SSE subscribers directly
- * (see platform-ai #270 {@code LiveStreamHub}).
+ * emissions the accumulator offers a cumulative snapshot to meeting-ai.
+ * One request per meeting may be active; while busy or within the cadence
+ * interval, only the latest cumulative snapshot is retained. Responses are
+ * relayed to the existing live hub with monotonically increasing versions.
  *
  * <h2>Guarantees</h2>
  * <ul>
@@ -39,7 +41,7 @@ import reactor.core.publisher.Mono;
  * is deferred to a follow-up slice; segment-count is the primary trigger
  * for the desktop viewer scope.
  */
-public final class LiveAnalyzeTrigger {
+public final class LiveAnalyzeTrigger implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(LiveAnalyzeTrigger.class);
 
@@ -47,6 +49,8 @@ public final class LiveAnalyzeTrigger {
     private final int segmentWindow;
     private final String bearerToken;
     private final Duration timeout;
+    private final long minIntervalNanos;
+    private volatile boolean closed;
     /** Optional live relay (Faz 24 İ5); null when broadcast is disabled. */
     private final LiveAnalysisStreamHub analysisHub;
 
@@ -56,6 +60,7 @@ public final class LiveAnalyzeTrigger {
     private final Counter publishSuccess;
     private final Counter publishError;
     private final Counter publishDropped;
+    private final Counter publishCoalesced;
 
     public LiveAnalyzeTrigger(
             final WebClient webClient,
@@ -79,6 +84,17 @@ public final class LiveAnalyzeTrigger {
             final Duration timeout,
             final MeterRegistry meters,
             final LiveAnalysisStreamHub analysisHub) {
+        this(webClient, segmentWindow, bearerToken, timeout, meters, analysisHub, Duration.ZERO);
+    }
+
+    public LiveAnalyzeTrigger(
+            final WebClient webClient,
+            final int segmentWindow,
+            final String bearerToken,
+            final Duration timeout,
+            final MeterRegistry meters,
+            final LiveAnalysisStreamHub analysisHub,
+            final Duration minInterval) {
         if (segmentWindow < 1) {
             throw new IllegalArgumentException("segmentWindow must be >= 1");
         }
@@ -86,9 +102,16 @@ public final class LiveAnalyzeTrigger {
         this.segmentWindow = segmentWindow;
         this.bearerToken = bearerToken == null ? "" : bearerToken;
         this.timeout = timeout;
+        if (minInterval.isNegative()) {
+            throw new IllegalArgumentException("minInterval must not be negative");
+        }
+        this.minIntervalNanos = minInterval.toNanos();
         this.analysisHub = analysisHub;
         this.publishAttempts = Counter.builder("audio_gw_live_analyze_publish_total")
                 .description("Attempts to post to meeting-ai /analyze/live (per meeting-triggered flush)")
+                .register(meters);
+        this.publishCoalesced = Counter.builder("audio_gw_live_analyze_coalesced_total")
+                .description("Pending cumulative snapshots replaced by a newer snapshot")
                 .register(meters);
         this.publishSuccess = Counter.builder("audio_gw_live_analyze_publish_success_total")
                 .description("Successful /analyze/live POSTs (2xx)")
@@ -104,11 +127,12 @@ public final class LiveAnalyzeTrigger {
     /**
      * Feed a transcript result. If it advances the meeting's window past the
      * configured segment count, a live-analyze POST is triggered
-     * asynchronously (fire-and-forget) and the aggregation is reset.
+     * asynchronously. New cumulative windows coalesce while a request is pending.
      *
      * <p>NEVER throws.
      */
     public void offer(final String meetingId, final TranscriptResult result) {
+        if (closed) return;
         if (meetingId == null || meetingId.isBlank()) {
             publishDropped.increment();
             return;
@@ -124,12 +148,51 @@ public final class LiveAnalyzeTrigger {
         if (snapshot == null) {
             return; // still accumulating
         }
-        firePublish(meetingId, snapshot);
+        synchronized (agg) {
+            // Snapshot sequence is assigned under the aggregation lock. A slower
+            // producer must not replace newer pending context with an older one.
+            if (snapshot.segmentSeq() <= agg.lastQueuedSequence) return;
+            if (agg.pendingSnapshot != null) publishCoalesced.increment();
+            agg.lastQueuedSequence = snapshot.segmentSeq();
+            agg.pendingSnapshot = snapshot;
+        }
+        scheduleNext(meetingId, agg);
     }
 
-    private void firePublish(final String meetingId, final Aggregation.Snapshot snapshot) {
-        publishAttempts.increment();
-        try {
+    private void scheduleNext(final String meetingId, final Aggregation agg) {
+        final long delayNanos;
+        final Disposable.Swap subscription;
+        synchronized (agg) {
+            if (closed || agg.publishing || agg.pendingSnapshot == null) return;
+            agg.publishing = true;
+            delayNanos = agg.hasPublished
+                    ? Math.max(0, minIntervalNanos - (System.nanoTime() - agg.lastPublishNanos)) : 0;
+            subscription = Disposables.swap();
+            agg.subscription = subscription;
+        }
+        final Mono<Long> cadence = delayNanos == 0
+                ? Mono.just(0L) : Mono.delay(Duration.ofNanos(delayNanos));
+        subscription.update(cadence.flatMap(ignored -> Mono.defer(() -> {
+            final Aggregation.Snapshot snapshot;
+            synchronized (agg) {
+                if (closed) return Mono.empty();
+                snapshot = agg.pendingSnapshot;
+                agg.pendingSnapshot = null;
+                agg.hasPublished = true;
+                agg.lastPublishNanos = System.nanoTime();
+            }
+            return firePublish(meetingId, snapshot);
+        })).doFinally(signal -> {
+            synchronized (agg) {
+                agg.publishing = false;
+            }
+            scheduleNext(meetingId, agg);
+        }).subscribe());
+    }
+
+    private Mono<Void> firePublish(final String meetingId, final Aggregation.Snapshot snapshot) {
+        return Mono.defer(() -> {
+            publishAttempts.increment();
             final Map<String, Object> body = new LinkedHashMap<>();
             body.put("transcript", snapshot.transcript());
             body.put("meeting_id", meetingId);
@@ -141,7 +204,7 @@ public final class LiveAnalyzeTrigger {
             if (!bearerToken.isEmpty()) {
                 req.header("Authorization", "Bearer " + bearerToken);
             }
-            req.bodyValue(body)
+            return req.bodyValue(body)
                     .retrieve()
                     .bodyToMono(String.class)
                     .timeout(timeout)
@@ -154,7 +217,8 @@ public final class LiveAnalyzeTrigger {
                                     analysisHub.publish(meetingId, analysisJson);
                                 }
                             })
-                    .doOnError(err -> {
+                    .then();
+        }).doOnError(err -> {
                         publishError.increment();
                         // PII discipline: log the failure class + status, NEVER the transcript.
                         log.warn(
@@ -163,15 +227,20 @@ public final class LiveAnalyzeTrigger {
                                 meetingId.length(),
                                 snapshot.segmentSeq());
                     })
-                    .onErrorResume(err -> Mono.empty())
-                    .subscribe();
-        } catch (final RuntimeException ex) {
-            publishError.increment();
-            log.warn(
-                    "live-analyze trigger dispatch failed err_class={} seq={}",
-                    ex.getClass().getSimpleName(),
-                    snapshot.segmentSeq());
-        }
+                    .onErrorResume(err -> Mono.empty());
+    }
+
+    @Override
+    public void close() {
+        closed = true;
+        perMeeting.values().forEach(agg -> {
+            synchronized (agg) {
+                if (agg.subscription != null) agg.subscription.dispose();
+                agg.pendingSnapshot = null;
+                agg.history.setLength(0);
+            }
+        });
+        perMeeting.clear();
     }
 
     /**
@@ -195,6 +264,12 @@ public final class LiveAnalyzeTrigger {
         // Guarded by `this`.
         private int sinceFlush = 0;
         private final StringBuilder history = new StringBuilder();
+        private Snapshot pendingSnapshot;
+        private int lastQueuedSequence;
+        private boolean publishing;
+        private boolean hasPublished;
+        private long lastPublishNanos;
+        private Disposable.Swap subscription;
 
         Aggregation(final int window) {
             this.window = window;
