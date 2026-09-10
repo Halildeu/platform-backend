@@ -250,6 +250,34 @@ class RelationshipDiscoveryServiceTest {
     }
 
     @Test
+    void heuristicSharedByTwoCompositeKeys_creditsNeitherRegardlessOfInputOrder() {
+        // Codex 01a08afc iter-4: FK1 and FK2 both contain CHILD.PARENT_ID → PARENT.PARENT_ID, which the
+        // name-match heuristic also finds. It must not become "extra evidence" for whichever key came first.
+        var tables = Map.of(
+            "PARENT", new TableInfo("PARENT", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, true, 1),
+                new ColumnInfo("PARENT_ID", "int", 4, false, false, true, 2))),
+            "CHILD", new TableInfo("CHILD", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, false, 1),
+                new ColumnInfo("OTHER_COMPANY", "int", 4, false, false, false, 2),
+                new ColumnInfo("PARENT_ID", "int", 4, false, false, false, 3))));
+        ForeignKeyInfo fk1 = new ForeignKeyInfo("FK1", "dbo", "CHILD", List.of("COMPANY", "PARENT_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "PARENT_ID"), false, false, "NO_ACTION", "NO_ACTION");
+        ForeignKeyInfo fk2 = new ForeignKeyInfo("FK2", "dbo", "CHILD", List.of("OTHER_COMPANY", "PARENT_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "PARENT_ID"), false, false, "NO_ACTION", "NO_ACTION");
+
+        for (List<ForeignKeyInfo> order : List.of(List.of(fk1, fk2), List.of(fk2, fk1))) {
+            List<Relationship> rels = service.discoverAll(tables, Map.of(), order);
+            List<Relationship> childToParent = rels.stream()
+                .filter(r -> "CHILD".equals(r.fromTable()) && "PARENT".equals(r.toTable())).toList();
+            assertEquals(2, childToParent.size(), "order " + order.stream().map(ForeignKeyInfo::name).toList() + ": " + childToParent);
+            assertTrue(childToParent.stream().allMatch(Relationship::isComposite), "the shared heuristic is not kept as a narrower edge");
+            assertTrue(childToParent.stream().allMatch(r -> "fk_constraint_composite".equals(r.source()) && !r.multiSource()),
+                "neither key is credited with the ambiguous heuristic: " + childToParent);
+        }
+    }
+
+    @Test
     void declaredSingleColumnFkToAnotherTargetColumn_isNotFoldedIntoTheCompositeKey() {
         // Codex 01a08afc iter-3 #2: CHILD.REF_ID → PARENT.GLOBAL_ID is a different join from
         // CHILD.(COMPANY, REF_ID) → PARENT.(COMPANY, ID); only a heuristic on the exact pair folds.

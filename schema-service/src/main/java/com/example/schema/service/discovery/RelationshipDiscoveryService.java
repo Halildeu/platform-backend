@@ -277,7 +277,7 @@ public class RelationshipDiscoveryService {
         // key never folds: CHILD.REF_ID → PARENT.GLOBAL_ID is a different join from
         // CHILD.(COMPANY, REF_ID) → PARENT.(COMPANY, ID) (iter-3 #2).
         Map<String, List<Relationship>> grouped = new LinkedHashMap<>();
-        Map<String, String> compositePair = new HashMap<>();
+        Map<String, Set<String>> compositesByPair = new HashMap<>();
         for (Relationship rel : all) {
             String key = rel.isComposite()
                 ? rel.fromTable() + "|" + rel.fromColumns() + "|" + rel.toTable() + "|" + rel.toColumns()
@@ -285,8 +285,9 @@ public class RelationshipDiscoveryService {
             grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(rel);
             if (rel.isComposite()) {
                 for (int i = 0; i < rel.fromColumns().size(); i++) {
-                    compositePair.putIfAbsent(
-                        rel.fromTable() + "|" + rel.fromColumns().get(i) + "|" + rel.toTable() + "|" + rel.toColumns().get(i), key);
+                    compositesByPair.computeIfAbsent(
+                        rel.fromTable() + "|" + rel.fromColumns().get(i) + "|" + rel.toTable() + "|" + rel.toColumns().get(i),
+                        k -> new TreeSet<>()).add(key);
                 }
             }
         }
@@ -294,14 +295,19 @@ public class RelationshipDiscoveryService {
             List<Relationship> group = grouped.get(key);
             if (group == null || group.getFirst().isComposite()) continue;
             if (group.stream().anyMatch(r -> r.source().startsWith("fk_constraint"))) continue;
-            Relationship first = group.getFirst();
-            Set<String> coveringKeys = new LinkedHashSet<>();
+            Set<String> coveringKeys = new TreeSet<>();
             for (Relationship r : group) {
-                String covering = compositePair.get(r.fromTable() + "|" + r.fromColumn() + "|" + r.toTable() + "|" + r.toColumn());
-                if (covering != null && grouped.containsKey(covering)) coveringKeys.add(covering);
+                Set<String> covering = compositesByPair.get(r.fromTable() + "|" + r.fromColumn() + "|" + r.toTable() + "|" + r.toColumn());
+                if (covering != null) coveringKeys.addAll(covering);
             }
-            if (coveringKeys.size() == 1 && first != null) {
+            if (coveringKeys.size() == 1) {
                 grouped.get(coveringKeys.iterator().next()).addAll(grouped.remove(key));
+            } else if (coveringKeys.size() > 1) {
+                // The pair belongs to several composite keys: the heuristic is not extra
+                // evidence for any one of them (which one it would credit depended on input
+                // order — Codex 01a08afc iter-4), and a narrower single-column edge would be a
+                // misleading JOIN. The composite keys already carry the join; drop the sighting.
+                grouped.remove(key);
             }
         }
 
