@@ -132,4 +132,41 @@ class PathFinderServiceTest {
         assertTrue(service.findAllPaths("A", "A", rels, 5).isEmpty());
         assertTrue(service.findAllPaths("A", "NOWHERE", rels, 5).isEmpty());
     }
+
+    /**
+     * Codex 01a08afc iter-3 #1: enumerating walks before knowing the target is reachable
+     * exhausted a 384m heap on a 34-table clique with the target in another component.
+     * The distance pass answers "unreachable" in O(V+E); enumeration only walks shortest-path
+     * edges and stops at the limit, so a graph with many alternatives costs what is asked for.
+     */
+    @Test
+    void findAllPathsIsBoundedOnDenseGraphs() {
+        List<Relationship> rels = new java.util.ArrayList<>();
+        for (int i = 0; i < 32; i++) {
+            for (int j = i + 1; j < 32; j++) {
+                rels.add(new Relationship("V" + i, "FK_" + j, "V" + j, "ID", 1.0, "fk_constraint"));
+            }
+        }
+        rels.add(new Relationship("TARGET", "ID", "OTHER_COMPONENT", "ID", 1.0, "fk_constraint"));
+
+        long started = System.nanoTime();
+        List<PathResult> unreachable = service.findAllPaths("V0", "TARGET", rels, 3);
+        long elapsedMs = (System.nanoTime() - started) / 1_000_000;
+        assertTrue(unreachable.isEmpty());
+        assertTrue(elapsedMs < 2_000, "took " + elapsedMs + " ms");
+
+        // 4 parallel edges V0→V1 and 4 more V1→V2 through a dense clique: 16 shortest 2-hop
+        // alternatives between V0 and V2? No — V0→V2 is a direct edge, so the shortest is 1 hop
+        // and exactly the parallel V0→V2 edges are enumerated, up to the cap.
+        List<Relationship> parallel = new java.util.ArrayList<>(rels);
+        for (int k = 0; k < 15; k++) {
+            parallel.add(new Relationship("V0", "ALT_" + k, "V2", "ID", 0.5, "name_match_exact"));
+        }
+        List<PathResult> alternatives = service.findAllPaths("V0", "V2", parallel, 100);
+        assertEquals(PathFinderService.MAX_ALTERNATIVES, alternatives.size(), "hard cap, whatever the caller asks");
+        assertTrue(alternatives.stream().allMatch(p -> p.hops() == 1));
+        assertEquals("SELECT *\nFROM V0 t0\nJOIN V2 t1 ON t0.FK_2 = t1.ID", alternatives.getFirst().joinSql(), "highest confidence first");
+        assertEquals(alternatives.size(), alternatives.stream().map(PathResult::joinSql).distinct().count());
+        assertEquals(4, service.findAllPaths("V0", "V2", parallel, 4).size());
+    }
 }

@@ -270,26 +270,38 @@ public class RelationshipDiscoveryService {
         // A single-column edge groups on (from table, from column, to table) as it always
         // did. A composite edge is its own group, identified by every column pair: two keys
         // that share a representative column but reference different target columns are two
-        // joins, not two sightings of one (Codex 01a08afc iter-2 #3). A single-column edge
-        // that a composite key on the same tables covers is folded into that key — it is the
-        // same join seen by a heuristic — rather than kept as a second, narrower edge.
+        // joins, not two sightings of one (Codex 01a08afc iter-2 #3). A HEURISTIC single-column
+        // edge whose exact (source column, target column) pair is one of a composite key's
+        // pairs on the same tables is folded into that key — it is the same join seen by a
+        // heuristic — rather than kept as a second, narrower edge. A declared or synthetic
+        // key never folds: CHILD.REF_ID → PARENT.GLOBAL_ID is a different join from
+        // CHILD.(COMPANY, REF_ID) → PARENT.(COMPANY, ID) (iter-3 #2).
         Map<String, List<Relationship>> grouped = new LinkedHashMap<>();
-        Map<String, String> compositeCovering = new HashMap<>();
+        Map<String, String> compositePair = new HashMap<>();
         for (Relationship rel : all) {
             String key = rel.isComposite()
                 ? rel.fromTable() + "|" + rel.fromColumns() + "|" + rel.toTable() + "|" + rel.toColumns()
                 : rel.fromTable() + "|" + rel.fromColumn() + "|" + rel.toTable();
             grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(rel);
             if (rel.isComposite()) {
-                for (String c : rel.fromColumns()) {
-                    compositeCovering.putIfAbsent(rel.fromTable() + "|" + c + "|" + rel.toTable(), key);
+                for (int i = 0; i < rel.fromColumns().size(); i++) {
+                    compositePair.putIfAbsent(
+                        rel.fromTable() + "|" + rel.fromColumns().get(i) + "|" + rel.toTable() + "|" + rel.toColumns().get(i), key);
                 }
             }
         }
         for (String key : new ArrayList<>(grouped.keySet())) {
-            String covering = compositeCovering.get(key);
-            if (covering != null && !covering.equals(key) && grouped.containsKey(covering)) {
-                grouped.get(covering).addAll(grouped.remove(key));
+            List<Relationship> group = grouped.get(key);
+            if (group == null || group.getFirst().isComposite()) continue;
+            if (group.stream().anyMatch(r -> r.source().startsWith("fk_constraint"))) continue;
+            Relationship first = group.getFirst();
+            Set<String> coveringKeys = new LinkedHashSet<>();
+            for (Relationship r : group) {
+                String covering = compositePair.get(r.fromTable() + "|" + r.fromColumn() + "|" + r.toTable() + "|" + r.toColumn());
+                if (covering != null && grouped.containsKey(covering)) coveringKeys.add(covering);
+            }
+            if (coveringKeys.size() == 1 && first != null) {
+                grouped.get(coveringKeys.iterator().next()).addAll(grouped.remove(key));
             }
         }
 

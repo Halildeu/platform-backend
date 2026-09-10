@@ -16,6 +16,8 @@ public class PathFinderService {
 
     private static final Logger log = LoggerFactory.getLogger(PathFinderService.class);
     private static final int MAX_DEPTH = 6;
+    /** Upper bound on alternatives one call may enumerate, whatever the caller asks for. */
+    public static final int MAX_ALTERNATIVES = 10;
 
     public record PathStep(String table, String column, String joinTo, String joinColumn, double confidence) {}
     public record PathResult(String from, String to, int hops, List<PathStep> path, String joinSql) {}
@@ -72,57 +74,83 @@ public class PathFinderService {
     }
 
     /**
-     * Every shortest join path between two tables, up to {@code limit}, one per distinct
-     * edge sequence: two relationships between the same tables (ORDERS.BILL_TO → CUSTOMER
-     * and ORDERS.SHIP_TO → CUSTOMER) are two paths with two different JOINs, not one path
-     * returned twice (Codex 01a08afc iter-2 #4). Only paths of the minimum hop count are
-     * returned (#5). Higher-confidence edges are explored first, so the first result is the
-     * one {@link #findPath} would pick.
+     * Every shortest join path between two tables, up to {@code limit} (at most
+     * {@link #MAX_ALTERNATIVES}), one per distinct edge sequence: two relationships between
+     * the same tables (ORDERS.BILL_TO → CUSTOMER and ORDERS.SHIP_TO → CUSTOMER) are two paths
+     * with two different JOINs, not one path returned twice (Codex 01a08afc iter-2 #4). Only
+     * paths of the minimum hop count are returned (#5).
+     *
+     * <p>Two plain BFS passes first measure every table's distance from the source and to the
+     * target — O(V+E), and an unreachable target costs nothing more (iter-3 #1: enumerating
+     * walks before knowing the target is reachable exhausted a 384m heap on a 34-table
+     * clique). The enumeration then walks only edges that lie on a shortest path
+     * ({@code fromDist + 1 + toDist == shortest}), depth-first, so every branch ends at the
+     * target and the work is bounded by the results asked for, not by the graph. Adjacency
+     * is confidence-sorted, so the first result is the path {@link #findPath} picks.
      */
     public List<PathResult> findAllPaths(String fromTable, String toTable,
                                           List<Relationship> relationships, int limit) {
+        int cap = Math.min(limit, MAX_ALTERNATIVES);
         log.info("Finding paths from {} to {} (limit={}), {} relationships available",
-            fromTable, toTable, limit, relationships.size());
+            fromTable, toTable, cap, relationships.size());
         List<PathResult> results = new ArrayList<>();
-        if (fromTable.equals(toTable) || limit <= 0) return results;
+        if (fromTable.equals(toTable) || cap <= 0) return results;
 
         Map<String, List<Edge>> adj = adjacency(relationships);
         for (List<Edge> edges : adj.values()) {
             edges.sort(Comparator.comparingDouble(Edge::confidence).reversed());
         }
+        Map<String, Integer> fromDist = distances(adj, fromTable);
+        Integer shortest = fromDist.get(toTable);
+        if (shortest == null || shortest > MAX_DEPTH) {
+            log.info("No path found between {} and {}", fromTable, toTable);
+            return results;
+        }
+        Map<String, Integer> toDist = distances(adj, toTable);
 
-        // BFS over (tables visited, edges taken). Level order means every path of the
-        // shortest length is met before any longer one; once the target is reached at
-        // hop count N, nothing that cannot end at N is expanded any further.
-        Deque<Walk> queue = new ArrayDeque<>();
-        queue.add(new Walk(List.of(fromTable), List.of()));
         Set<String> seenSql = new HashSet<>();
-        int shortest = -1;
-
-        while (!queue.isEmpty() && results.size() < limit) {
-            Walk walk = queue.poll();
+        Deque<Walk> stack = new ArrayDeque<>();
+        stack.push(new Walk(List.of(fromTable), List.of()));
+        while (!stack.isEmpty() && results.size() < cap) {
+            Walk walk = stack.pop();
+            String current = walk.tables().getLast();
             int hops = walk.edges().size();
-            if (hops >= MAX_DEPTH) continue;
-            if (shortest >= 0 && hops + 1 > shortest) continue;
-
-            for (Edge edge : adj.getOrDefault(walk.tables().getLast(), List.of())) {
-                if (walk.tables().contains(edge.target())) continue;
+            List<Walk> deeper = new ArrayList<>();
+            for (Edge edge : adj.getOrDefault(current, List.of())) {
+                Integer rest = toDist.get(edge.target());
+                if (rest == null || hops + 1 + rest != shortest) continue;
                 Walk next = walk.extend(edge);
                 if (edge.target().equals(toTable)) {
-                    if (shortest < 0) shortest = hops + 1;
-                    if (hops + 1 == shortest) {
-                        PathResult result = buildFromEdges(fromTable, toTable, next);
-                        if (seenSql.add(result.joinSql())) results.add(result);
-                        if (results.size() >= limit) break;
-                    }
-                } else if (shortest < 0 || hops + 2 <= shortest) {
-                    queue.add(next);
+                    PathResult result = buildFromEdges(fromTable, toTable, next);
+                    if (seenSql.add(result.joinSql())) results.add(result);
+                    if (results.size() >= cap) break;
+                } else {
+                    deeper.add(next);
                 }
             }
+            // Push in reverse so the highest-confidence continuation is popped first.
+            for (int i = deeper.size() - 1; i >= 0; i--) stack.push(deeper.get(i));
         }
 
         log.info("Found {} paths from {} to {}", results.size(), fromTable, toTable);
         return results;
+    }
+
+    /** Hop distance from {@code start} to every reachable table, capped at MAX_DEPTH. */
+    private static Map<String, Integer> distances(Map<String, List<Edge>> adj, String start) {
+        Map<String, Integer> dist = new HashMap<>();
+        Deque<String> queue = new ArrayDeque<>();
+        dist.put(start, 0);
+        queue.add(start);
+        while (!queue.isEmpty()) {
+            String current = queue.poll();
+            int d = dist.get(current);
+            if (d >= MAX_DEPTH) continue;
+            for (Edge edge : adj.getOrDefault(current, List.of())) {
+                if (dist.putIfAbsent(edge.target(), d + 1) == null) queue.add(edge.target());
+            }
+        }
+        return dist;
     }
 
     private PathResult buildResult(String from, String to, List<String> tablePath,

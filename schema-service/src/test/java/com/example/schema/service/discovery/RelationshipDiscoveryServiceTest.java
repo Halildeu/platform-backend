@@ -250,6 +250,35 @@ class RelationshipDiscoveryServiceTest {
     }
 
     @Test
+    void declaredSingleColumnFkToAnotherTargetColumn_isNotFoldedIntoTheCompositeKey() {
+        // Codex 01a08afc iter-3 #2: CHILD.REF_ID → PARENT.GLOBAL_ID is a different join from
+        // CHILD.(COMPANY, REF_ID) → PARENT.(COMPANY, ID); only a heuristic on the exact pair folds.
+        var tables = Map.of(
+            "PARENT", new TableInfo("PARENT", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, true, 1),
+                new ColumnInfo("ID", "int", 4, false, false, true, 2),
+                new ColumnInfo("GLOBAL_ID", "int", 4, false, false, false, 3))),
+            "CHILD", new TableInfo("CHILD", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, false, 1),
+                new ColumnInfo("REF_ID", "int", 4, false, false, false, 2))));
+        ForeignKeyInfo composite = new ForeignKeyInfo("FK_COMPOSITE", "dbo", "CHILD", List.of("COMPANY", "REF_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "ID"), false, false, "NO_ACTION", "NO_ACTION");
+        ForeignKeyInfo single = new ForeignKeyInfo("FK_SINGLE", "dbo", "CHILD", List.of("REF_ID"),
+            "dbo", "PARENT", List.of("GLOBAL_ID"), false, false, "NO_ACTION", "NO_ACTION");
+
+        List<Relationship> rels = service.discoverAll(tables, Map.of(), List.of(composite, single));
+
+        List<Relationship> childToParent = rels.stream()
+            .filter(r -> "CHILD".equals(r.fromTable()) && "PARENT".equals(r.toTable())).toList();
+        assertEquals(2, childToParent.size(), childToParent.toString());
+        Relationship kept = childToParent.stream().filter(r -> !r.isComposite()).findFirst().orElseThrow();
+        assertEquals("GLOBAL_ID", kept.toColumn());
+        assertEquals("fk_constraint", kept.source());
+        Relationship comp = childToParent.stream().filter(Relationship::isComposite).findFirst().orElseThrow();
+        assertEquals("fk_constraint_composite", comp.source(), "the single key is not counted as a second sighting");
+    }
+
+    @Test
     void crossSchemaForeignKey_staysInventoryOnly_notCompatRelationship() {
         // Codex 019e2d7d REVISE: the FK target COMPANY is NOT in this
         // snapshot's tables (cross-schema). The single-column FK must NOT
