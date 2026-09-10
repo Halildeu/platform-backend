@@ -621,7 +621,13 @@ public class AuthorizationControllerV1 {
                 case REPORT -> {
                     com.example.permission.model.GrantType reportGrant =
                             entry.getValue().grantType();
-                    reportGrantByKey.merge(TupleSyncService.normalizeReportGroupKey(key), reportGrant,
+                    // Only the catalogued report groups collapse to one OpenFGA
+                    // object (TupleSyncService writes other REPORT keys as separate
+                    // `report` objects, so `X` and `reports.X` stay two grants there).
+                    String invariantKey = TupleSyncService.isReportGroupKey(key)
+                            ? TupleSyncService.normalizeReportGroupKey(key)
+                            : key;
+                    reportGrantByKey.merge(invariantKey, reportGrant,
                             AuthorizationControllerV1::mergeReportGrantTypeDenyWins);
                     // R16 PR-B-2 (Codex 019e2a13 REVISE P0/P1 absorb):
                     // - Key suffix-only (reports.GROUP → GROUP) — FE
