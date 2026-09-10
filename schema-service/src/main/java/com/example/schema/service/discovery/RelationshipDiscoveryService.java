@@ -104,13 +104,14 @@ public class RelationshipDiscoveryService {
     }
 
     /**
-     * Converts single-column authoritative FKs into compatibility
-     * {@link Relationship}s ({@code source="fk_constraint"},
-     * {@code confidence=1.0}). Skipped (kept in the {@code ForeignKeyInfo}
-     * inventory only):
+     * Converts authoritative FKs into compatibility {@link Relationship}s
+     * ({@code confidence=1.0}; {@code source="fk_constraint"}, or
+     * {@code "fk_constraint_composite"} for a multi-column key, whose
+     * representative pair is the last one — the referenced side's own key —
+     * and whose {@code fromColumns}/{@code toColumns} carry every pair for the
+     * JOIN builders; gitops#3631).
+     * Skipped (kept in the inventory only):
      * <ul>
-     *   <li>composite FKs — the dedup key ({@code fromTable|fromColumn|
-     *       toTable}) cannot represent a multi-column join;</li>
      *   <li>FKs whose {@code fromTable} or {@code toTable} is not in this
      *       snapshot's {@code tables} (Codex 019e2d7d REVISE) — a
      *       cross-schema FK target would otherwise inject a node outside
@@ -125,16 +126,25 @@ public class RelationshipDiscoveryService {
             return rels;
         }
         for (ForeignKeyInfo fk : foreignKeys) {
-            if (fk.isComposite() || fk.fromColumns().isEmpty() || fk.toColumns().isEmpty()) {
+            if (fk.fromColumns().isEmpty() || fk.toColumns().isEmpty()
+                    || fk.fromColumns().size() != fk.toColumns().size()) {
                 continue;
             }
             if (!tableNames.contains(fk.fromTable()) || !tableNames.contains(fk.toTable())) {
                 continue;
             }
+            // gitops#3631 slice 2: a composite key used to yield no edge at all, so a join that
+            // the dictionary states (IFS: company + own key) was invisible to the graph, the
+            // path finder and the report builder. The edge's representative pair is the LAST
+            // one — the referenced LU's own key, the pair that distinguishes the target — and
+            // the edge carries every pair, so SQL joins on all of them (Codex 01a08afc P1: the
+            // last pair alone matched rows of every parent sharing that value).
+            int last = fk.fromColumns().size() - 1;
             rels.add(new Relationship(
-                fk.fromTable(), fk.fromColumns().get(0),
-                fk.toTable(), fk.toColumns().get(0),
-                1.0, "fk_constraint"));
+                fk.fromTable(), fk.fromColumns().get(last),
+                fk.toTable(), fk.toColumns().get(last),
+                1.0, fk.isComposite() ? "fk_constraint_composite" : "fk_constraint", false,
+                fk.fromColumns(), fk.toColumns()));
         }
         log.info("Authoritative FK compat: {} single-column in-snapshot relationships", rels.size());
         return rels;
@@ -257,10 +267,48 @@ public class RelationshipDiscoveryService {
     }
 
     private List<Relationship> deduplicateAndScore(List<Relationship> all) {
+        // A single-column edge groups on (from table, from column, to table) as it always
+        // did. A composite edge is its own group, identified by every column pair: two keys
+        // that share a representative column but reference different target columns are two
+        // joins, not two sightings of one (Codex 01a08afc iter-2 #3). A HEURISTIC single-column
+        // edge whose exact (source column, target column) pair is one of a composite key's
+        // pairs on the same tables is folded into that key — it is the same join seen by a
+        // heuristic — rather than kept as a second, narrower edge. A declared or synthetic
+        // key never folds: CHILD.REF_ID → PARENT.GLOBAL_ID is a different join from
+        // CHILD.(COMPANY, REF_ID) → PARENT.(COMPANY, ID) (iter-3 #2).
         Map<String, List<Relationship>> grouped = new LinkedHashMap<>();
+        Map<String, Set<String>> compositesByPair = new HashMap<>();
         for (Relationship rel : all) {
-            String key = rel.fromTable() + "|" + rel.fromColumn() + "|" + rel.toTable();
+            String key = rel.isComposite()
+                ? rel.fromTable() + "|" + rel.fromColumns() + "|" + rel.toTable() + "|" + rel.toColumns()
+                : rel.fromTable() + "|" + rel.fromColumn() + "|" + rel.toTable();
             grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(rel);
+            if (rel.isComposite()) {
+                for (int i = 0; i < rel.fromColumns().size(); i++) {
+                    compositesByPair.computeIfAbsent(
+                        rel.fromTable() + "|" + rel.fromColumns().get(i) + "|" + rel.toTable() + "|" + rel.toColumns().get(i),
+                        k -> new TreeSet<>()).add(key);
+                }
+            }
+        }
+        for (String key : new ArrayList<>(grouped.keySet())) {
+            List<Relationship> group = grouped.get(key);
+            if (group == null || group.getFirst().isComposite()) continue;
+            if (group.stream().anyMatch(r -> r.source().startsWith("fk_constraint"))) continue;
+            Set<String> coveringKeys = new TreeSet<>();
+            for (Relationship r : group) {
+                Set<String> covering = compositesByPair.get(r.fromTable() + "|" + r.fromColumn() + "|" + r.toTable() + "|" + r.toColumn());
+                if (covering != null) coveringKeys.addAll(covering);
+            }
+            if (coveringKeys.size() == 1) {
+                grouped.get(coveringKeys.iterator().next()).addAll(grouped.remove(key));
+            } else if (coveringKeys.size() > 1) {
+                // The pair belongs to several composite keys: the heuristic is not extra
+                // evidence for any one of them (which one it would credit depended on input
+                // order — Codex 01a08afc iter-4), and a narrower single-column edge would be a
+                // misleading JOIN. The composite keys already carry the join; drop the sighting.
+                grouped.remove(key);
+            }
         }
 
         List<Relationship> deduped = new ArrayList<>();
@@ -280,9 +328,12 @@ public class RelationshipDiscoveryService {
             boolean multi = sources.size() > 1;
             if (multi) conf = Math.min(1.0, conf + 0.05 * (sources.size() - 1));
 
+            // The winner's column pairs travel with it: a composite key edge grouped with a
+            // single-column heuristic on the same representative pair must keep its full key.
             deduped.add(new Relationship(
                 best.fromTable(), best.fromColumn(), best.toTable(), best.toColumn(),
-                conf, multi ? String.join("+", sources) : best.source(), multi
+                conf, multi ? String.join("+", sources) : best.source(), multi,
+                best.fromColumns(), best.toColumns()
             ));
         }
 

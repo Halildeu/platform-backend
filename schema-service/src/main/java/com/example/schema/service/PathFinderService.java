@@ -16,6 +16,8 @@ public class PathFinderService {
 
     private static final Logger log = LoggerFactory.getLogger(PathFinderService.class);
     private static final int MAX_DEPTH = 6;
+    /** Upper bound on alternatives one call may enumerate, whatever the caller asks for. */
+    public static final int MAX_ALTERNATIVES = 10;
 
     public record PathStep(String table, String column, String joinTo, String joinColumn, double confidence) {}
     public record PathResult(String from, String to, int hops, List<PathStep> path, String joinSql) {}
@@ -29,13 +31,7 @@ public class PathFinderService {
         }
 
         // Build adjacency list (bidirectional)
-        Map<String, List<Edge>> adj = new HashMap<>();
-        for (Relationship rel : relationships) {
-            adj.computeIfAbsent(rel.fromTable(), k -> new ArrayList<>())
-                .add(new Edge(rel.toTable(), rel.fromColumn(), rel.toColumn(), rel.confidence(), "forward"));
-            adj.computeIfAbsent(rel.toTable(), k -> new ArrayList<>())
-                .add(new Edge(rel.fromTable(), rel.toColumn(), rel.fromColumn(), rel.confidence(), "reverse"));
-        }
+        Map<String, List<Edge>> adj = adjacency(relationships);
 
         // BFS
         Queue<List<String>> queue = new LinkedList<>();
@@ -78,59 +74,83 @@ public class PathFinderService {
     }
 
     /**
-     * Find all shortest paths (up to limit) between two tables.
+     * Every shortest join path between two tables, up to {@code limit} (at most
+     * {@link #MAX_ALTERNATIVES}), one per distinct edge sequence: two relationships between
+     * the same tables (ORDERS.BILL_TO → CUSTOMER and ORDERS.SHIP_TO → CUSTOMER) are two paths
+     * with two different JOINs, not one path returned twice (Codex 01a08afc iter-2 #4). Only
+     * paths of the minimum hop count are returned (#5).
+     *
+     * <p>Two plain BFS passes first measure every table's distance from the source and to the
+     * target — O(V+E), and an unreachable target costs nothing more (iter-3 #1: enumerating
+     * walks before knowing the target is reachable exhausted a 384m heap on a 34-table
+     * clique). The enumeration then walks only edges that lie on a shortest path
+     * ({@code fromDist + 1 + toDist == shortest}), depth-first, so every branch ends at the
+     * target and the work is bounded by the results asked for, not by the graph. Adjacency
+     * is confidence-sorted, so the first result is the path {@link #findPath} picks.
      */
     public List<PathResult> findAllPaths(String fromTable, String toTable,
                                           List<Relationship> relationships, int limit) {
+        int cap = Math.min(limit, MAX_ALTERNATIVES);
         log.info("Finding paths from {} to {} (limit={}), {} relationships available",
-            fromTable, toTable, limit, relationships.size());
-
-        // Build adjacency (bidirectional)
-        Map<String, List<Edge>> adj = new HashMap<>();
-        for (Relationship rel : relationships) {
-            adj.computeIfAbsent(rel.fromTable(), k -> new ArrayList<>())
-                .add(new Edge(rel.toTable(), rel.fromColumn(), rel.toColumn(), rel.confidence(), "forward"));
-            adj.computeIfAbsent(rel.toTable(), k -> new ArrayList<>())
-                .add(new Edge(rel.fromTable(), rel.toColumn(), rel.fromColumn(), rel.confidence(), "reverse"));
-        }
-
-        log.info("Adjacency built: {} nodes, from={} has {} edges, to={} has {} edges",
-            adj.size(),
-            fromTable, adj.getOrDefault(fromTable, List.of()).size(),
-            toTable, adj.getOrDefault(toTable, List.of()).size());
-
-        // BFS with path tracking
+            fromTable, toTable, cap, relationships.size());
         List<PathResult> results = new ArrayList<>();
-        Deque<List<String>> queue = new ArrayDeque<>();
-        List<String> start = new ArrayList<>();
-        start.add(fromTable);
-        queue.add(start);
-        int shortestLength = Integer.MAX_VALUE;
+        if (fromTable.equals(toTable) || cap <= 0) return results;
 
-        while (!queue.isEmpty() && results.size() < limit) {
-            List<String> path = queue.poll();
-            String current = path.get(path.size() - 1);
+        Map<String, List<Edge>> adj = adjacency(relationships);
+        for (List<Edge> edges : adj.values()) {
+            edges.sort(Comparator.comparingDouble(Edge::confidence).reversed());
+        }
+        Map<String, Integer> fromDist = distances(adj, fromTable);
+        Integer shortest = fromDist.get(toTable);
+        if (shortest == null || shortest > MAX_DEPTH) {
+            log.info("No path found between {} and {}", fromTable, toTable);
+            return results;
+        }
+        Map<String, Integer> toDist = distances(adj, toTable);
 
-            if (path.size() > shortestLength + 1) continue;
-            if (path.size() > MAX_DEPTH) continue;
-
-            if (current.equals(toTable) && path.size() > 1) {
-                shortestLength = Math.min(shortestLength, path.size());
-                results.add(buildSimpleResult(fromTable, toTable, path, adj));
-                continue;
-            }
-
+        Set<String> seenSql = new HashSet<>();
+        Deque<Walk> stack = new ArrayDeque<>();
+        stack.push(new Walk(List.of(fromTable), List.of()));
+        while (!stack.isEmpty() && results.size() < cap) {
+            Walk walk = stack.pop();
+            String current = walk.tables().getLast();
+            int hops = walk.edges().size();
+            List<Walk> deeper = new ArrayList<>();
             for (Edge edge : adj.getOrDefault(current, List.of())) {
-                if (!path.contains(edge.target())) {
-                    List<String> newPath = new ArrayList<>(path);
-                    newPath.add(edge.target());
-                    queue.add(newPath);
+                Integer rest = toDist.get(edge.target());
+                if (rest == null || hops + 1 + rest != shortest) continue;
+                Walk next = walk.extend(edge);
+                if (edge.target().equals(toTable)) {
+                    PathResult result = buildFromEdges(fromTable, toTable, next);
+                    if (seenSql.add(result.joinSql())) results.add(result);
+                    if (results.size() >= cap) break;
+                } else {
+                    deeper.add(next);
                 }
             }
+            // Push in reverse so the highest-confidence continuation is popped first.
+            for (int i = deeper.size() - 1; i >= 0; i--) stack.push(deeper.get(i));
         }
 
         log.info("Found {} paths from {} to {}", results.size(), fromTable, toTable);
         return results;
+    }
+
+    /** Hop distance from {@code start} to every reachable table, capped at MAX_DEPTH. */
+    private static Map<String, Integer> distances(Map<String, List<Edge>> adj, String start) {
+        Map<String, Integer> dist = new HashMap<>();
+        Deque<String> queue = new ArrayDeque<>();
+        dist.put(start, 0);
+        queue.add(start);
+        while (!queue.isEmpty()) {
+            String current = queue.poll();
+            int d = dist.get(current);
+            if (d >= MAX_DEPTH) continue;
+            for (Edge edge : adj.getOrDefault(current, List.of())) {
+                if (dist.putIfAbsent(edge.target(), d + 1) == null) queue.add(edge.target());
+            }
+        }
+        return dist;
     }
 
     private PathResult buildResult(String from, String to, List<String> tablePath,
@@ -144,35 +164,65 @@ public class PathFinderService {
             String prev = parentTable.get(table);
 
             steps.add(new PathStep(prev, edge.fromCol, table, edge.toCol, edge.confidence));
-            sql.append(String.format("JOIN %s t%d ON t%d.%s = t%d.%s\n",
-                table, i, i - 1, edge.fromCol, i, edge.toCol));
+            sql.append(joinClause(table, i, edge));
         }
 
         return new PathResult(from, to, tablePath.size() - 1, steps, sql.toString().trim());
     }
 
-    private PathResult buildSimpleResult(String from, String to, List<String> tablePath,
-                                          Map<String, List<Edge>> adj) {
+    private PathResult buildFromEdges(String from, String to, Walk walk) {
         List<PathStep> steps = new ArrayList<>();
         StringBuilder sql = new StringBuilder("SELECT *\nFROM ").append(from).append(" t0\n");
-
-        for (int i = 1; i < tablePath.size(); i++) {
-            String prev = tablePath.get(i - 1);
-            String curr = tablePath.get(i);
-            Edge edge = adj.getOrDefault(prev, List.of()).stream()
-                .filter(e -> e.target.equals(curr))
-                .max(Comparator.comparingDouble(Edge::confidence))
-                .orElse(null);
-
-            if (edge != null) {
-                steps.add(new PathStep(prev, edge.fromCol, curr, edge.toCol, edge.confidence));
-                sql.append(String.format("JOIN %s t%d ON t%d.%s = t%d.%s\n",
-                    curr, i, i - 1, edge.fromCol, i, edge.toCol));
-            }
+        for (int i = 0; i < walk.edges().size(); i++) {
+            Edge edge = walk.edges().get(i);
+            String prev = walk.tables().get(i);
+            String table = walk.tables().get(i + 1);
+            steps.add(new PathStep(prev, edge.fromCol, table, edge.toCol, edge.confidence));
+            sql.append(joinClause(table, i + 1, edge));
         }
-
-        return new PathResult(from, to, tablePath.size() - 1, steps, sql.toString().trim());
+        return new PathResult(from, to, walk.edges().size(), steps, sql.toString().trim());
     }
 
-    private record Edge(String target, String fromCol, String toCol, double confidence, String direction) {}
+    private static Map<String, List<Edge>> adjacency(List<Relationship> relationships) {
+        Map<String, List<Edge>> adj = new HashMap<>();
+        for (Relationship rel : relationships) {
+            adj.computeIfAbsent(rel.fromTable(), k -> new ArrayList<>())
+                .add(new Edge(rel.toTable(), rel.fromColumn(), rel.toColumn(),
+                    rel.fromColumns(), rel.toColumns(), rel.confidence(), "forward"));
+            adj.computeIfAbsent(rel.toTable(), k -> new ArrayList<>())
+                .add(new Edge(rel.fromTable(), rel.toColumn(), rel.fromColumn(),
+                    rel.toColumns(), rel.fromColumns(), rel.confidence(), "reverse"));
+        }
+        return adj;
+    }
+
+    /**
+     * One JOIN line joining on every column pair of the edge. A composite key joined on
+     * its representative pair alone matches rows of every parent that shares that value
+     * (gitops#3631, Codex 01a08afc P1); the {@code PathStep} keeps the representative pair
+     * for display, the SQL is what a report runs.
+     */
+    private static String joinClause(String table, int i, Edge edge) {
+        StringBuilder on = new StringBuilder();
+        for (int c = 0; c < edge.fromCols.size(); c++) {
+            if (c > 0) on.append(" AND ");
+            on.append(String.format("t%d.%s = t%d.%s", i - 1, edge.fromCols.get(c), i, edge.toCols.get(c)));
+        }
+        return String.format("JOIN %s t%d ON %s\n", table, i, on);
+    }
+
+    private record Edge(String target, String fromCol, String toCol,
+                        List<String> fromCols, List<String> toCols,
+                        double confidence, String direction) {}
+
+    /** A partial path: the tables visited so far and the edge taken into each one after the first. */
+    private record Walk(List<String> tables, List<Edge> edges) {
+        Walk extend(Edge edge) {
+            List<String> t = new ArrayList<>(tables);
+            t.add(edge.target());
+            List<Edge> e = new ArrayList<>(edges);
+            e.add(edge);
+            return new Walk(List.copyOf(t), List.copyOf(e));
+        }
+    }
 }

@@ -154,8 +154,15 @@ class RelationshipDiscoveryServiceTest {
         assertEquals(1.0, fkRel.confidence(), 1e-9);
     }
 
+    /**
+     * gitops#3631 slice 2: a composite key used to yield no edge at all, which made every
+     * IFS reference of the "company + own key" shape invisible to the graph and the report
+     * builder. It now yields ONE edge on the last column pair (the referenced side's own key),
+     * tagged so a reader can tell it from a plain constraint; the full column list stays on
+     * the ForeignKeyInfo inventory.
+     */
     @Test
-    void compositeFk_notFlattenedIntoRelationships() {
+    void compositeFk_yieldsOneEdgeOnTheOwnKeyPair() {
         var tables = Map.of(
             "PARENT", new TableInfo("PARENT", "dbo", List.of(
                 new ColumnInfo("KEY_A", "int", 4, false, false, true, 1),
@@ -170,9 +177,133 @@ class RelationshipDiscoveryServiceTest {
 
         List<Relationship> rels = service.discoverAll(tables, Map.of(), List.of(composite));
 
-        assertTrue(rels.stream().noneMatch(r -> "fk_constraint".equals(r.source())),
-            "composite FK must stay in the ForeignKeyInfo inventory only, "
-                + "not flattened into the relationship compat list");
+        List<Relationship> fromKey = rels.stream()
+            .filter(r -> r.source().startsWith("fk_constraint")).toList();
+        assertEquals(1, fromKey.size(), "one edge per composite key, not one per column and not none");
+        Relationship edge = fromKey.getFirst();
+        assertEquals("fk_constraint_composite", edge.source());
+        assertEquals("REF_B", edge.fromColumn(), "the last pair — the referenced side's own key");
+        assertEquals("KEY_B", edge.toColumn());
+        assertEquals(1.0, edge.confidence(), 1e-9);
+        assertTrue(rels.stream().noneMatch(r -> "REF_A".equals(r.fromColumn()) && r.source().startsWith("fk_constraint")),
+            "the parent-key column does not become a second edge");
+        // Codex 01a08afc P1: the edge carries every pair, in key order, so a JOIN built from
+        // it does not match rows of other parents sharing the own-key value.
+        assertEquals(List.of("REF_A", "REF_B"), edge.fromColumns());
+        assertEquals(List.of("KEY_A", "KEY_B"), edge.toColumns());
+        assertTrue(edge.isComposite());
+    }
+
+    @Test
+    void compositeFk_keepsItsColumnPairsThroughDeduplicationWithAHeuristicEdge() {
+        // A name-match heuristic produces the same representative pair (CHILD.PARENT_ID → PARENT.PARENT_ID);
+        // after dedup the surviving edge must still carry the composite key's full pair list.
+        var tables = Map.of(
+            "PARENT", new TableInfo("PARENT", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, true, 1),
+                new ColumnInfo("PARENT_ID", "int", 4, false, false, true, 2))),
+            "CHILD", new TableInfo("CHILD", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, false, 1),
+                new ColumnInfo("PARENT_ID", "int", 4, false, false, false, 2))));
+        ForeignKeyInfo composite = new ForeignKeyInfo("FK_COMPOSITE",
+            "dbo", "CHILD", List.of("COMPANY", "PARENT_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "PARENT_ID"),
+            false, false, "NO_ACTION", "NO_ACTION");
+
+        List<Relationship> rels = service.discoverAll(tables, Map.of(), List.of(composite));
+
+        Relationship edge = rels.stream()
+            .filter(r -> "CHILD".equals(r.fromTable()) && "PARENT_ID".equals(r.fromColumn()) && "PARENT".equals(r.toTable()))
+            .findFirst().orElseThrow();
+        assertTrue(edge.source().contains("fk_constraint_composite"), edge.source());
+        assertEquals(List.of("COMPANY", "PARENT_ID"), edge.fromColumns());
+        assertEquals(List.of("COMPANY", "PARENT_ID"), edge.toColumns());
+        assertEquals(1, rels.stream().filter(r -> "CHILD".equals(r.fromTable()) && "PARENT".equals(r.toTable())).count(),
+            "the heuristic sighting of the same join is folded into the key, not kept as a narrower second edge");
+    }
+
+    @Test
+    void twoCompositeFksSharingARepresentativeColumn_bothSurviveDeduplication() {
+        // Codex 01a08afc iter-2 #3: same representative column REF_ID, different keys — two joins.
+        var tables = Map.of(
+            "PARENT", new TableInfo("PARENT", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, true, 1),
+                new ColumnInfo("ID", "int", 4, false, false, true, 2),
+                new ColumnInfo("ALT_ID", "int", 4, false, false, false, 3))),
+            "CHILD", new TableInfo("CHILD", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, false, 1),
+                new ColumnInfo("OTHER_COMPANY", "int", 4, false, false, false, 2),
+                new ColumnInfo("REF_ID", "int", 4, false, false, false, 3))));
+        ForeignKeyInfo fk1 = new ForeignKeyInfo("FK1", "dbo", "CHILD", List.of("COMPANY", "REF_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "ID"), false, false, "NO_ACTION", "NO_ACTION");
+        ForeignKeyInfo fk2 = new ForeignKeyInfo("FK2", "dbo", "CHILD", List.of("OTHER_COMPANY", "REF_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "ALT_ID"), false, false, "NO_ACTION", "NO_ACTION");
+
+        List<Relationship> rels = service.discoverAll(tables, Map.of(), List.of(fk1, fk2));
+
+        List<Relationship> composite = rels.stream().filter(Relationship::isComposite).toList();
+        assertEquals(2, composite.size(), composite.toString());
+        assertTrue(composite.stream().anyMatch(r -> r.fromColumns().equals(List.of("COMPANY", "REF_ID"))
+            && r.toColumns().equals(List.of("COMPANY", "ID"))));
+        assertTrue(composite.stream().anyMatch(r -> r.fromColumns().equals(List.of("OTHER_COMPANY", "REF_ID"))
+            && r.toColumns().equals(List.of("COMPANY", "ALT_ID"))));
+    }
+
+    @Test
+    void heuristicSharedByTwoCompositeKeys_creditsNeitherRegardlessOfInputOrder() {
+        // Codex 01a08afc iter-4: FK1 and FK2 both contain CHILD.PARENT_ID → PARENT.PARENT_ID, which the
+        // name-match heuristic also finds. It must not become "extra evidence" for whichever key came first.
+        var tables = Map.of(
+            "PARENT", new TableInfo("PARENT", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, true, 1),
+                new ColumnInfo("PARENT_ID", "int", 4, false, false, true, 2))),
+            "CHILD", new TableInfo("CHILD", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, false, 1),
+                new ColumnInfo("OTHER_COMPANY", "int", 4, false, false, false, 2),
+                new ColumnInfo("PARENT_ID", "int", 4, false, false, false, 3))));
+        ForeignKeyInfo fk1 = new ForeignKeyInfo("FK1", "dbo", "CHILD", List.of("COMPANY", "PARENT_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "PARENT_ID"), false, false, "NO_ACTION", "NO_ACTION");
+        ForeignKeyInfo fk2 = new ForeignKeyInfo("FK2", "dbo", "CHILD", List.of("OTHER_COMPANY", "PARENT_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "PARENT_ID"), false, false, "NO_ACTION", "NO_ACTION");
+
+        for (List<ForeignKeyInfo> order : List.of(List.of(fk1, fk2), List.of(fk2, fk1))) {
+            List<Relationship> rels = service.discoverAll(tables, Map.of(), order);
+            List<Relationship> childToParent = rels.stream()
+                .filter(r -> "CHILD".equals(r.fromTable()) && "PARENT".equals(r.toTable())).toList();
+            assertEquals(2, childToParent.size(), "order " + order.stream().map(ForeignKeyInfo::name).toList() + ": " + childToParent);
+            assertTrue(childToParent.stream().allMatch(Relationship::isComposite), "the shared heuristic is not kept as a narrower edge");
+            assertTrue(childToParent.stream().allMatch(r -> "fk_constraint_composite".equals(r.source()) && !r.multiSource()),
+                "neither key is credited with the ambiguous heuristic: " + childToParent);
+        }
+    }
+
+    @Test
+    void declaredSingleColumnFkToAnotherTargetColumn_isNotFoldedIntoTheCompositeKey() {
+        // Codex 01a08afc iter-3 #2: CHILD.REF_ID → PARENT.GLOBAL_ID is a different join from
+        // CHILD.(COMPANY, REF_ID) → PARENT.(COMPANY, ID); only a heuristic on the exact pair folds.
+        var tables = Map.of(
+            "PARENT", new TableInfo("PARENT", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, true, 1),
+                new ColumnInfo("ID", "int", 4, false, false, true, 2),
+                new ColumnInfo("GLOBAL_ID", "int", 4, false, false, false, 3))),
+            "CHILD", new TableInfo("CHILD", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, false, 1),
+                new ColumnInfo("REF_ID", "int", 4, false, false, false, 2))));
+        ForeignKeyInfo composite = new ForeignKeyInfo("FK_COMPOSITE", "dbo", "CHILD", List.of("COMPANY", "REF_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "ID"), false, false, "NO_ACTION", "NO_ACTION");
+        ForeignKeyInfo single = new ForeignKeyInfo("FK_SINGLE", "dbo", "CHILD", List.of("REF_ID"),
+            "dbo", "PARENT", List.of("GLOBAL_ID"), false, false, "NO_ACTION", "NO_ACTION");
+
+        List<Relationship> rels = service.discoverAll(tables, Map.of(), List.of(composite, single));
+
+        List<Relationship> childToParent = rels.stream()
+            .filter(r -> "CHILD".equals(r.fromTable()) && "PARENT".equals(r.toTable())).toList();
+        assertEquals(2, childToParent.size(), childToParent.toString());
+        Relationship kept = childToParent.stream().filter(r -> !r.isComposite()).findFirst().orElseThrow();
+        assertEquals("GLOBAL_ID", kept.toColumn());
+        assertEquals("fk_constraint", kept.source());
+        Relationship comp = childToParent.stream().filter(Relationship::isComposite).findFirst().orElseThrow();
+        assertEquals("fk_constraint_composite", comp.source(), "the single key is not counted as a second sighting");
     }
 
     @Test
