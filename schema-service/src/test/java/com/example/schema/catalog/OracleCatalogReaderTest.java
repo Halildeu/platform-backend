@@ -230,9 +230,15 @@ class OracleCatalogReaderTest {
             new Object[] {"ABSENCE_REGISTRATION", "NOTE", 5, null},
             // gitops#3643: the LU DeliveryNote has no DELIVERY_NOTE view here; its JOIN view declares the LU.
             new Object[] {"DELIVERY_NOTE_JOIN", "DELNOTE_NO", 1, "FLAGS=KMI-L^"},
-            new Object[] {"ABSENCE_REGISTRATION", "DELNOTE_NO", 6, "FLAGS=A-IU-^REF=DeliveryNote^"}),
+            new Object[] {"ABSENCE_REGISTRATION", "DELNOTE_NO", 6, "FLAGS=A-IU-^REF=DeliveryNote^"},
+            // EngPartMaster: two visible views declare it; only ENG_PART_MASTER_MAIN's comment carries TABLE=<itself>_TAB.
+            new Object[] {"ENG_PART_MASTER_MAIN", "PART_NO", 1, "FLAGS=KMI-L^"},
+            new Object[] {"ENG_PART_MASTER_ALT_LOV", "PART_NO", 1, "FLAGS=KMI-L^"},
+            new Object[] {"ABSENCE_REGISTRATION", "PART_NO", 7, "FLAGS=A-IU-^REF=EngPartMaster^"}),
             List.of(
             new Object[] {"DELIVERY_NOTE_JOIN", "LU=DeliveryNote^PROMPT=Delivery Note^MODULE=ORDER^"},
+            new Object[] {"ENG_PART_MASTER_ALT_LOV", "LU=EngPartMaster^PROMPT=Eng Part Master^MODULE=PDMCON^TABLE=ENG_PART_MASTER_TAB^"},
+            new Object[] {"ENG_PART_MASTER_MAIN", "LU=EngPartMaster^PROMPT=Eng Part Master^MODULE=PDMCON^TABLE=ENG_PART_MASTER_MAIN_TAB^"},
             new Object[] {"COMPANY", "LU=Company^PROMPT=Company^MODULE=ENTERP^TABLE=COMPANY_TAB^"}));
 
         List<ForeignKeyInfo> keys = reader.extractForeignKeys("IFSAPP");
@@ -250,8 +256,10 @@ class OracleCatalogReaderTest {
             "IFS_REF_ABSENCE_REGISTRATION.COMPANY", "IFS_REF_ABSENCE_REGISTRATION.EMP_NO",
             "IFS_REF_ABSENCE_REGISTRATION.DELNOTE_NO");
         assertThat(byName.get("IFS_REF_ABSENCE_REGISTRATION.DELNOTE_NO").toTable()).as("resolved through the LU= index").isEqualTo("DELIVERY_NOTE_JOIN");
+        assertThat(byName.get("IFS_REF_ABSENCE_REGISTRATION.PART_NO").toTable())
+            .as("the base view is the one whose own TABLE entry is <VIEW>_TAB, read from the comment").isEqualTo("ENG_PART_MASTER_MAIN");
         assertThat(byName).doesNotContainKey("IFS_REF_ABSENCE_REGISTRATION.CONTRACT");
-        assertThat(keys).hasSize(5);
+        assertThat(keys).hasSize(6);
         assertThat(byName.get("FK_ABSENCE_SITE").isNotTrusted()).isFalse();
 
         ForeignKeyInfo composite = byName.get("IFS_REF_ABSENCE_REGISTRATION.EMP_NO");

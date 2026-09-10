@@ -7,6 +7,7 @@ import com.example.schema.model.ForeignKeyInfo;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -71,12 +72,19 @@ class IfsReferenceResolverTest {
         views.put("RESOURCE_ACCESS_LOV", List.of(col("RESOURCE_ID", 1, "FLAGS=KMI-L^")));         // ambiguous: two non-base views
         views.put("MACHINE_SITE_CONN_UIV", List.of(col("RESOURCE_ID", 1, "FLAGS=KMI-L^")));
         views.put("COMPANY", List.of(col("COMPANY", 1, "FLAGS=KMI-L^")));
+        views.put("COMPANY_FINANCE_LOV", List.of(col("COMPANY", 1, "FLAGS=KMI-L^")));   // a visible, keyed alternative the index names for Company
+        views.put("COMPANY_OVERVIEW", List.of(col("COMPANY", 1, "FLAGS=KMI-L^")));
+        views.put("PLANT_A_MAIN", List.of(col("ID", 1, "FLAGS=KMI-L^")));                 // two base-marked views: ambiguous
+        views.put("PLANT_B_MAIN", List.of(col("ID", 1, "FLAGS=KMI-L^")));
+        views.put("NO_KEY_JOIN", List.of(col("X", 1, "FLAGS=AMIUL^")));                   // index target without a key: no key, not "via index"
         views.put("USER_OF", List.of(
             col("DELNOTE_NO", 1, "FLAGS=A-IU-^REF=DeliveryNote^"),
             col("PART_NO", 2, "FLAGS=A-IU-^REF=EngPartMaster^"),
             col("RESOURCE_ID", 3, "FLAGS=A-IU-^REF=Resource^"),
-            col("COMPANY", 4, "FLAGS=A-IU-^REF=Company^"),                  // name rule still wins when the view exists
-            col("NOWHERE", 5, "FLAGS=A-IU-^REF=WageCode4^")));               // no view declares that LU
+            col("COMPANY", 4, "FLAGS=A-IU-^REF=Company^"),                  // name rule wins over two visible index candidates
+            col("PLANT", 5, "FLAGS=A-IU-^REF=Plant^"),
+            col("X", 6, "FLAGS=A-IU-^REF=NoKey^"),
+            col("NOWHERE", 7, "FLAGS=A-IU-^REF=WageCode4^")));               // no view declares that LU
         Map<String, List<IfsReferenceResolver.LuView>> index = new LinkedHashMap<>();
         index.put("DeliveryNote", List.of(new IfsReferenceResolver.LuView("DELIVERY_NOTE_JOIN", false)));
         index.put("EngPartMaster", List.of(
@@ -85,21 +93,50 @@ class IfsReferenceResolverTest {
         index.put("Resource", List.of(
             new IfsReferenceResolver.LuView("RESOURCE_ACCESS_LOV", false),
             new IfsReferenceResolver.LuView("MACHINE_SITE_CONN_UIV", false)));
-        index.put("Company", List.of(new IfsReferenceResolver.LuView("COMPANY_FINANCE_LOV", false)));
+        index.put("Company", List.of(
+            new IfsReferenceResolver.LuView("COMPANY_FINANCE_LOV", true),
+            new IfsReferenceResolver.LuView("COMPANY_OVERVIEW", false)));
+        index.put("Plant", List.of(
+            new IfsReferenceResolver.LuView("PLANT_A_MAIN", true),
+            new IfsReferenceResolver.LuView("PLANT_B_MAIN", true)));
+        index.put("NoKey", List.of(new IfsReferenceResolver.LuView("NO_KEY_JOIN", false)));
 
         var result = IfsReferenceResolver.resolve("IFSAPP", views, index);
 
         var byName = byName(result);
         assertThat(byName.get("IFS_REF_USER_OF.DELNOTE_NO").toTable()).isEqualTo("DELIVERY_NOTE_JOIN");
         assertThat(byName.get("IFS_REF_USER_OF.PART_NO").toTable()).isEqualTo("ENG_PART_MASTER_MAIN");
-        assertThat(byName.get("IFS_REF_USER_OF.COMPANY").toTable()).as("name rule first").isEqualTo("COMPANY");
-        assertThat(byName).doesNotContainKeys("IFS_REF_USER_OF.RESOURCE_ID", "IFS_REF_USER_OF.NOWHERE");
-        assertThat(result.resolvedViaLuIndex()).isEqualTo(2);
-        assertThat(result.ambiguousTarget()).isEqualTo(1);
+        assertThat(byName.get("IFS_REF_USER_OF.COMPANY").toTable())
+            .as("the exact-name view wins even when the index names a keyed base view and another candidate").isEqualTo("COMPANY");
+        assertThat(byName).doesNotContainKeys("IFS_REF_USER_OF.RESOURCE_ID", "IFS_REF_USER_OF.PLANT",
+            "IFS_REF_USER_OF.X", "IFS_REF_USER_OF.NOWHERE");
+        assertThat(result.resolvedViaLuIndex()).as("keys the index produced: DeliveryNote, EngPartMaster").isEqualTo(2);
+        assertThat(result.ambiguousTarget()).as("Resource (no base), Plant (two bases)").isEqualTo(2);
+        assertThat(result.unresolvedKeyShape()).as("NoKey: index target without a key column").isEqualTo(1);
         assertThat(result.unresolvedTarget()).isEqualTo(1);
         assertThat(result.resolved()).isEqualTo(3);
-        // Without an index the same input counts the three misses as unresolved targets, as before.
-        assertThat(IfsReferenceResolver.resolve("IFSAPP", views).unresolvedTarget()).isEqualTo(4);
+        // Without an index the same input counts every miss as an unresolved target, as before.
+        assertThat(IfsReferenceResolver.resolve("IFSAPP", views).unresolvedTarget()).isEqualTo(6);
+        assertThat(IfsReferenceResolver.resolve("IFSAPP", views).resolvedViaLuIndex()).isZero();
+    }
+
+    @Test
+    @DisplayName("öncelik sırası: tam ad → tek görünür aday → tek temel aday → belirsiz; görünmeyen adaylar sayılmaz")
+    void targetViewPriority() {
+        Set<String> views = Set.of("COMPANY", "DELIVERY_NOTE_JOIN", "ENG_PART_MASTER_MAIN", "ENG_PART_MASTER_ALT_LOV", "A_LOV", "B_LOV");
+        Map<String, List<IfsReferenceResolver.LuView>> index = new LinkedHashMap<>();
+        index.put("Company", List.of(new IfsReferenceResolver.LuView("DELIVERY_NOTE_JOIN", true)));
+        index.put("DeliveryNote", List.of(new IfsReferenceResolver.LuView("DELIVERY_NOTE_JOIN", false), new IfsReferenceResolver.LuView("INVISIBLE_VIEW", true)));
+        index.put("EngPartMaster", List.of(new IfsReferenceResolver.LuView("ENG_PART_MASTER_ALT_LOV", false), new IfsReferenceResolver.LuView("ENG_PART_MASTER_MAIN", true)));
+        index.put("Resource", List.of(new IfsReferenceResolver.LuView("A_LOV", false), new IfsReferenceResolver.LuView("B_LOV", false)));
+        index.put("Ghost", List.of(new IfsReferenceResolver.LuView("INVISIBLE_VIEW", true)));
+
+        assertThat(IfsReferenceResolver.targetView("Company", views, index)).isEqualTo(new IfsReferenceResolver.Target("COMPANY", false, false));
+        assertThat(IfsReferenceResolver.targetView("DeliveryNote", views, index)).isEqualTo(new IfsReferenceResolver.Target("DELIVERY_NOTE_JOIN", true, false));
+        assertThat(IfsReferenceResolver.targetView("EngPartMaster", views, index)).isEqualTo(new IfsReferenceResolver.Target("ENG_PART_MASTER_MAIN", true, false));
+        assertThat(IfsReferenceResolver.targetView("Resource", views, index).ambiguous()).isTrue();
+        assertThat(IfsReferenceResolver.targetView("Ghost", views, index)).isEqualTo(IfsReferenceResolver.Target.NONE);
+        assertThat(IfsReferenceResolver.targetView("ACCOUNTING_YEAR", Set.of("ACCOUNTING_YEAR"), null).view()).isEqualTo("ACCOUNTING_YEAR");
     }
 
     @Test
