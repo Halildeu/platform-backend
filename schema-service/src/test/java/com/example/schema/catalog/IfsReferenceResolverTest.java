@@ -49,12 +49,57 @@ class IfsReferenceResolverTest {
     }
 
     @Test
-    @DisplayName("LU adı UPPER_SNAKE view adına çevrilir; rakamlar bitişik kalır")
+    @DisplayName("LU adı UPPER_SNAKE view adına çevrilir; rakamlar bitişik kalır; zaten büyük harfli ad olduğu gibi kalır")
     void luNamesBecomeViewNames() {
         assertThat(IfsReferenceResolver.luToViewName("Site")).isEqualTo("SITE");
         assertThat(IfsReferenceResolver.luToViewName("CompanyFinance")).isEqualTo("COMPANY_FINANCE");
         assertThat(IfsReferenceResolver.luToViewName("AbsLegalBase")).isEqualTo("ABS_LEGAL_BASE");
         assertThat(IfsReferenceResolver.luToViewName("Bill2Line")).isEqualTo("BILL2_LINE");
+        // 346 live references write the view name itself (gitops#3643); the split made A_C_C_O_U_N_T_I_N_G_….
+        assertThat(IfsReferenceResolver.luToViewName("ACCOUNTING_YEAR")).isEqualTo("ACCOUNTING_YEAR");
+        assertThat(IfsReferenceResolver.luToViewName("ALL_LEDGER")).isEqualTo("ALL_LEDGER");
+        assertThat(IfsReferenceResolver.luToViewName("Company_Finance")).isEqualTo("COMPANY_FINANCE");
+    }
+
+    @Test
+    @DisplayName("ad kuralı view bulamazsa LU= indeksi: tek aday veya TABLE=X_TAB ile işaretli temel view; birden fazla temel-dışı aday belirsizdir")
+    void luIndexResolvesWhatTheNameRuleMisses() {
+        Map<String, List<ColumnMeta>> views = new LinkedHashMap<>();
+        views.put("DELIVERY_NOTE_JOIN", List.of(col("DELNOTE_NO", 1, "FLAGS=KMI-L^")));          // the LU's only visible view
+        views.put("ENG_PART_MASTER_MAIN", List.of(col("PART_NO", 1, "FLAGS=KMI-L^")));            // base view among several
+        views.put("ENG_PART_MASTER_ALT_LOV", List.of(col("PART_NO", 1, "FLAGS=KMI-L^")));
+        views.put("RESOURCE_ACCESS_LOV", List.of(col("RESOURCE_ID", 1, "FLAGS=KMI-L^")));         // ambiguous: two non-base views
+        views.put("MACHINE_SITE_CONN_UIV", List.of(col("RESOURCE_ID", 1, "FLAGS=KMI-L^")));
+        views.put("COMPANY", List.of(col("COMPANY", 1, "FLAGS=KMI-L^")));
+        views.put("USER_OF", List.of(
+            col("DELNOTE_NO", 1, "FLAGS=A-IU-^REF=DeliveryNote^"),
+            col("PART_NO", 2, "FLAGS=A-IU-^REF=EngPartMaster^"),
+            col("RESOURCE_ID", 3, "FLAGS=A-IU-^REF=Resource^"),
+            col("COMPANY", 4, "FLAGS=A-IU-^REF=Company^"),                  // name rule still wins when the view exists
+            col("NOWHERE", 5, "FLAGS=A-IU-^REF=WageCode4^")));               // no view declares that LU
+        Map<String, List<IfsReferenceResolver.LuView>> index = new LinkedHashMap<>();
+        index.put("DeliveryNote", List.of(new IfsReferenceResolver.LuView("DELIVERY_NOTE_JOIN", false)));
+        index.put("EngPartMaster", List.of(
+            new IfsReferenceResolver.LuView("ENG_PART_MASTER_ALT_LOV", false),
+            new IfsReferenceResolver.LuView("ENG_PART_MASTER_MAIN", true)));
+        index.put("Resource", List.of(
+            new IfsReferenceResolver.LuView("RESOURCE_ACCESS_LOV", false),
+            new IfsReferenceResolver.LuView("MACHINE_SITE_CONN_UIV", false)));
+        index.put("Company", List.of(new IfsReferenceResolver.LuView("COMPANY_FINANCE_LOV", false)));
+
+        var result = IfsReferenceResolver.resolve("IFSAPP", views, index);
+
+        var byName = byName(result);
+        assertThat(byName.get("IFS_REF_USER_OF.DELNOTE_NO").toTable()).isEqualTo("DELIVERY_NOTE_JOIN");
+        assertThat(byName.get("IFS_REF_USER_OF.PART_NO").toTable()).isEqualTo("ENG_PART_MASTER_MAIN");
+        assertThat(byName.get("IFS_REF_USER_OF.COMPANY").toTable()).as("name rule first").isEqualTo("COMPANY");
+        assertThat(byName).doesNotContainKeys("IFS_REF_USER_OF.RESOURCE_ID", "IFS_REF_USER_OF.NOWHERE");
+        assertThat(result.resolvedViaLuIndex()).isEqualTo(2);
+        assertThat(result.ambiguousTarget()).isEqualTo(1);
+        assertThat(result.unresolvedTarget()).isEqualTo(1);
+        assertThat(result.resolved()).isEqualTo(3);
+        // Without an index the same input counts the three misses as unresolved targets, as before.
+        assertThat(IfsReferenceResolver.resolve("IFSAPP", views).unresolvedTarget()).isEqualTo(4);
     }
 
     @Test

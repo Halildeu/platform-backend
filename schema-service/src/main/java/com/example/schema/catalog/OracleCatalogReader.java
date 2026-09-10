@@ -391,7 +391,30 @@ public class OracleCatalogReader implements CatalogReader {
                         rs.getString("COLUMN_NAME"), rs.getInt("COLUMN_ID"),
                         IfsColumnComment.parse(rs.getString("COMMENTS"))));
             });
-        IfsReferenceResolver.Result refs = IfsReferenceResolver.resolve(owner, viewColumns);
+        // gitops#3643: a REF names a logical unit; when its UPPER_SNAKE name is not a view the
+        // views themselves say which LU they belong to (LU=… in their comment, TABLE=X_TAB on
+        // the base view). Live: 10,654 views declare an LU; the index resolves 103 references
+        // the name rule missed and leaves 278 ambiguous ones counted.
+        Map<String, List<IfsReferenceResolver.LuView>> luIndex = new LinkedHashMap<>();
+        jdbc.query("""
+            SELECT c.TABLE_NAME, c.COMMENTS
+              FROM ALL_TAB_COMMENTS c
+              JOIN ALL_VIEWS v
+                ON v.OWNER = c.OWNER
+               AND v.VIEW_NAME = c.TABLE_NAME
+             WHERE c.OWNER = :owner
+               AND c.COMMENTS LIKE 'LU=%'
+            """, Map.of("owner", owner), rs -> {
+                String viewName = rs.getString("TABLE_NAME");
+                IfsColumnComment parsed = IfsColumnComment.parse(rs.getString("COMMENTS"));
+                String lu = parsed == null ? null : parsed.entries().get("LU");
+                if (lu == null || lu.isBlank()) return;
+                String table = parsed.entries().get("TABLE");
+                boolean base = table != null && table.trim().equalsIgnoreCase(viewName + "_TAB");
+                luIndex.computeIfAbsent(lu.trim(), k -> new ArrayList<>())
+                    .add(new IfsReferenceResolver.LuView(viewName, base));
+            });
+        IfsReferenceResolver.Result refs = IfsReferenceResolver.resolve(owner, viewColumns, luIndex);
         viewColumns.clear();
         // Merge on what a key IS (tables + ordered columns), not on its name: a declared
         // constraint that states the same reference wins, and a synthetic key never hides
@@ -402,10 +425,10 @@ public class OracleCatalogReader implements CatalogReader {
         for (ForeignKeyInfo fk : refs.foreignKeys()) {
             if (byIdentity.putIfAbsent(identityOf(fk), fk) != null) shadowed++;
         }
-        log.info("[{}] Oracle: IFS REF= references {} -> {} keys ({} target not a view, {} key shape unresolved,"
-                + " {} source column missing, {} duplicate, {} already declared) for owner '{}'",
-            sourceId, refs.references(), refs.resolved(), refs.unresolvedTarget(), refs.unresolvedKeyShape(),
-            refs.unresolvedSourceColumn(), refs.duplicates(), shadowed, owner);
+        log.info("[{}] Oracle: IFS REF= references {} -> {} keys ({} via LU index; {} target not a view, {} target ambiguous,"
+                + " {} key shape unresolved, {} source column missing, {} duplicate, {} already declared) for owner '{}'",
+            sourceId, refs.references(), refs.resolved(), refs.resolvedViaLuIndex(), refs.unresolvedTarget(), refs.ambiguousTarget(),
+            refs.unresolvedKeyShape(), refs.unresolvedSourceColumn(), refs.duplicates(), shadowed, owner);
         return List.copyOf(byIdentity.values());
     }
 

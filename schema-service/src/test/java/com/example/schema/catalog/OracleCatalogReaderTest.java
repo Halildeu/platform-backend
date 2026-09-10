@@ -161,10 +161,24 @@ class OracleCatalogReaderTest {
         assertThat(sql.getValue()).contains("'TABLE', 'VIEW'");
     }
 
-    /** Feeds the REF= column pass with rows: {TABLE_NAME, COLUMN_NAME, COLUMN_ID, COMMENTS}. */
-    private void stubColumnPass(List<Object[]> rows) {
+    /**
+     * Feeds the two callback passes of extractForeignKeys: the REF= column pass with rows
+     * {TABLE_NAME, COLUMN_NAME, COLUMN_ID, COMMENTS} and the LU= view-comment pass (the query
+     * with {@code LIKE 'LU=%'}) with rows {TABLE_NAME, COMMENTS}.
+     */
+    private void stubColumnPass(List<Object[]> rows, List<Object[]> luRows) {
         doAnswer(inv -> {
+            String sql = inv.getArgument(0);
             RowCallbackHandler handler = inv.getArgument(2);
+            if (sql.contains("LIKE 'LU=%'")) {
+                for (Object[] r : luRows) {
+                    ResultSet rs = mock(ResultSet.class);
+                    org.mockito.Mockito.when(rs.getString("TABLE_NAME")).thenReturn((String) r[0]);
+                    org.mockito.Mockito.when(rs.getString("COMMENTS")).thenReturn((String) r[1]);
+                    handler.processRow(rs);
+                }
+                return null;
+            }
             for (Object[] r : rows) {
                 ResultSet rs = mock(ResultSet.class);
                 org.mockito.Mockito.when(rs.getString("TABLE_NAME")).thenReturn((String) r[0]);
@@ -213,22 +227,31 @@ class OracleCatalogReaderTest {
             new Object[] {"ABSENCE_REGISTRATION", "EMP_NO", 2, "FLAGS=PMI--^REF=CompanyPerson(company)/NOCHECK^"},
             new Object[] {"ABSENCE_REGISTRATION", "ABSENCE_ID", 3, "FLAGS=KMI-L^"},
             new Object[] {"ABSENCE_REGISTRATION", "CONTRACT", 4, "FLAGS=A-IU-^REF=Site^"},
-            new Object[] {"ABSENCE_REGISTRATION", "NOTE", 5, null}));
+            new Object[] {"ABSENCE_REGISTRATION", "NOTE", 5, null},
+            // gitops#3643: the LU DeliveryNote has no DELIVERY_NOTE view here; its JOIN view declares the LU.
+            new Object[] {"DELIVERY_NOTE_JOIN", "DELNOTE_NO", 1, "FLAGS=KMI-L^"},
+            new Object[] {"ABSENCE_REGISTRATION", "DELNOTE_NO", 6, "FLAGS=A-IU-^REF=DeliveryNote^"}),
+            List.of(
+            new Object[] {"DELIVERY_NOTE_JOIN", "LU=DeliveryNote^PROMPT=Delivery Note^MODULE=ORDER^"},
+            new Object[] {"COMPANY", "LU=Company^PROMPT=Company^MODULE=ENTERP^TABLE=COMPANY_TAB^"}));
 
         List<ForeignKeyInfo> keys = reader.extractForeignKeys("IFSAPP");
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbc).query(sql.capture(), anyMap(), any(RowCallbackHandler.class));
-        assertThat(sql.getValue()).contains("JOIN ALL_VIEWS");
-        assertThat(sql.getValue()).contains("ORDER BY c.TABLE_NAME, c.COLUMN_ID");
+        verify(jdbc, org.mockito.Mockito.times(2)).query(sql.capture(), anyMap(), any(RowCallbackHandler.class));
+        assertThat(sql.getAllValues().get(0)).contains("JOIN ALL_VIEWS");
+        assertThat(sql.getAllValues().get(0)).contains("ORDER BY c.TABLE_NAME, c.COLUMN_ID");
+        assertThat(sql.getAllValues().get(1)).contains("ALL_TAB_COMMENTS").contains("JOIN ALL_VIEWS").contains("LIKE 'LU=%'");
 
         Map<String, ForeignKeyInfo> byName = new HashMap<>();
         keys.forEach(fk -> byName.put(fk.name(), fk));
         // The declared constraint states the same reference as ABSENCE_REGISTRATION.CONTRACT's REF=Site: one key, the declared one.
         assertThat(byName).containsKeys("FK_ABSENCE_SITE", "IFS_REF_COMPANY_PERSON.COMPANY",
-            "IFS_REF_ABSENCE_REGISTRATION.COMPANY", "IFS_REF_ABSENCE_REGISTRATION.EMP_NO");
+            "IFS_REF_ABSENCE_REGISTRATION.COMPANY", "IFS_REF_ABSENCE_REGISTRATION.EMP_NO",
+            "IFS_REF_ABSENCE_REGISTRATION.DELNOTE_NO");
+        assertThat(byName.get("IFS_REF_ABSENCE_REGISTRATION.DELNOTE_NO").toTable()).as("resolved through the LU= index").isEqualTo("DELIVERY_NOTE_JOIN");
         assertThat(byName).doesNotContainKey("IFS_REF_ABSENCE_REGISTRATION.CONTRACT");
-        assertThat(keys).hasSize(4);
+        assertThat(keys).hasSize(5);
         assertThat(byName.get("FK_ABSENCE_SITE").isNotTrusted()).isFalse();
 
         ForeignKeyInfo composite = byName.get("IFS_REF_ABSENCE_REGISTRATION.EMP_NO");
