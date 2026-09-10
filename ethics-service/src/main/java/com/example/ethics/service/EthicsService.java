@@ -49,6 +49,7 @@ public class EthicsService {
     private final com.example.ethics.intake.ReportModePolicy reportModes;
     private final RetaliationMonitoringService retaliationMonitoring;
     private final com.example.ethics.identity.ReporterIdentityService reporterIdentities;
+    private final com.example.ethics.repository.CaseEscalationRepository escalations;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
             EthicsReportRepository reports, ReporterAccessGrantRepository grants, EthicsMessageRepository messages,
@@ -65,7 +66,9 @@ public class EthicsService {
             com.example.ethics.intake.IntakeChannelGate intakeChannel,
             com.example.ethics.intake.ReportModePolicy reportModes,
             RetaliationMonitoringService retaliationMonitoring,
-            com.example.ethics.identity.ReporterIdentityService reporterIdentities) {
+            com.example.ethics.identity.ReporterIdentityService reporterIdentities,
+            com.example.ethics.repository.CaseEscalationRepository escalations) {
+        this.escalations=escalations;
         this.sla=sla;
         this.waits=waits;
         this.intakeChannel=intakeChannel;
@@ -303,9 +306,13 @@ public class EthicsService {
                 .collect(Collectors.toMap(EthicsReport::getCaseId, r -> r, (first,ignored) -> first));
         Map<UUID,Integer> participantsByCase = participants.countByCaseIdIn(ids).stream()
                 .collect(Collectors.toMap(row -> (UUID) row[0], row -> ((Number) row[1]).intValue()));
+        Map<UUID,List<com.example.ethics.model.CaseEscalation>> escalationsByCase =
+                escalations.findAllByCaseIdInOrderByEscalatedAtAscLevelAsc(ids).stream()
+                        .collect(Collectors.groupingBy(com.example.ethics.model.CaseEscalation::getCaseId));
         return visible.stream()
                 .map(item -> summary(item, reportByCase.get(item.getId()),
-                        participantsByCase.getOrDefault(item.getId(), 0)))
+                        participantsByCase.getOrDefault(item.getId(), 0),
+                        escalationOf(escalationsByCase.getOrDefault(item.getId(), List.of()))))
                 .toList();
     }
 
@@ -316,6 +323,7 @@ public class EthicsService {
                 .stream().map(EthicsService::messageResponse).toList();
         var onCase=participants.findAllByCaseIdOrderByCreatedAtAsc(caseId);
         boolean named=!onCase.isEmpty();
+        var escalation=escalationOf(escalations.findAllByCaseIdOrderByEscalatedAtAscLevelAsc(caseId));
         return new CaseDetail(item.getId(),item.getStatus(),named?null:item.getAssignedTo(),item.getVersion(),report.getMode(),report.getCategory(),report.getSubject(),report.getNarrative(),all,
                 item.getAcknowledgedAt(),item.getOutcome(),item.getClosedAt(),
                 item.getCreatedAt(),item.getUpdatedAt(),onCase.size(),
@@ -326,8 +334,28 @@ public class EthicsService {
                 sla.feedback(item.getCreatedAt(),item.getClosedAt()).dueAt(),
                 sla.feedback(item.getCreatedAt(),item.getClosedAt()).state().name(),
                 sla.feedback(item.getCreatedAt(),item.getClosedAt()).wasLate(),
-                secs(sla.feedback(item.getCreatedAt(),item.getClosedAt()).overdueBy()));
+                secs(sla.feedback(item.getCreatedAt(),item.getClosedAt()).overdueBy()),
+                escalation.level(),escalation.at());
     }
+
+    /**
+     * ES-301 (#882) — what the case's escalation rows say, folded to two fields.
+     *
+     * <p>{@code level} is the <em>highest level ever recorded</em> across both obligations
+     * and {@code at} the instant of the most recent escalation event. Both are history, not
+     * activity: they do not drop when the obligation is met, because "this case reached level
+     * 2 before it was acknowledged" is the fact the record exists to keep. Whether the case
+     * is still behind is the SLA state next to them. Same rule for the list and the detail.
+     */
+    static EscalationView escalationOf(List<com.example.ethics.model.CaseEscalation> rows){
+        int level=0; Instant at=null;
+        for(var row:rows){
+            level=Math.max(level,row.getLevel());
+            if(at==null||row.getEscalatedAt().isAfter(at)) at=row.getEscalatedAt();
+        }
+        return new EscalationView(level,at);
+    }
+    record EscalationView(int level,Instant at){}
 
     /**
      * ES-301A — move a case through the lifecycle, or name who is on it.
@@ -646,6 +674,9 @@ public class EthicsService {
             case "ethics.case.updated" -> payload.hasNonNull("status")?payload.get("status").asText():null;
             case "ethics.case.participant.added" -> payload.hasNonNull("role")?payload.get("role").asText():null;
             case "ethics.case.reopened" -> payload.hasNonNull("reopenReason")?payload.get("reopenReason").asText():null;
+            // ES-301: "ACKNOWLEDGEMENT L2" — the obligation and the level, nothing else from the payload.
+            case EscalationSweeper.EVENT_TYPE -> payload.hasNonNull("obligation")&&payload.hasNonNull("level")
+                    ?payload.get("obligation").asText()+" L"+payload.get("level").asInt():null;
             default -> null;
         };
     }
@@ -827,13 +858,14 @@ public class EthicsService {
 
     private CaseSummary summary(EthicsCase c){
         return summary(c, reports.findByCaseId(c.getId()).orElse(null),
-            participants.findAllByCaseIdOrderByCreatedAtAsc(c.getId()).size());}
+            participants.findAllByCaseIdOrderByCreatedAtAsc(c.getId()).size(),
+            escalationOf(escalations.findAllByCaseIdOrderByEscalatedAtAscLevelAsc(c.getId())));}
 
     /**
      * @param report may be null — a case with no report row is malformed, but the list
      *               should still show it rather than disappear the row that needs attention
      */
-    private CaseSummary summary(EthicsCase c, EthicsReport report, int participantCount){
+    private CaseSummary summary(EthicsCase c, EthicsReport report, int participantCount, EscalationView escalation){
         boolean named = participantCount > 0;
         return new CaseSummary(c.getId(),c.getStatus(),named?null:c.getAssignedTo(),c.getVersion(),c.getCreatedAt(),c.getUpdatedAt(),
             c.getAcknowledgedAt(),c.getOutcome(),c.getClosedAt(),
@@ -848,7 +880,8 @@ public class EthicsService {
             sla.feedback(c.getCreatedAt(),c.getClosedAt()).dueAt(),
             sla.feedback(c.getCreatedAt(),c.getClosedAt()).state().name(),
             sla.feedback(c.getCreatedAt(),c.getClosedAt()).wasLate(),
-            secs(sla.feedback(c.getCreatedAt(),c.getClosedAt()).overdueBy()));}
+            secs(sla.feedback(c.getCreatedAt(),c.getClosedAt()).overdueBy()),
+            escalation.level(),escalation.at());}
     private static MessageResponse messageResponse(EthicsMessage m){return new MessageResponse(m.getId(),m.getAuthorType(),m.getVisibility(),m.getBody(),m.getCreatedAt());}
     /** @see CaseLifecycle#reporterVisibleStatus — one implementation, so the two cannot drift. */
     private static String reporterVisibleStatus(String status){ return CaseLifecycle.reporterVisibleStatus(status); }
