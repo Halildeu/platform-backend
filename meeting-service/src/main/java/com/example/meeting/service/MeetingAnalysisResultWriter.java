@@ -126,7 +126,10 @@ public class MeetingAnalysisResultWriter {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "MEETING_NOT_FOUND"));
         rejectErasedSession(tenantId, meetingId, binding.sessionId());
         rejectDestroyedRunId(analysisRunId);
-        runRepository.findLatestCanonicalOccurrence(meetingId, orgId).ifPresent(latest -> {
+        // A later independent session must not discard an earlier session's result.
+        // The meeting-wide latest read remains ordered by canonical finalization time.
+        runRepository.findLatestCanonicalOccurrenceForSession(
+                meetingId, orgId, binding.sessionId().toString()).ifPresent(latest -> {
             boolean olderTime = request.finalizedAt().isBefore(latest.getFinalizedAt());
             boolean olderVersionAtSameTime = request.finalizedAt().equals(latest.getFinalizedAt())
                     && request.finalizationVersion() < latest.getFinalizationVersion();
@@ -140,7 +143,7 @@ public class MeetingAnalysisResultWriter {
         run.setMeetingId(meetingId);
         run.setTenantId(tenantId);
         run.setOrgId(orgId); // canonical writer sets BOTH columns (DB trigger is the backstop)
-        run.setTranscriptSessionId(request.transcriptSessionId());
+        run.setTranscriptSessionId(binding.sessionId().toString());
         run.setTranscriptSha256(request.transcriptSha256());
         run.setFinalizationVersion(request.finalizationVersion());
         run.setFinalizedAt(request.finalizedAt());
