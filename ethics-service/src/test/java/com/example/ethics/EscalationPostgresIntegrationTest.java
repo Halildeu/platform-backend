@@ -38,6 +38,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @SpringBootTest(properties = {
         "ethics.participant-handle-key=test-only-participant-handle-key-0123456789",
         "ethics.sla.escalation.enabled=true",
+        "ethics.sla.escalation.initial-delay=PT720H",
         "ethics.sla.escalation.steps=PT0S,P3D",
         "spring.jpa.hibernate.ddl-auto=validate"})
 @Testcontainers(disabledWithoutDocker = true)

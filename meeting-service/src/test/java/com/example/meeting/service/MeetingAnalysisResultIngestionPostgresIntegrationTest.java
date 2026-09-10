@@ -9,6 +9,7 @@ import com.example.meeting.dto.v1.internal.MeetingAnalysisResultIngestRequest;
 import com.example.meeting.dto.v1.internal.MeetingAnalysisResultIngestResponse;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.repository.MeetingRepository;
+import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.security.AnalysisJobCapabilityVerifier;
 import com.example.meeting.support.AnalysisJobCapabilityTestTokens;
 import java.sql.Connection;
@@ -130,6 +131,8 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     private MeetingAnalysisResultIngestionService service;
     @Autowired
     private MeetingAnalysisPayloadHasher hasher;
+    @Autowired
+    private MeetingAnalysisRunRepository runRepository;
     @Autowired
     private JdbcTemplate jdbc;
     @Autowired
@@ -466,6 +469,93 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     }
 
     @Test
+    void lateIndependentSession_preservesBothResultsWithoutReplacingLatest() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID newRun = UUID.randomUUID();
+        UUID oldRun = UUID.randomUUID();
+        UUID olderSession = UUID.randomUUID();
+        var newer = requestOccurrence(
+                SHA_B, "new session", List.of("new decision"), List.of(), null,
+                2L, FINALIZED.plusSeconds(60));
+        var older = requestOccurrenceForSession(
+                olderSession, SHA_A, "older session", List.of("older decision"), List.of(), null,
+                1L, FINALIZED);
+
+        ingest(meetingId, newRun, newer);
+        ingest(meetingId, oldRun, older);
+
+        assertThat(runCount(meetingId)).isEqualTo(2);
+        assertThat(decisionCount(meetingId)).isEqualTo(2);
+        assertThat(runRepository.findLatestByMeetingIdVisibleToOrg(meetingId, org)
+                .orElseThrow().getAnalysisRunId()).isEqualTo(newRun);
+        var persistedOlder = runRepository.findVisibleExactRun(oldRun, meetingId, org).orElseThrow();
+        assertThat(persistedOlder.getTranscriptSessionId()).isEqualTo(olderSession.toString());
+        assertThat(persistedOlder.getSummary()).isEqualTo("older session");
+        assertThat(runRepository.findVisibleExactRun(newRun, meetingId, org).orElseThrow()
+                .getSummary()).isEqualTo("new session");
+    }
+
+    @Test
+    void concurrentIndependentSessions_bothPersist() throws Exception {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID newRun = UUID.randomUUID();
+        UUID oldRun = UUID.randomUUID();
+        var newer = requestOccurrence(
+                SHA_B, "new session", List.of("new decision"), List.of(), null,
+                2L, FINALIZED.plusSeconds(60));
+        var older = requestOccurrenceForSession(
+                UUID.randomUUID(), SHA_A, "older session", List.of("older decision"), List.of(), null,
+                1L, FINALIZED);
+
+        var outcomes = runConcurrently(
+                () -> classify(() -> ingest(meetingId, newRun, newer)),
+                () -> classify(() -> ingest(meetingId, oldRun, older)));
+
+        assertThat(outcomes).containsExactly(Outcome.CREATED, Outcome.CREATED);
+        assertThat(runCount(meetingId)).isEqualTo(2);
+        assertThat(decisionCount(meetingId)).isEqualTo(2);
+        assertThat(runRepository.findLatestByMeetingIdVisibleToOrg(meetingId, org)
+                .orElseThrow().getAnalysisRunId()).isEqualTo(newRun);
+    }
+
+    @Test
+    void olderVersionAtSameTime_inSameSession_isRejected() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        ingest(meetingId, UUID.randomUUID(), requestOccurrence(
+                SHA_B, "v2", List.of(), List.of(), null, 2L, FINALIZED));
+
+        assertThatThrownBy(() -> ingest(meetingId, UUID.randomUUID(), requestOccurrence(
+                SHA_A, "v1", List.of(), List.of(), null, 1L, FINALIZED)))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(409);
+                    assertThat(ex.getReason()).isEqualTo("STALE_FINALIZATION");
+                });
+        assertThat(runCount(meetingId)).isEqualTo(1);
+    }
+
+    @Test
+    void legacyUppercaseSession_doesNotBypassStaleFinalization() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        ingest(meetingId, UUID.randomUUID(), requestOccurrence(
+                SHA_B, "v2", List.of(), List.of(), null, 2L, FINALIZED));
+        jdbc.update("UPDATE " + SCHEMA
+                        + ".meeting_analysis_runs SET transcript_session_id = upper(transcript_session_id)"
+                        + " WHERE meeting_id = ?", meetingId);
+
+        assertThatThrownBy(() -> ingest(meetingId, UUID.randomUUID(), requestOccurrence(
+                SHA_A, "v1", List.of(), List.of(), null, 1L, FINALIZED)))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(409);
+                    assertThat(ex.getReason()).isEqualTo("STALE_FINALIZATION");
+                });
+        assertThat(runCount(meetingId)).isEqualTo(1);
+    }
+
+    @Test
     void freshRunForAlreadyPersistedFinalizationAndSpec_remainsAppendOnly() {
         UUID org = UUID.randomUUID();
         UUID meetingId = insertMeeting(org);
@@ -730,8 +820,16 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
             String sha, String summary, List<String> decisions,
             List<MeetingAnalysisActionIngest> actions, UUID supersedes,
             long finalizationVersion, Instant finalizedAt) {
+        return requestOccurrenceForSession(SESSION_ID, sha, summary, decisions, actions,
+                supersedes, finalizationVersion, finalizedAt);
+    }
+
+    private MeetingAnalysisResultIngestRequest requestOccurrenceForSession(
+            UUID sessionId, String sha, String summary, List<String> decisions,
+            List<MeetingAnalysisActionIngest> actions, UUID supersedes,
+            long finalizationVersion, Instant finalizedAt) {
         return new MeetingAnalysisResultIngestRequest(
-                null, SESSION_ID.toString(), sha, finalizationVersion, finalizedAt, "analysis-v1",
+                null, sessionId.toString(), sha, finalizationVersion, finalizedAt, "analysis-v1",
                 "5-adr0043", "gpt-x", "openai", "p1",
                 summary, "verified", List.of(), List.of(), List.of(),
                 0, false, 0, GEN, decisions, actions, supersedes);

@@ -71,6 +71,7 @@ ethics:
       # escalated under its row lock and (case, obligation, level) is unique.
       enabled: ${ETHICS_SLA_ESCALATION_ENABLED:false}
       steps: ${ETHICS_SLA_ESCALATION_STEPS:PT0S}
+      initial-delay: ${ETHICS_SLA_ESCALATION_INITIAL_DELAY:PT1M}
       poll-delay: ${ETHICS_SLA_ESCALATION_POLL_DELAY:15m}
   acknowledgement:
     # ES-2 (#3271): the last-day net under the seven-day acknowledgement promise.
