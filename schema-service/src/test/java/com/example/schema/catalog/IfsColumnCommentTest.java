@@ -9,16 +9,18 @@ import org.junit.jupiter.api.Test;
 class IfsColumnCommentTest {
 
     @Test
-    @DisplayName("FLAGS/DATATYPE/PROMPT/REF ayrıştırılır; P bayrağı anahtar kolon demektir")
+    @DisplayName("FLAGS/DATATYPE/PROMPT/REF ayrıştırılır; P bayrağı ebeveyn anahtarı, yani anahtarın parçasıdır")
     void structuredCommentIsParsed() {
         var c = IfsColumnComment.parse("FLAGS=PMI--^DATATYPE=STRING(20)/UPPERCASE^PROMPT=Company^REF=Company^");
         assertThat(c.structured()).isTrue();
         assertThat(c.label()).isEqualTo("Company");
         assertThat(c.keyColumn()).isTrue();
-        assertThat(c.parentKeyColumn()).isFalse();
+        assertThat(c.parentKeyColumn()).isTrue();
+        assertThat(c.keyClass()).isEqualTo('P');
         assertThat(c.reference()).isEqualTo("Company");
         assertThat(c.entries().get(IfsColumnComment.DATATYPE)).isEqualTo("STRING(20)/UPPERCASE");
-        assertThat(c.raw()).startsWith("FLAGS=PMI--");
+        assertThat(c.raw()).isEqualTo("FLAGS=PMI--^DATATYPE=STRING(20)/UPPERCASE^PROMPT=Company^REF=Company^");
+        assertThat(IfsColumnComment.parse("PROMPT=A=B^").label()).isEqualTo("A=B");
     }
 
     @Test
@@ -32,10 +34,22 @@ class IfsColumnCommentTest {
     }
 
     @Test
-    @DisplayName("K bayrağı ebeveyn anahtardır")
-    void parentKeyFlag() {
-        assertThat(IfsColumnComment.parse("FLAGS=KMI-L^PROMPT=Ledger ID^").parentKeyColumn()).isTrue();
-        assertThat(IfsColumnComment.parse("FLAGS=KMI-L^PROMPT=Ledger ID^").keyColumn()).isFalse();
+    @DisplayName("K bayrağı LU'nun kendi anahtarıdır: anahtar kolon, ebeveyn değil")
+    void ownKeyFlag() {
+        var c = IfsColumnComment.parse("FLAGS=KMI-L^PROMPT=Ledger ID^");
+        assertThat(c.keyColumn()).isTrue();
+        assertThat(c.parentKeyColumn()).isFalse();
+        assertThat(c.keyClass()).isEqualTo('K');
+    }
+
+    /** A child LU is keyed by its parent's key plus its own: both classes are the key. */
+    @Test
+    @DisplayName("P + K bileşik anahtar: ikisi de anahtar, A değil")
+    void compositeKeyUnionOfParentAndOwn() {
+        assertThat(IfsColumnComment.parse("FLAGS=PMI--^PROMPT=Company^").keyColumn()).isTrue();
+        assertThat(IfsColumnComment.parse("FLAGS=KMI-L^PROMPT=Item Id^").keyColumn()).isTrue();
+        assertThat(IfsColumnComment.parse("FLAGS=A-IU-^PROMPT=Note^").keyColumn()).isFalse();
+        assertThat(IfsColumnComment.parse("FLAGS=kmi-l^").keyClass()).isEqualTo('K');
     }
 
     @Test
@@ -43,7 +57,8 @@ class IfsColumnCommentTest {
     void freeTextIsKeptButNotInterpreted() {
         var c = IfsColumnComment.parse("  Customer facing note about this column  ");
         assertThat(c.structured()).isFalse();
-        assertThat(c.raw()).isEqualTo("Customer facing note about this column");
+        // raw is the dictionary value exactly; only null/blank collapses to null
+        assertThat(c.raw()).isEqualTo("  Customer facing note about this column  ");
         assertThat(c.label()).isNull();
         assertThat(c.keyColumn()).isFalse();
         assertThat(c.reference()).isNull();

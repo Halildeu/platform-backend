@@ -186,7 +186,9 @@ public class SchemaSnapshotService {
             Map<String, TableInfo> enriched = new LinkedHashMap<>();
             tables.forEach((name, table) -> {
                 Long count = finalRowCounts.get(name);
-                enriched.put(name, new TableInfo(name, table.schema(), table.columns(), count, table.columnCount()));
+                // gitops#3631: carry the source's object comment through the row-count
+                // rebuild — the five-field constructor would silently drop it for every table.
+                enriched.put(name, new TableInfo(name, table.schema(), table.columns(), count, table.columnCount(), table.comment()));
             });
             tables = enriched;
         }

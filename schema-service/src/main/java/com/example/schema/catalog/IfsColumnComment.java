@@ -15,13 +15,18 @@ import java.util.Map;
  * <p>Measured on the live IFSAPP dictionary before this parser existed: 205,874
  * columns, zero primary keys and zero comments in the snapshot — the constraints live
  * on the {@code _TAB} base tables the reporting account cannot see, and the comments
- * were simply not read. The comment carries what the constraint would have said:
- * {@code FLAGS} position 1 is the key class ({@code P} = part of the primary key,
- * {@code K} = parent key, {@code A} = attribute), {@code PROMPT} is the label a user
- * sees in IFS, {@code REF} names the logical unit a foreign reference points at.
+ * were simply not read. The comment carries what the constraint would have said.
+ * {@code FLAGS} position 1 is the key class: {@code K} = a key of this logical unit,
+ * {@code P} = a parent key inherited from the parent logical unit, {@code A} = attribute.
+ * A child LU is keyed by its parent's key plus its own, so the view's business key is
+ * the union of its {@code K} and {@code P} columns and BOTH count as key columns here;
+ * reading only one class would leave every child LU without its parent part, or every
+ * LU without its own. {@code PROMPT} is the label a user sees in IFS; {@code REF} names
+ * the logical unit a foreign reference points at.
  *
  * <p>A comment without {@code =} is free text from some other author and is kept as is:
- * no label, no key flag, nothing invented.
+ * no label, no key flag, nothing invented. {@code raw} is the comment exactly as the
+ * dictionary stores it (only a null/blank comment becomes null); parsing trims for itself.
  */
 public record IfsColumnComment(String raw, Map<String, String> entries) {
 
@@ -35,16 +40,15 @@ public record IfsColumnComment(String raw, Map<String, String> entries) {
         if (comment == null || comment.isBlank()) {
             return new IfsColumnComment(null, Map.of());
         }
-        String trimmed = comment.trim();
         Map<String, String> entries = new LinkedHashMap<>();
-        for (String part : trimmed.split("\\^")) {
+        for (String part : comment.trim().split("\\^")) {
             int eq = part.indexOf('=');
             if (eq <= 0) continue;
             String key = part.substring(0, eq).trim().toUpperCase(Locale.ROOT);
             String value = part.substring(eq + 1).trim();
             if (!key.isEmpty() && !entries.containsKey(key)) entries.put(key, value);
         }
-        return new IfsColumnComment(trimmed, Map.copyOf(entries));
+        return new IfsColumnComment(comment, Map.copyOf(entries));
     }
 
     /** True when the comment is IFS-structured (at least one {@code KEY=VALUE} pair). */
@@ -58,16 +62,21 @@ public record IfsColumnComment(String raw, Map<String, String> entries) {
         return prompt == null || prompt.isBlank() ? null : prompt;
     }
 
-    /** {@code FLAGS} first position {@code P}: this column is part of the view's primary key. */
-    public boolean keyColumn() {
+    /** The {@code FLAGS} key class ({@code 'K'} own key, {@code 'P'} parent key, {@code 'A'} attribute), or 0. */
+    public char keyClass() {
         String flags = entries.get(FLAGS);
-        return flags != null && !flags.isEmpty() && flags.charAt(0) == 'P';
+        return flags == null || flags.isEmpty() ? 0 : Character.toUpperCase(flags.charAt(0));
     }
 
-    /** {@code FLAGS} first position {@code K}: a parent-key column (the referenced side of a relation). */
+    /** Part of the view's business key: its own key ({@code K}) or the inherited parent key ({@code P}). */
+    public boolean keyColumn() {
+        char k = keyClass();
+        return k == 'K' || k == 'P';
+    }
+
+    /** The inherited part of the key ({@code P}): the columns a child LU shares with its parent. */
     public boolean parentKeyColumn() {
-        String flags = entries.get(FLAGS);
-        return flags != null && !flags.isEmpty() && flags.charAt(0) == 'K';
+        return keyClass() == 'P';
     }
 
     /** The logical unit an IFS {@code REF=} points at, or null. */
