@@ -19,7 +19,10 @@ FROM bellsoft/liberica-openjre-alpine-musl:21.0.12-10
 # here. Targeted rather than a blanket `apk upgrade`: a broad upgrade changes packages
 # nobody reviewed. If the fixed version ever disappears from the repository this build
 # fails, which is the direction we want it to fail in.
-RUN apk upgrade --no-cache p11-kit p11-kit-trust
+# ES-306b (gitops#3624, 2026-09-10): the base still ships openssl 3.5.7-r0, which the
+# gate counts as 2 Critical + 7 High (libcrypto3 + libssl3); Alpine 3.24 already has
+# 3.5.8-r0. Same targeted discipline as p11-kit above.
+RUN apk upgrade --no-cache p11-kit p11-kit-trust libcrypto3 libssl3
 RUN addgroup -S app && adduser -S -G app -u 10001 app
 WORKDIR /app
 COPY --from=build /workspace/ethics-service/target/ethics-service-*.jar app.jar
