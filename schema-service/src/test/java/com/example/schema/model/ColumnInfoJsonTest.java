@@ -41,6 +41,28 @@ class ColumnInfoJsonTest {
                 .contains("\"collation\":null");
     }
 
+    /** gitops#3631: comment/label are additive — absent on the old shapes, present when a source has them. */
+    @Test
+    void commentAndLabel_serializeAndDefaultToNull() throws Exception {
+        ColumnInfo plain = new ColumnInfo("ID", "int", 4, false, true, true, 1);
+        assertThat(plain.comment()).isNull();
+        assertThat(plain.label()).isNull();
+        assertThat(mapper.writeValueAsString(plain)).contains("\"comment\":null").contains("\"label\":null");
+
+        ColumnInfo sixteen = new ColumnInfo("AMOUNT", "decimal", 9, 18, 4, null,
+                false, false, null, null, true, null, null, false, false, 3);
+        assertThat(sixteen.comment()).isNull();
+        assertThat(sixteen.label()).isNull();
+
+        ColumnInfo ifs = new ColumnInfo("COMPANY", "VARCHAR2", 20, null, null, null,
+                false, false, null, null, true, null, null, false, false, 1,
+                "FLAGS=PMI--^DATATYPE=STRING(20)/UPPERCASE^PROMPT=Company^", "Company");
+        String json = mapper.writeValueAsString(ifs);
+        assertThat(json).contains("\"label\":\"Company\"").contains("\"comment\":\"FLAGS=PMI--");
+        ColumnInfo back = mapper.readValue(json, ColumnInfo.class);
+        assertThat(back).isEqualTo(ifs);
+    }
+
     @Test
     void legacySevenArgConstructor_newFieldsDefaultNullOrFalse() {
         ColumnInfo col = new ColumnInfo("ID", "int", 4, false, true, true, 1);
