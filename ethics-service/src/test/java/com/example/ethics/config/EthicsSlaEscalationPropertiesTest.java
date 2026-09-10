@@ -87,6 +87,24 @@ class EthicsSlaEscalationPropertiesTest {
         assertThat(policy.levelReached(DUE, DUE.plus(Duration.ofDays(60)))).isEqualTo(2);
     }
 
+    /**
+     * The precision contract: a step or deadline carrying nanoseconds is compared, and later
+     * written, at microseconds. Otherwise Java calls a level reached that the row's CHECK
+     * constraint refuses once the values are rounded.
+     */
+    @Test
+    @DisplayName("nanosaniyeli adım ve son tarih mikrosaniyede karşılaştırılır — DB'nin gördüğü değerle")
+    void nanosecondsInTheConfigurationAreComparedAtMicroseconds() {
+        var policy = new EthicsSlaEscalationProperties(true, List.of(Duration.ofNanos(999)));
+        // 999 ns after the deadline truncates to the deadline itself: level 1 at due + 1 µs.
+        assertThat(policy.thresholdAt(DUE, 1)).isEqualTo(DUE);
+        assertThat(policy.levelReached(DUE, DUE.plusNanos(999))).isZero();
+        assertThat(policy.levelReached(DUE, DUE.plusNanos(1_000))).isEqualTo(1);
+        // A deadline with nanoseconds in it is truncated the same way.
+        assertThat(policy.levelReached(DUE.plusNanos(500), DUE.plusNanos(1_000))).isEqualTo(1);
+        assertThat(policy.thresholdAt(DUE.plusNanos(500), 1)).isEqualTo(DUE);
+    }
+
     @Test
     @DisplayName("son tarih bilinmiyorsa hiçbir seviyeye ulaşılmaz")
     void anUnknownDeadlineReachesNoLevel() {

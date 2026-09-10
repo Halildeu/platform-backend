@@ -80,14 +80,32 @@ public record EthicsSlaEscalationProperties(boolean enabled, List<Duration> step
      * The highest level reached for an obligation that fell due at {@code dueAt} and is still
      * unmet at {@code now}; 0 when the deadline has not passed. Pure arithmetic on the two
      * instants — there is no parameter through which a pause could reach it.
+     *
+     * <p>Every instant compared here is first truncated to microseconds, the precision the
+     * database stores. A deadline or step configured with nanoseconds in it would otherwise
+     * make Java call a level reached that the row's CHECK constraint, seeing the rounded
+     * values, calls impossible.
      */
     public int levelReached(java.time.Instant dueAt, java.time.Instant now) {
-        if (dueAt == null || now == null || !now.isAfter(dueAt)) return 0;
+        if (dueAt == null || now == null) return 0;
+        java.time.Instant due = micro(dueAt);
+        java.time.Instant at = micro(now);
+        if (!at.isAfter(due)) return 0;
         int level = 0;
         for (Duration step : steps) {
-            if (now.isAfter(dueAt.plus(step))) level++;
+            if (at.isAfter(micro(due.plus(step)))) level++;
             else break;
         }
         return level;
+    }
+
+    /** The instant at which {@code level} (1-based) falls due, on the same precision contract. */
+    public java.time.Instant thresholdAt(java.time.Instant dueAt, int level) {
+        return micro(micro(dueAt).plus(steps.get(level - 1)));
+    }
+
+    /** The one precision the sweeper compares, writes and reports: microseconds. */
+    public static java.time.Instant micro(java.time.Instant value) {
+        return value.truncatedTo(java.time.temporal.ChronoUnit.MICROS);
     }
 }

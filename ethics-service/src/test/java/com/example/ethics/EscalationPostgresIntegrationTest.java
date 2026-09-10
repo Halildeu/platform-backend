@@ -52,6 +52,10 @@ class EscalationPostgresIntegrationTest {
     @Autowired EthicsCaseRepository cases;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
+    @Autowired com.example.ethics.repository.AuditOutboxRepository auditOutbox;
+    @Autowired com.example.ethics.service.CaseSlaClock slaClock;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
+    @Autowired com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     private UUID insertCase(UUID orgId, Instant createdAt) {
         UUID id = UUID.randomUUID();
@@ -162,6 +166,30 @@ class EscalationPostgresIntegrationTest {
         assertThat(micro.failed()).isZero();
         var rows = escalations.findAllByCaseIdOrderByEscalatedAtAscLevelAsc(caseId);
         assertThat(rows).extracting(CaseEscalation::getLevel).containsExactly(1);
+        assertThat(rows.get(0).getEscalatedAt()).isEqualTo(NOW.plusNanos(1_000));
+    }
+
+    /**
+     * A step configured below the database's precision. Without the shared microsecond
+     * contract Java would reach level 1 at due + 1 µs against a threshold of due + 999 ns,
+     * PostgreSQL would round the threshold up to the same microsecond, and the row would fail
+     * {@code ck_ethics_escalation_after_threshold} inside the case transaction.
+     */
+    @Test
+    @DisplayName("mikrosaniye altı adım CHECK kısıtını düşürmez — eşik ve kayıt aynı hassasiyette")
+    void aSubMicrosecondStepAgreesWithTheCheckConstraint() {
+        UUID orgId = UUID.fromString("00000000-0000-0000-0000-00000000e5a7");
+        UUID caseId = insertCase(orgId, NOW.minus(Duration.ofDays(7))); // due at NOW exactly
+        var fractional = new EscalationSweeper(cases, escalations, auditOutbox, slaClock,
+                new com.example.ethics.config.EthicsSlaEscalationProperties(true, List.of(Duration.ofNanos(999))),
+                transactions, objectMapper, new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+
+        var result = fractional.runCycle(NOW.plusNanos(1_000));
+
+        assertThat(result.failed()).as("CHECK kısıtı transaction'ı reddetmemeli").isZero();
+        var rows = escalations.findAllByCaseIdOrderByEscalatedAtAscLevelAsc(caseId);
+        assertThat(rows).extracting(CaseEscalation::getLevel).containsExactly(1);
+        assertThat(rows.get(0).getThresholdAt()).isEqualTo(NOW);
         assertThat(rows.get(0).getEscalatedAt()).isEqualTo(NOW.plusNanos(1_000));
     }
 

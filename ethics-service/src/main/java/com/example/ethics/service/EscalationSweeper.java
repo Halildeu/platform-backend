@@ -238,12 +238,18 @@ public class EscalationSweeper {
         return written;
     }
 
-    private int record(EthicsCase item, String obligation, Instant dueAt, Instant now) {
+    private int record(EthicsCase item, String obligation, Instant rawDueAt, Instant now) {
+        if (rawDueAt == null) return 0;
+        // One precision for everything compared, written and reported: microseconds. The
+        // deadline inherits nanoseconds from a configured window, the threshold from a
+        // configured step; either would let Java call a level reached that the row's CHECK
+        // constraint, seeing the rounded values, refuses.
+        Instant dueAt = EthicsSlaEscalationProperties.micro(rawDueAt);
         int target = policy.levelReached(dueAt, now);
         int written = 0;
         for (int level = 1; level <= target; level++) {
             if (escalations.existsByCaseIdAndObligationAndLevel(item.getId(), obligation, level)) continue;
-            Instant thresholdAt = dueAt.plus(policy.steps().get(level - 1));
+            Instant thresholdAt = policy.thresholdAt(dueAt, level);
             escalations.save(new CaseEscalation(UUID.randomUUID(), item.getId(), item.getOrgId(),
                     obligation, level, dueAt, thresholdAt, now));
             audit.save(new AuditOutbox(UUID.randomUUID(), item.getOrgId(), item.getId(), EVENT_TYPE,
