@@ -29,13 +29,7 @@ public class PathFinderService {
         }
 
         // Build adjacency list (bidirectional)
-        Map<String, List<Edge>> adj = new HashMap<>();
-        for (Relationship rel : relationships) {
-            adj.computeIfAbsent(rel.fromTable(), k -> new ArrayList<>())
-                .add(new Edge(rel.toTable(), rel.fromColumn(), rel.toColumn(), rel.confidence(), "forward"));
-            adj.computeIfAbsent(rel.toTable(), k -> new ArrayList<>())
-                .add(new Edge(rel.fromTable(), rel.toColumn(), rel.fromColumn(), rel.confidence(), "reverse"));
-        }
+        Map<String, List<Edge>> adj = adjacency(relationships);
 
         // BFS
         Queue<List<String>> queue = new LinkedList<>();
@@ -86,13 +80,7 @@ public class PathFinderService {
             fromTable, toTable, limit, relationships.size());
 
         // Build adjacency (bidirectional)
-        Map<String, List<Edge>> adj = new HashMap<>();
-        for (Relationship rel : relationships) {
-            adj.computeIfAbsent(rel.fromTable(), k -> new ArrayList<>())
-                .add(new Edge(rel.toTable(), rel.fromColumn(), rel.toColumn(), rel.confidence(), "forward"));
-            adj.computeIfAbsent(rel.toTable(), k -> new ArrayList<>())
-                .add(new Edge(rel.fromTable(), rel.toColumn(), rel.fromColumn(), rel.confidence(), "reverse"));
-        }
+        Map<String, List<Edge>> adj = adjacency(relationships);
 
         log.info("Adjacency built: {} nodes, from={} has {} edges, to={} has {} edges",
             adj.size(),
@@ -111,7 +99,9 @@ public class PathFinderService {
             List<String> path = queue.poll();
             String current = path.get(path.size() - 1);
 
-            if (path.size() > shortestLength + 1) continue;
+            // Only once a first path is known: MAX_VALUE + 1 overflows to MIN_VALUE, and the
+            // old unguarded comparison skipped every path, so this method always returned [].
+            if (shortestLength != Integer.MAX_VALUE && path.size() > shortestLength + 1) continue;
             if (path.size() > MAX_DEPTH) continue;
 
             if (current.equals(toTable) && path.size() > 1) {
@@ -144,11 +134,38 @@ public class PathFinderService {
             String prev = parentTable.get(table);
 
             steps.add(new PathStep(prev, edge.fromCol, table, edge.toCol, edge.confidence));
-            sql.append(String.format("JOIN %s t%d ON t%d.%s = t%d.%s\n",
-                table, i, i - 1, edge.fromCol, i, edge.toCol));
+            sql.append(joinClause(table, i, edge));
         }
 
         return new PathResult(from, to, tablePath.size() - 1, steps, sql.toString().trim());
+    }
+
+    private static Map<String, List<Edge>> adjacency(List<Relationship> relationships) {
+        Map<String, List<Edge>> adj = new HashMap<>();
+        for (Relationship rel : relationships) {
+            adj.computeIfAbsent(rel.fromTable(), k -> new ArrayList<>())
+                .add(new Edge(rel.toTable(), rel.fromColumn(), rel.toColumn(),
+                    rel.fromColumns(), rel.toColumns(), rel.confidence(), "forward"));
+            adj.computeIfAbsent(rel.toTable(), k -> new ArrayList<>())
+                .add(new Edge(rel.fromTable(), rel.toColumn(), rel.fromColumn(),
+                    rel.toColumns(), rel.fromColumns(), rel.confidence(), "reverse"));
+        }
+        return adj;
+    }
+
+    /**
+     * One JOIN line joining on every column pair of the edge. A composite key joined on
+     * its representative pair alone matches rows of every parent that shares that value
+     * (gitops#3631, Codex 01a08afc P1); the {@code PathStep} keeps the representative pair
+     * for display, the SQL is what a report runs.
+     */
+    private static String joinClause(String table, int i, Edge edge) {
+        StringBuilder on = new StringBuilder();
+        for (int c = 0; c < edge.fromCols.size(); c++) {
+            if (c > 0) on.append(" AND ");
+            on.append(String.format("t%d.%s = t%d.%s", i - 1, edge.fromCols.get(c), i, edge.toCols.get(c)));
+        }
+        return String.format("JOIN %s t%d ON %s\n", table, i, on);
     }
 
     private PathResult buildSimpleResult(String from, String to, List<String> tablePath,
@@ -166,13 +183,14 @@ public class PathFinderService {
 
             if (edge != null) {
                 steps.add(new PathStep(prev, edge.fromCol, curr, edge.toCol, edge.confidence));
-                sql.append(String.format("JOIN %s t%d ON t%d.%s = t%d.%s\n",
-                    curr, i, i - 1, edge.fromCol, i, edge.toCol));
+                sql.append(joinClause(curr, i, edge));
             }
         }
 
         return new PathResult(from, to, tablePath.size() - 1, steps, sql.toString().trim());
     }
 
-    private record Edge(String target, String fromCol, String toCol, double confidence, String direction) {}
+    private record Edge(String target, String fromCol, String toCol,
+                        List<String> fromCols, List<String> toCols,
+                        double confidence, String direction) {}
 }

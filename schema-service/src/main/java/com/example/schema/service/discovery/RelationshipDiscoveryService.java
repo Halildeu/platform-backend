@@ -106,9 +106,10 @@ public class RelationshipDiscoveryService {
     /**
      * Converts authoritative FKs into compatibility {@link Relationship}s
      * ({@code confidence=1.0}; {@code source="fk_constraint"}, or
-     * {@code "fk_constraint_composite"} for a multi-column key, whose edge is
-     * the last column pair — the referenced side's own key — with the full
-     * column list left on the {@code ForeignKeyInfo} inventory; gitops#3631).
+     * {@code "fk_constraint_composite"} for a multi-column key, whose
+     * representative pair is the last one — the referenced side's own key —
+     * and whose {@code fromColumns}/{@code toColumns} carry every pair for the
+     * JOIN builders; gitops#3631).
      * Skipped (kept in the inventory only):
      * <ul>
      *   <li>FKs whose {@code fromTable} or {@code toTable} is not in this
@@ -134,15 +135,16 @@ public class RelationshipDiscoveryService {
             }
             // gitops#3631 slice 2: a composite key used to yield no edge at all, so a join that
             // the dictionary states (IFS: company + own key) was invisible to the graph, the
-            // path finder and the report builder. The edge carries the LAST column pair — the
-            // referenced LU's own key — which is the pair that distinguishes the target; the
-            // parent columns are shared context, and the full column list stays on the
-            // ForeignKeyInfo inventory for anyone building the actual JOIN.
+            // path finder and the report builder. The edge's representative pair is the LAST
+            // one — the referenced LU's own key, the pair that distinguishes the target — and
+            // the edge carries every pair, so SQL joins on all of them (Codex 01a08afc P1: the
+            // last pair alone matched rows of every parent sharing that value).
             int last = fk.fromColumns().size() - 1;
             rels.add(new Relationship(
                 fk.fromTable(), fk.fromColumns().get(last),
                 fk.toTable(), fk.toColumns().get(last),
-                1.0, fk.isComposite() ? "fk_constraint_composite" : "fk_constraint"));
+                1.0, fk.isComposite() ? "fk_constraint_composite" : "fk_constraint", false,
+                fk.fromColumns(), fk.toColumns()));
         }
         log.info("Authoritative FK compat: {} single-column in-snapshot relationships", rels.size());
         return rels;
@@ -288,9 +290,12 @@ public class RelationshipDiscoveryService {
             boolean multi = sources.size() > 1;
             if (multi) conf = Math.min(1.0, conf + 0.05 * (sources.size() - 1));
 
+            // The winner's column pairs travel with it: a composite key edge grouped with a
+            // single-column heuristic on the same representative pair must keep its full key.
             deduped.add(new Relationship(
                 best.fromTable(), best.fromColumn(), best.toTable(), best.toColumn(),
-                conf, multi ? String.join("+", sources) : best.source(), multi
+                conf, multi ? String.join("+", sources) : best.source(), multi,
+                best.fromColumns(), best.toColumns()
             ));
         }
 

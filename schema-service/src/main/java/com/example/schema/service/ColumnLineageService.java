@@ -41,8 +41,10 @@ public class ColumnLineageService {
 
         // 1. Check if this column comes from a FK relationship
         for (var rel : snapshot.relationships()) {
-            if (rel.fromTable().equals(tableName) && rel.fromColumn().equals(columnName)) {
-                LineageNode source = new LineageNode(rel.toTable(), rel.toColumn(), "source");
+            // Any pair of a composite key counts; the source node is the pair's own column.
+            int i = rel.fromTable().equals(tableName) ? rel.fromColumns().indexOf(columnName) : -1;
+            if (i >= 0) {
+                LineageNode source = new LineageNode(rel.toTable(), rel.toColumns().get(i), "source");
                 nodes.add(source);
                 edges.add(new LineageEdge(source, target, "FK reference"));
             }
@@ -82,8 +84,9 @@ public class ColumnLineageService {
 
         // 3. Find downstream consumers (tables that reference this table.column via FK)
         for (var rel : snapshot.relationships()) {
-            if (rel.toTable().equals(tableName) && rel.toColumn().equals(columnName)) {
-                LineageNode consumer = new LineageNode(rel.fromTable(), rel.fromColumn(), "consumer");
+            int i = rel.toTable().equals(tableName) ? rel.toColumns().indexOf(columnName) : -1;
+            if (i >= 0) {
+                LineageNode consumer = new LineageNode(rel.fromTable(), rel.fromColumns().get(i), "consumer");
                 if (!nodes.contains(consumer)) nodes.add(consumer);
                 edges.add(new LineageEdge(target, consumer, "Referenced by"));
             }

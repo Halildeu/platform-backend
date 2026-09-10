@@ -48,12 +48,19 @@ public class QuerySuggestionService {
             .toList();
 
         for (Relationship rel : outgoing.stream().limit(5).toList()) {
+            // Every column pair of the key, AND-ed: a composite join on its representative
+            // pair alone returns rows of other parents (gitops#3631, Codex 01a08afc P1).
+            StringBuilder on = new StringBuilder();
+            for (int c = 0; c < rel.fromColumns().size(); c++) {
+                if (c > 0) on.append(" AND ");
+                on.append(String.format("t.[%s] = r.[%s]", rel.fromColumns().get(c), rel.toColumns().get(c)));
+            }
             suggestions.add(new QuerySuggestion(
                 "Join to " + rel.toTable(),
-                String.format("Join via %s.%s → %s", tableName, rel.fromColumn(), rel.toTable()),
-                String.format("SELECT t.*, r.*\nFROM [%s].[%s] t\nJOIN [%s].[%s] r ON t.[%s] = r.[%s]\nORDER BY t.[%s] DESC\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY;",
+                String.format("Join via %s.%s → %s", tableName, String.join(", ", rel.fromColumns()), rel.toTable()),
+                String.format("SELECT t.*, r.*\nFROM [%s].[%s] t\nJOIN [%s].[%s] r ON %s\nORDER BY t.[%s] DESC\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY;",
                     table.schema(), tableName, table.schema(), rel.toTable(),
-                    rel.fromColumn(), rel.toColumn(), rel.fromColumn()),
+                    on, rel.fromColumn()),
                 "join"
             ));
         }

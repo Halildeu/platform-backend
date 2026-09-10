@@ -187,6 +187,37 @@ class RelationshipDiscoveryServiceTest {
         assertEquals(1.0, edge.confidence(), 1e-9);
         assertTrue(rels.stream().noneMatch(r -> "REF_A".equals(r.fromColumn()) && r.source().startsWith("fk_constraint")),
             "the parent-key column does not become a second edge");
+        // Codex 01a08afc P1: the edge carries every pair, in key order, so a JOIN built from
+        // it does not match rows of other parents sharing the own-key value.
+        assertEquals(List.of("REF_A", "REF_B"), edge.fromColumns());
+        assertEquals(List.of("KEY_A", "KEY_B"), edge.toColumns());
+        assertTrue(edge.isComposite());
+    }
+
+    @Test
+    void compositeFk_keepsItsColumnPairsThroughDeduplicationWithAHeuristicEdge() {
+        // A name-match heuristic produces the same representative pair (CHILD.PARENT_ID → PARENT.PARENT_ID);
+        // after dedup the surviving edge must still carry the composite key's full pair list.
+        var tables = Map.of(
+            "PARENT", new TableInfo("PARENT", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, true, 1),
+                new ColumnInfo("PARENT_ID", "int", 4, false, false, true, 2))),
+            "CHILD", new TableInfo("CHILD", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, false, 1),
+                new ColumnInfo("PARENT_ID", "int", 4, false, false, false, 2))));
+        ForeignKeyInfo composite = new ForeignKeyInfo("FK_COMPOSITE",
+            "dbo", "CHILD", List.of("COMPANY", "PARENT_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "PARENT_ID"),
+            false, false, "NO_ACTION", "NO_ACTION");
+
+        List<Relationship> rels = service.discoverAll(tables, Map.of(), List.of(composite));
+
+        Relationship edge = rels.stream()
+            .filter(r -> "CHILD".equals(r.fromTable()) && "PARENT_ID".equals(r.fromColumn()) && "PARENT".equals(r.toTable()))
+            .findFirst().orElseThrow();
+        assertTrue(edge.source().contains("fk_constraint_composite"), edge.source());
+        assertEquals(List.of("COMPANY", "PARENT_ID"), edge.fromColumns());
+        assertEquals(List.of("COMPANY", "PARENT_ID"), edge.toColumns());
     }
 
     @Test

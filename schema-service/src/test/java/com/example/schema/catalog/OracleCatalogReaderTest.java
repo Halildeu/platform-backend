@@ -1,10 +1,13 @@
 package com.example.schema.catalog;
 
+import com.example.schema.model.ForeignKeyInfo;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
+import java.sql.ResultSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -13,6 +16,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -155,5 +159,83 @@ class OracleCatalogReaderTest {
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         verify(jdbc).queryForList(sql.capture(), anyMap(), eq(String.class));
         assertThat(sql.getValue()).contains("'TABLE', 'VIEW'");
+    }
+
+    /** Feeds the REF= column pass with rows: {TABLE_NAME, COLUMN_NAME, COLUMN_ID, COMMENTS}. */
+    private void stubColumnPass(List<Object[]> rows) {
+        doAnswer(inv -> {
+            RowCallbackHandler handler = inv.getArgument(2);
+            for (Object[] r : rows) {
+                ResultSet rs = mock(ResultSet.class);
+                org.mockito.Mockito.when(rs.getString("TABLE_NAME")).thenReturn((String) r[0]);
+                org.mockito.Mockito.when(rs.getString("COLUMN_NAME")).thenReturn((String) r[1]);
+                org.mockito.Mockito.when(rs.getInt("COLUMN_ID")).thenReturn((Integer) r[2]);
+                org.mockito.Mockito.when(rs.getString("COMMENTS")).thenReturn((String) r[3]);
+                handler.processRow(rs);
+            }
+            return null;
+        }).when(jdbc).query(anyString(), anyMap(), any(RowCallbackHandler.class));
+    }
+
+    private static Map<String, Object> declaredFkRow(String name, String fromTable, String fromColumn,
+                                                     String toTable, String toColumn) {
+        Map<String, Object> row = new HashMap<>();
+        row.put("FK_NAME", name);
+        row.put("FROM_OWNER", "IFSAPP");
+        row.put("FROM_TABLE", fromTable);
+        row.put("FROM_COLUMN", fromColumn);
+        row.put("TO_OWNER", "IFSAPP");
+        row.put("TO_TABLE", toTable);
+        row.put("TO_COLUMN", toColumn);
+        row.put("STATUS", "ENABLED");
+        row.put("VALIDATED", "VALIDATED");
+        row.put("DELETE_RULE", "NO ACTION");
+        row.put("POSITION", 1);
+        return row;
+    }
+
+    /**
+     * gitops#3631 slice 2: the account's ALL_CONSTRAINTS answers nothing (measured: 0 keys),
+     * so the REF= pass over the views' column comments supplies the keys — restricted to
+     * views (a REF names a logical unit; a table can never be its target), and merged with
+     * declared constraints on identity rather than name (Codex 01a08afc P2).
+     */
+    @Test
+    void foreignKeysComeFromViewCommentsAndMergeWithDeclaredOnesByIdentity() {
+        when(jdbc.queryForList(anyString(), anyMap())).thenReturn(List.of(
+            declaredFkRow("FK_ABSENCE_SITE", "ABSENCE_REGISTRATION", "CONTRACT", "SITE", "CONTRACT")));
+        stubColumnPass(List.of(
+            new Object[] {"SITE", "CONTRACT", 1, "FLAGS=KMI-L^PROMPT=Site^"},
+            new Object[] {"COMPANY", "COMPANY", 1, "FLAGS=KMI-L^PROMPT=Company^"},
+            new Object[] {"COMPANY_PERSON", "COMPANY", 1, "FLAGS=PMI--^REF=Company^"},
+            new Object[] {"COMPANY_PERSON", "EMP_NO", 2, "FLAGS=KMI-L^"},
+            new Object[] {"ABSENCE_REGISTRATION", "COMPANY", 1, "FLAGS=PMI--^REF=Company^"},
+            new Object[] {"ABSENCE_REGISTRATION", "EMP_NO", 2, "FLAGS=PMI--^REF=CompanyPerson(company)/NOCHECK^"},
+            new Object[] {"ABSENCE_REGISTRATION", "ABSENCE_ID", 3, "FLAGS=KMI-L^"},
+            new Object[] {"ABSENCE_REGISTRATION", "CONTRACT", 4, "FLAGS=A-IU-^REF=Site^"},
+            new Object[] {"ABSENCE_REGISTRATION", "NOTE", 5, null}));
+
+        List<ForeignKeyInfo> keys = reader.extractForeignKeys("IFSAPP");
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc).query(sql.capture(), anyMap(), any(RowCallbackHandler.class));
+        assertThat(sql.getValue()).contains("JOIN ALL_VIEWS");
+        assertThat(sql.getValue()).contains("ORDER BY c.TABLE_NAME, c.COLUMN_ID");
+
+        Map<String, ForeignKeyInfo> byName = new HashMap<>();
+        keys.forEach(fk -> byName.put(fk.name(), fk));
+        // The declared constraint states the same reference as ABSENCE_REGISTRATION.CONTRACT's REF=Site: one key, the declared one.
+        assertThat(byName).containsKeys("FK_ABSENCE_SITE", "IFS_REF_COMPANY_PERSON.COMPANY",
+            "IFS_REF_ABSENCE_REGISTRATION.COMPANY", "IFS_REF_ABSENCE_REGISTRATION.EMP_NO");
+        assertThat(byName).doesNotContainKey("IFS_REF_ABSENCE_REGISTRATION.CONTRACT");
+        assertThat(keys).hasSize(4);
+        assertThat(byName.get("FK_ABSENCE_SITE").isNotTrusted()).isFalse();
+
+        ForeignKeyInfo composite = byName.get("IFS_REF_ABSENCE_REGISTRATION.EMP_NO");
+        assertThat(composite.fromColumns()).containsExactly("COMPANY", "EMP_NO");
+        assertThat(composite.toColumns()).containsExactly("COMPANY", "EMP_NO");
+        assertThat(composite.toTable()).isEqualTo("COMPANY_PERSON");
+        assertThat(composite.isNotTrusted()).isTrue();
+        assertThat(composite.fromSchema()).isEqualTo("IFSAPP");
     }
 }
