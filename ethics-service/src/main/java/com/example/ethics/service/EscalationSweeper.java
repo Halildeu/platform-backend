@@ -1,5 +1,6 @@
 package com.example.ethics.service;
 
+import com.example.ethics.audit.EthicsAuditChain;
 import com.example.ethics.config.EthicsSlaEscalationProperties;
 import com.example.ethics.model.AuditOutbox;
 import com.example.ethics.model.CaseEscalation;
@@ -23,6 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -42,17 +44,23 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p><strong>Deterministic on {@code now}.</strong> Every decision here is arithmetic on the
  * case's own timestamps, the configured windows and the instant passed in. The clock is used
  * only to supply that instant on the schedule; a test passes its own. A deadline is missed
- * when {@code now} is strictly after it — at the exact instant nothing is late yet.
+ * when {@code now} is strictly after it — at the exact instant nothing is late yet. The
+ * instant is truncated to microseconds first, because that is what PostgreSQL stores: a
+ * {@code now} one nanosecond past a threshold would be "after" in Java and "equal" in the
+ * row's CHECK constraint, and the transaction would fail on a difference nothing can see.
  *
  * <p><strong>A pause changes nothing here</strong>, for the reason {@link CaseSlaClock} gives:
  * the deadline does not move, so neither does the level reached against it. Meeting the
  * obligation stops further levels and erases none.
  *
- * <p><strong>One transaction per case, serialised on the case row.</strong> The sweeper runs
- * in every replica with no distributed lock. Each case is escalated inside its own
- * {@code REQUIRES_NEW} transaction that first locks the case row, so it decides "still
- * unacknowledged / still open" against the same row the acknowledgement and closure writes
- * update, and two replicas take turns instead of racing. The unique index on
+ * <p><strong>One transaction per case, on the case row, without waiting.</strong> The sweeper
+ * runs in every replica with no distributed lock. Each case is escalated inside its own
+ * {@code REQUIRES_NEW} transaction that first takes the case row with {@code NOWAIT}, so it
+ * decides "still unacknowledged / still open" against the same row the acknowledgement and
+ * closure writes update. A row someone else holds — an acknowledgement in flight, another
+ * replica on the same case — is <em>deferred</em> to the next cycle rather than waited for:
+ * a wait with no bound would let one held row stall every case behind it in the candidate
+ * list, and the next cycle sees whatever the holder committed. The unique index on
  * {@code (case, obligation, level)} is the backstop for whatever the lock does not cover: a
  * collision on that index is another replica having already written the row, and is skipped
  * <em>after</em> the transaction has rolled back — never swallowed inside it, where the
@@ -65,8 +73,11 @@ import org.springframework.transaction.support.TransactionTemplate;
  * written in the same transaction as the escalation, so an audit-delivery outage delays the
  * ledger entry and loses nothing.
  *
- * <p>The log lines carry counts and nothing else — no case id, no organisation. Which tenant
- * is behind on a whistleblowing obligation is a fact about that tenant.
+ * <p><strong>The log carries counts and a failure class, never an exception.</strong> A
+ * database error's text can quote the failing row — case id, organisation, timestamps — and
+ * a stack trace carries that text into every log sink. Which tenant is behind on a
+ * whistleblowing obligation is a fact about that tenant. {@code EscalationSweeperTest} pins
+ * this by capturing the log on every failure path.
  */
 @Component
 public class EscalationSweeper {
@@ -88,6 +99,7 @@ public class EscalationSweeper {
     private final ObjectMapper mapper;
     private final Clock clock;
     private final Counter recorded;
+    private final Counter deferred;
     private final Counter failed;
 
     // Two constructors, so Spring must be told which one (see SlaBreachSweeper for the
@@ -125,7 +137,10 @@ public class EscalationSweeper {
         this.mapper = mapper;
         this.clock = clock;
         this.recorded = Counter.builder("ethics.sla.escalation.recorded")
-                .description("Escalation levels recorded (one per case, obligation and level)")
+                .description("Escalation levels committed (one per case, obligation and level)")
+                .register(metrics);
+        this.deferred = Counter.builder("ethics.sla.escalation.deferred")
+                .description("Cases whose row was held by another transaction; retried next cycle")
                 .register(metrics);
         this.failed = Counter.builder("ethics.sla.escalation.failed")
                 .description("Cases whose escalation transaction failed and will be retried next cycle")
@@ -138,9 +153,13 @@ public class EscalationSweeper {
         return template;
     }
 
-    /** @param skipped cases another replica had already escalated when this one got there */
-    public record CycleResult(boolean enabled, int candidates, int recorded, int skipped, int failed) {
-        static final CycleResult DISABLED = new CycleResult(false, 0, 0, 0, 0);
+    /**
+     * @param skipped cases another replica had already escalated when this one got there
+     * @param deferred cases whose row was held by another transaction; retried next cycle
+     */
+    public record CycleResult(boolean enabled, int candidates, int recorded, int skipped,
+            int deferred, int failed) {
+        static final CycleResult DISABLED = new CycleResult(false, 0, 0, 0, 0, 0);
     }
 
     @Scheduled(fixedDelayString = "${ethics.sla.escalation.poll-delay:15m}")
@@ -153,16 +172,28 @@ public class EscalationSweeper {
      * not only on the schedule: a caller cannot escalate through the public method what the
      * owner has not switched on.
      */
-    public CycleResult runCycle(Instant now) {
+    public CycleResult runCycle(Instant at) {
         if (!policy.enabled()) return CycleResult.DISABLED;
+        // Microseconds, like the column. See the class comment.
+        Instant now = EthicsAuditChain.normalizeTimestamp(at);
         List<UUID> candidates = cases.findWithUnmetObligations();
         int written = 0;
         int skipped = 0;
+        int held = 0;
         int faults = 0;
         for (UUID caseId : candidates) {
             try {
                 Integer count = perCase.execute(status -> escalate(caseId, now));
-                written += count == null ? 0 : count;
+                // Counted only once the transaction has returned: a level rolled back with
+                // its transaction was never recorded, and the meter must not say it was.
+                int committed = count == null ? 0 : count;
+                written += committed;
+                recorded.increment(committed);
+            } catch (PessimisticLockingFailureException heldByAnother) {
+                // NOWAIT: an acknowledgement or closure in flight, or another replica on
+                // this case. Next cycle reads whatever they committed.
+                held++;
+                deferred.increment();
             } catch (DataIntegrityViolationException collision) {
                 // Reached only after the per-case transaction has rolled back.
                 if (isLevelCollision(collision)) {
@@ -170,21 +201,23 @@ public class EscalationSweeper {
                 } else {
                     faults++;
                     failed.increment();
-                    log.warn("Etik Speak escalation: a case could not be escalated (integrity); will retry next cycle",
-                            collision);
+                    log.warn("Etik Speak escalation: a case could not be escalated (kind={}); will retry next cycle",
+                            kind(collision));
                 }
             } catch (RuntimeException error) {
-                // One stuck case must not stall the rest. No identifiers in the line.
+                // One stuck case must not stall the rest. The class name is the whole
+                // diagnostic: the message and the trace can quote the failing row.
                 faults++;
                 failed.increment();
-                log.warn("Etik Speak escalation: a case could not be escalated; will retry next cycle", error);
+                log.warn("Etik Speak escalation: a case could not be escalated (kind={}); will retry next cycle",
+                        kind(error));
             }
         }
-        if (written > 0 || faults > 0) {
-            log.info("Etik Speak escalation cycle candidates={} recorded={} skipped={} failed={}",
-                    candidates.size(), written, skipped, faults);
+        if (written > 0 || faults > 0 || held > 0) {
+            log.info("Etik Speak escalation cycle candidates={} recorded={} skipped={} deferred={} failed={}",
+                    candidates.size(), written, skipped, held, faults);
         }
-        return new CycleResult(true, candidates.size(), written, skipped, faults);
+        return new CycleResult(true, candidates.size(), written, skipped, held, faults);
     }
 
     /** Inside the per-case transaction, under the row lock. Returns how many levels were written. */
@@ -215,7 +248,6 @@ public class EscalationSweeper {
                     obligation, level, dueAt, thresholdAt, now));
             audit.save(new AuditOutbox(UUID.randomUUID(), item.getOrgId(), item.getId(), EVENT_TYPE,
                     payload(obligation, level, dueAt, thresholdAt, now), now));
-            recorded.increment();
             written++;
         }
         return written;
@@ -249,5 +281,10 @@ public class EscalationSweeper {
             if (cause.getCause() == cause) break;
         }
         return false;
+    }
+
+    /** The failure's class, which is a closed vocabulary; never its message. */
+    static String kind(Throwable error) {
+        return error.getClass().getSimpleName();
     }
 }

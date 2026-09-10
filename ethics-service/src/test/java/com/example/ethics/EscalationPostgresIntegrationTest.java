@@ -99,34 +99,70 @@ class EscalationPostgresIntegrationTest {
     }
 
     /**
-     * The row lock is what makes "still unacknowledged" true at commit time. A sweep that
-     * arrives while an acknowledgement transaction holds the case row must wait for it and
-     * then see the acknowledgement — not decide from the snapshot it would have read first.
+     * NOWAIT on the production engine. A sweep that arrives while an acknowledgement
+     * transaction holds the case row does not queue behind it and does not decide from a
+     * stale snapshot: the case is deferred, every case behind it is still processed, and
+     * the next cycle sees the committed acknowledgement.
      */
     @Test
-    @DisplayName("onay işlemi satırı tutarken gelen tarama bekler ve onayı görür")
-    void aSweepArrivingDuringAnAcknowledgementWaitsAndSeesIt() throws Exception {
+    @DisplayName("tutulan satır ertelenir, arkasındaki vaka işlenir, sonraki tur onayı görür")
+    void aHeldRowIsDeferredWithoutStallingTheRest() throws Exception {
         UUID orgId = UUID.fromString("00000000-0000-0000-0000-00000000e5c3");
-        UUID caseId = insertCase(orgId, NOW.minus(Duration.ofDays(12)));
+        // Older createdAt sorts first in the candidate list, so the held case is in front.
+        UUID held = insertCase(orgId, NOW.minus(Duration.ofDays(13)));
+        UUID behind = insertCase(orgId, NOW.minus(Duration.ofDays(12)));
         var locked = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
 
         try (var pool = Executors.newSingleThreadExecutor()) {
             var acknowledging = pool.submit(() -> tx.execute(status -> {
-                cases.lockById(caseId).orElseThrow();
+                cases.lockById(held).orElseThrow();
                 locked.countDown();
-                try { Thread.sleep(1500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-                return cases.markAcknowledged(caseId, NOW.minusSeconds(1));
+                try { release.await(30, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return cases.markAcknowledged(held, NOW.minusSeconds(1));
             }));
             assertThat(locked.await(30, TimeUnit.SECONDS)).isTrue();
 
-            var result = sweeper.runCycle(NOW);
+            var whileHeld = sweeper.runCycle(NOW);
 
+            release.countDown();
             assertThat(acknowledging.get(30, TimeUnit.SECONDS)).isEqualTo(1);
-            assertThat(result.failed()).isZero();
+            assertThat(whileHeld.deferred()).as("tutulan satır ertelenmeli").isEqualTo(1);
+            assertThat(whileHeld.failed()).isZero();
         }
-        assertThat(escalations.findAllByCaseIdOrderByEscalatedAtAscLevelAsc(caseId))
-                .as("kilit sırasında onaylanan vaka seviye almamalı")
+        assertThat(escalations.findAllByCaseIdOrderByEscalatedAtAscLevelAsc(behind))
+                .as("tutulan satırın arkasındaki vaka aynı turda işlenmeli")
+                .extracting(CaseEscalation::getLevel).containsExactly(1, 2);
+        assertThat(escalations.findAllByCaseIdOrderByEscalatedAtAscLevelAsc(held)).isEmpty();
+
+        var nextCycle = sweeper.runCycle(NOW.plusSeconds(1));
+
+        assertThat(nextCycle.deferred()).isZero();
+        assertThat(escalations.findAllByCaseIdOrderByEscalatedAtAscLevelAsc(held))
+                .as("kilit sırasında onaylanan vaka sonraki turda da seviye almamalı")
                 .isEmpty();
+    }
+
+    /**
+     * Java compares in nanoseconds, PostgreSQL stores microseconds. The sweeper truncates
+     * {@code now} first, so what it decides is what the CHECK constraint sees: a nanosecond
+     * past the threshold writes nothing, a microsecond past it writes the row.
+     */
+    @Test
+    @DisplayName("eşiğin bir nanosaniye sonrası satır yazmaz; bir mikrosaniye sonrası yazar")
+    void theThresholdBoundaryAgreesWithTheDatabasePrecision() {
+        UUID orgId = UUID.fromString("00000000-0000-0000-0000-00000000e5f6");
+        UUID caseId = insertCase(orgId, NOW.minus(Duration.ofDays(7))); // acknowledgement due at NOW exactly
+
+        var nano = sweeper.runCycle(NOW.plusNanos(1));
+        assertThat(nano.failed()).as("CHECK kısıtı transaction'ı reddetmemeli").isZero();
+        assertThat(escalations.findAllByCaseIdOrderByEscalatedAtAscLevelAsc(caseId)).isEmpty();
+
+        var micro = sweeper.runCycle(NOW.plusNanos(1_000));
+        assertThat(micro.failed()).isZero();
+        var rows = escalations.findAllByCaseIdOrderByEscalatedAtAscLevelAsc(caseId);
+        assertThat(rows).extracting(CaseEscalation::getLevel).containsExactly(1);
+        assertThat(rows.get(0).getEscalatedAt()).isEqualTo(NOW.plusNanos(1_000));
     }
 
     @Test

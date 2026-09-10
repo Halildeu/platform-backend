@@ -61,14 +61,21 @@ public interface EthicsCaseRepository extends JpaRepository<EthicsCase,UUID>{
     java.util.List<UUID> findWithUnmetObligations();
 
     /**
-     * The row, locked for the rest of the transaction.
+     * The row, locked for the rest of the transaction — or an immediate refusal.
      *
      * <p>The escalation sweeper decides "still unacknowledged" and "still open" from this
      * read. Taking the row lock makes that decision and the acknowledgement/closure writes
      * serialise on the same row: whichever commits first, the other sees its result rather
      * than a snapshot taken a moment before.
+     *
+     * <p>Lock timeout 0 is {@code FOR UPDATE NOWAIT} on PostgreSQL: a row someone else holds
+     * raises {@link org.springframework.dao.PessimisticLockingFailureException} at once
+     * instead of queueing behind them. The sweeper defers that case to its next cycle. A
+     * wait with no bound would let one held row stall every case behind it.
      */
     @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.QueryHints(
+            @jakarta.persistence.QueryHint(name = "jakarta.persistence.lock.timeout", value = "0"))
     @Query("select c from EthicsCase c where c.id = :caseId")
     Optional<EthicsCase> lockById(@Param("caseId") UUID caseId);
 }

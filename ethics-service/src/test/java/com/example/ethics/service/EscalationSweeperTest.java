@@ -288,6 +288,87 @@ class EscalationSweeperTest {
         assertThat(payload.get("escalatedAt").asText()).isEqualTo(NOW.toString());
     }
 
+    /**
+     * A database error's text can quote the failing row — case id, organisation, timestamps.
+     * Every failure path logs a class name and counts, never the message or the trace.
+     */
+    @Test
+    @DisplayName("hiçbir hata yolu exception metnini loglamaz")
+    void noFailurePathLogsTheExceptionText() {
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(EscalationSweeper.class);
+        var captured = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        captured.start();
+        logger.addAppender(captured);
+        try {
+            caseCreatedAt(NOW.minus(ACK).minusSeconds(1), null, null);
+            when(escalations.save(any())).thenThrow(new DataIntegrityViolationException(
+                    "could not execute statement",
+                    new RuntimeException("violates check constraint; Detail: Failing row contains (PII_SENTINEL_A)")));
+            sweeper(true, Duration.ZERO).runCycle(NOW);
+
+            // doThrow: `when(save(...))` would invoke the stub above and throw here.
+            org.mockito.Mockito.doThrow(new IllegalStateException("boom PII_SENTINEL_B"))
+                    .when(escalations).save(any());
+            sweeper(true, Duration.ZERO).runCycle(NOW);
+
+            assertThat(captured.list).isNotEmpty();
+            for (var event : captured.list) {
+                String line = event.getFormattedMessage();
+                assertThat(line).doesNotContain("PII_SENTINEL");
+                assertThat(event.getThrowableProxy()).as("stack trace logged: " + line).isNull();
+            }
+        } finally {
+            logger.detachAppender(captured);
+        }
+    }
+
+    /** Microseconds, like the column: a nanosecond past the deadline is not "after" it. */
+    @Test
+    @DisplayName("son tarihten bir nanosaniye sonrası 'sonra' sayılmaz; bir mikrosaniye sayılır")
+    void aNanosecondPastTheDeadlineIsNotAfterItButAMicrosecondIs() {
+        caseCreatedAt(NOW.minus(ACK), null, null); // due exactly at NOW
+
+        assertThat(sweeper(true, Duration.ZERO).runCycle(NOW.plusNanos(1)).recorded()).isZero();
+        assertThat(sweeper(true, Duration.ZERO).runCycle(NOW.plusNanos(1_000)).recorded()).isEqualTo(1);
+        assertThat(savedRows().get(0).getEscalatedAt()).isEqualTo(NOW.plusNanos(1_000));
+    }
+
+    /** NOWAIT: a row someone else holds is deferred to the next cycle, not waited for or failed. */
+    @Test
+    @DisplayName("başkasının tuttuğu satır ertelenir, hata sayılmaz")
+    void aHeldRowIsDeferredNotFailed() {
+        UUID id = UUID.randomUUID();
+        when(cases.findWithUnmetObligations()).thenReturn(List.of(id));
+        when(cases.lockById(id)).thenThrow(new org.springframework.dao.CannotAcquireLockException("held"));
+
+        var result = sweeper(true, Duration.ZERO).runCycle(NOW);
+
+        assertThat(result.deferred()).isEqualTo(1);
+        assertThat(result.failed()).isZero();
+        verify(escalations, never()).save(any());
+    }
+
+    /** The meter says what was committed. A level rolled back with its transaction was not. */
+    @Test
+    @DisplayName("geri alınan seviye 'recorded' metriğini artırmaz")
+    void aRolledBackLevelDoesNotCountAsRecorded() {
+        caseCreatedAt(NOW.minus(ACK).minusSeconds(1), null, null);
+        when(audit.save(any())).thenThrow(new IllegalStateException("ledger unavailable"));
+        var metrics = new SimpleMeterRegistry();
+        var sla = new CaseSlaClock(new EthicsSlaProperties(ACK, FEEDBACK), Clock.fixed(NOW, ZoneOffset.UTC));
+        var sweeper = new EscalationSweeper(cases, escalations, audit, sla,
+                new EthicsSlaEscalationProperties(true, List.of(Duration.ZERO)),
+                TransactionOperations.withoutTransaction(), new ObjectMapper(), metrics,
+                Clock.fixed(NOW, ZoneOffset.UTC));
+
+        var result = sweeper.runCycle(NOW);
+
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.recorded()).isZero();
+        assertThat(metrics.get("ethics.sla.escalation.recorded").counter().count()).isZero();
+        assertThat(metrics.get("ethics.sla.escalation.failed").counter().count()).isEqualTo(1.0);
+    }
+
     /** The public surface of the policy stays free of anything a pause could reach. */
     @Test
     @DisplayName("politika hesabı yalnız iki an alır — bekleme nedeni ona ulaşamaz")
