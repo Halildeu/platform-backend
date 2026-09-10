@@ -29,6 +29,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
  */
 @SpringBootTest(properties = {
         "ethics.sla.escalation.enabled=true",
+        "ethics.sla.escalation.initial-delay=PT720H",
         "ethics.sla.escalation.steps=PT0S"})
 @ActiveProfiles("test")
 class EscalationRollbackTest {

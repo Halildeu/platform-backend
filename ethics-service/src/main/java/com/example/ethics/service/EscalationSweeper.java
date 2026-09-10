@@ -162,7 +162,14 @@ public class EscalationSweeper {
         static final CycleResult DISABLED = new CycleResult(false, 0, 0, 0, 0, 0);
     }
 
-    @Scheduled(fixedDelayString = "${ethics.sla.escalation.poll-delay:15m}")
+    // An initial delay, not an immediate first run: with none, the first cycle fired the
+    // instant the context was ready — in production before the pod was warm, and in the
+    // integration tests on the same database the test was driving with its own fixed clock,
+    // where it recorded levels at wall-clock time and held row locks the test then found
+    // taken (CI flake on the microsecond boundary test, 2026-09-10). The tests pin the delay
+    // to 30 days; production waits a minute.
+    @Scheduled(initialDelayString = "${ethics.sla.escalation.initial-delay:PT1M}",
+               fixedDelayString = "${ethics.sla.escalation.poll-delay:15m}")
     void scheduledCycle() {
         runCycle(clock.instant());
     }

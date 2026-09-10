@@ -52,6 +52,7 @@ import org.springframework.test.web.servlet.MockMvc;
  */
 @SpringBootTest(properties = {
         "ethics.sla.escalation.enabled=true",
+        "ethics.sla.escalation.initial-delay=PT720H",
         "ethics.sla.escalation.steps=PT0S,P3D"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
