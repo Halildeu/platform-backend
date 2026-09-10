@@ -756,6 +756,142 @@ class AuthorizationControllerV1Test {
         }
 
         @Test
+        @org.junit.jupiter.api.DisplayName("#1146: alias collision — raw FINANCE_REPORTS=VIEW + reports.FINANCE_REPORTS=DENY is one denied group, so no REPORT module / REPORT_VIEW is projected")
+        void reportAliasCollision_denyWinsBeforeTheModuleInvariant() {
+            Jwt token = jwt("1208");
+            when(principalResolver.resolve(token))
+                    .thenReturn(resolved(1208L, token.getSubject(), "alias-denied@example.com"));
+            when(authorizationQueryService.getUserScopeSummary(eq(1208L), any())).thenReturn(Map.of());
+            when(catalogService.getModuleKeys()).thenReturn(List.of());
+            PermissionResponse dbAssignment = new PermissionResponse();
+            dbAssignment.setPermissions(Set.of("VIEW_USERS"));
+            when(permissionService.getAssignments(1208L, null, null, null))
+                    .thenReturn(List.of(dbAssignment));
+            when(assignmentRepository.findActiveAssignments(1208L))
+                    .thenReturn(List.of(assignment(53L, "REPORT_VIEWER")));
+            when(rolePermissionRepository.findByRoleIdIn(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(List.of());
+            java.util.Map<String, TupleSyncService.ResolvedGrant> effective = new java.util.LinkedHashMap<>();
+            effective.put("REPORT:FINANCE_REPORTS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.VIEW, "REPORT_VIEWER"));
+            effective.put("REPORT:reports.FINANCE_REPORTS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.DENY, "RESTRICTED"));
+            when(tupleSyncService.resolveEffectiveGrants(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(effective);
+
+            AuthzMeResponseDto body = controller.getMe(token).getBody();
+
+            assertNotNull(body);
+            assertEquals("DENY", body.getReports().get("FINANCE_REPORTS"));
+            org.junit.jupiter.api.Assertions.assertNull(body.getModules().get("REPORT"),
+                    "the only REPORT-type grant is denied after the alias merge — no module may be projected");
+            org.junit.jupiter.api.Assertions.assertFalse(body.getPermissions().contains("REPORT_VIEW"));
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("#1146: a denied alias group does not hide another, positive group — module still projected from the survivor")
+        void reportAliasCollision_otherPositiveGroupStillSurfacesTheModule() {
+            Jwt token = jwt("1209");
+            when(principalResolver.resolve(token))
+                    .thenReturn(resolved(1209L, token.getSubject(), "alias-mixed@example.com"));
+            when(authorizationQueryService.getUserScopeSummary(eq(1209L), any())).thenReturn(Map.of());
+            when(catalogService.getModuleKeys()).thenReturn(List.of());
+            PermissionResponse dbAssignment = new PermissionResponse();
+            dbAssignment.setPermissions(Set.of("VIEW_USERS"));
+            when(permissionService.getAssignments(1209L, null, null, null))
+                    .thenReturn(List.of(dbAssignment));
+            when(assignmentRepository.findActiveAssignments(1209L))
+                    .thenReturn(List.of(assignment(54L, "REPORT_VIEWER")));
+            when(rolePermissionRepository.findByRoleIdIn(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(List.of());
+            java.util.Map<String, TupleSyncService.ResolvedGrant> effective = new java.util.LinkedHashMap<>();
+            effective.put("REPORT:reports.FINANCE_REPORTS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.DENY, "RESTRICTED"));
+            effective.put("REPORT:FINANCE_REPORTS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.VIEW, "REPORT_VIEWER"));
+            effective.put("REPORT:HR_REPORTS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.MANAGE, "HR_LEAD"));
+            when(tupleSyncService.resolveEffectiveGrants(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(effective);
+
+            AuthzMeResponseDto body = controller.getMe(token).getBody();
+
+            assertNotNull(body);
+            assertEquals("DENY", body.getReports().get("FINANCE_REPORTS"));
+            assertEquals("ALLOW", body.getReports().get("HR_REPORTS"));
+            assertEquals("MANAGE", body.getModules().get("REPORT"));
+            assertTrue(body.getPermissions().contains("REPORT_VIEW"));
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("#1146: a non-group REPORT key is not collapsed — FIN_ANALYTICS=VIEW next to reports.FIN_ANALYTICS=DENY stays positive (two separate report objects in OpenFGA)")
+        void reportNonGroupKey_isNotCollapsedByTheAlias() {
+            Jwt token = jwt("1210");
+            when(principalResolver.resolve(token))
+                    .thenReturn(resolved(1210L, token.getSubject(), "alias-nongroup@example.com"));
+            when(authorizationQueryService.getUserScopeSummary(eq(1210L), any())).thenReturn(Map.of());
+            when(catalogService.getModuleKeys()).thenReturn(List.of());
+            PermissionResponse dbAssignment = new PermissionResponse();
+            dbAssignment.setPermissions(Set.of("VIEW_USERS"));
+            when(permissionService.getAssignments(1210L, null, null, null))
+                    .thenReturn(List.of(dbAssignment));
+            when(assignmentRepository.findActiveAssignments(1210L))
+                    .thenReturn(List.of(assignment(55L, "REPORT_VIEWER")));
+            when(rolePermissionRepository.findByRoleIdIn(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(List.of());
+            java.util.Map<String, TupleSyncService.ResolvedGrant> effective = new java.util.LinkedHashMap<>();
+            effective.put("REPORT:FIN_ANALYTICS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.VIEW, "REPORT_VIEWER"));
+            effective.put("REPORT:reports.FIN_ANALYTICS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.DENY, "RESTRICTED"));
+            when(tupleSyncService.resolveEffectiveGrants(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(effective);
+
+            AuthzMeResponseDto body = controller.getMe(token).getBody();
+
+            assertNotNull(body);
+            assertEquals("VIEW", body.getModules().get("REPORT"),
+                    "FIN_ANALYTICS is not a catalogued group: OpenFGA keeps report:FIN_ANALYTICS allowed");
+            assertTrue(body.getPermissions().contains("REPORT_VIEW"));
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("#1146: MANAGE on the denied alias group does not leak — the surviving VIEW group projects module VIEW without REPORT_EXPORT/REPORT_MANAGE")
+        void reportAliasCollision_deniedManageDoesNotLeakIntoTheSurvivor() {
+            Jwt token = jwt("1211");
+            when(principalResolver.resolve(token))
+                    .thenReturn(resolved(1211L, token.getSubject(), "alias-manage-denied@example.com"));
+            when(authorizationQueryService.getUserScopeSummary(eq(1211L), any())).thenReturn(Map.of());
+            when(catalogService.getModuleKeys()).thenReturn(List.of());
+            PermissionResponse dbAssignment = new PermissionResponse();
+            dbAssignment.setPermissions(Set.of("VIEW_USERS"));
+            when(permissionService.getAssignments(1211L, null, null, null))
+                    .thenReturn(List.of(dbAssignment));
+            when(assignmentRepository.findActiveAssignments(1211L))
+                    .thenReturn(List.of(assignment(56L, "REPORT_VIEWER")));
+            when(rolePermissionRepository.findByRoleIdIn(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(List.of());
+            java.util.Map<String, TupleSyncService.ResolvedGrant> effective = new java.util.LinkedHashMap<>();
+            effective.put("REPORT:FINANCE_REPORTS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.MANAGE, "FINANCE_LEAD"));
+            effective.put("REPORT:reports.FINANCE_REPORTS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.DENY, "RESTRICTED"));
+            effective.put("REPORT:HR_REPORTS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.VIEW, "REPORT_VIEWER"));
+            when(tupleSyncService.resolveEffectiveGrants(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(effective);
+
+            AuthzMeResponseDto body = controller.getMe(token).getBody();
+
+            assertNotNull(body);
+            assertEquals("DENY", body.getReports().get("FINANCE_REPORTS"));
+            assertEquals("VIEW", body.getModules().get("REPORT"));
+            assertTrue(body.getPermissions().contains("REPORT_VIEW"));
+            org.junit.jupiter.api.Assertions.assertFalse(body.getPermissions().contains("REPORT_EXPORT"));
+            org.junit.jupiter.api.Assertions.assertFalse(body.getPermissions().contains("REPORT_MANAGE"));
+        }
+
+        @Test
         @org.junit.jupiter.api.DisplayName("resolvePermissions merges OpenFGA module grants with legacy DB permissions instead of short-circuiting")
         void resolvePermissions_mergesOpenFgaAndDbPermissions() {
             Jwt token = jwt("1208");

@@ -601,8 +601,13 @@ public class AuthorizationControllerV1 {
         // owns any positive REPORT-type grant so the projection invariant
         // below can surface a matching REPORT *module* + REPORT_VIEW
         // permission (see applyReportModuleInvariant).
-        boolean anyReportPositive = false;
-        boolean anyReportManage = false;
+        // platform-backend#1146 (Codex 01a08807 P2): the two flags are derived
+        // AFTER the alias deny-wins merge below. A raw `FINANCE_REPORTS=VIEW`
+        // next to `reports.FINANCE_REPORTS=DENY` normalises to one report_group
+        // that the tuple writer blocks; counting the raw VIEW as "positive"
+        // projected modules.REPORT=VIEW (menu shown) while OpenFGA denied the
+        // group (API 403). Per normalised key: DENY wins, MANAGE beats VIEW.
+        Map<String, com.example.permission.model.GrantType> reportGrantByKey = new LinkedHashMap<>();
 
         for (var entry : effective.entrySet()) {
             String[] parts = entry.getKey().split(":", 2);
@@ -616,12 +621,14 @@ public class AuthorizationControllerV1 {
                 case REPORT -> {
                     com.example.permission.model.GrantType reportGrant =
                             entry.getValue().grantType();
-                    if (reportGrant != com.example.permission.model.GrantType.DENY) {
-                        anyReportPositive = true;
-                        if (reportGrant == com.example.permission.model.GrantType.MANAGE) {
-                            anyReportManage = true;
-                        }
-                    }
+                    // Only the catalogued report groups collapse to one OpenFGA
+                    // object (TupleSyncService writes other REPORT keys as separate
+                    // `report` objects, so `X` and `reports.X` stay two grants there).
+                    String invariantKey = TupleSyncService.isReportGroupKey(key)
+                            ? TupleSyncService.normalizeReportGroupKey(key)
+                            : key;
+                    reportGrantByKey.merge(invariantKey, reportGrant,
+                            AuthorizationControllerV1::mergeReportGrantTypeDenyWins);
                     // R16 PR-B-2 (Codex 019e2a13 REVISE P0/P1 absorb):
                     // - Key suffix-only (reports.GROUP → GROUP) — FE
                     //   canViewReport(reportGroup) prefix'siz arıyor
@@ -647,6 +654,10 @@ public class AuthorizationControllerV1 {
         dto.setActions(actions);
         dto.setReports(reports);
 
+        boolean anyReportPositive = reportGrantByKey.values().stream()
+                .anyMatch(g -> g != com.example.permission.model.GrantType.DENY);
+        boolean anyReportManage = reportGrantByKey.values().stream()
+                .anyMatch(g -> g == com.example.permission.model.GrantType.MANAGE);
         applyReportModuleInvariant(dto, modules, anyReportPositive, anyReportManage);
     }
 
@@ -721,6 +732,21 @@ public class AuthorizationControllerV1 {
      */
     private static String mergeReportGrantDenyWins(String existing, String incoming) {
         return "DENY".equals(existing) || "DENY".equals(incoming) ? "DENY" : "ALLOW";
+    }
+
+    /** Same deny-wins rule on the raw grant, keeping MANAGE over VIEW/ALLOW (#1146). */
+    private static com.example.permission.model.GrantType mergeReportGrantTypeDenyWins(
+            com.example.permission.model.GrantType existing,
+            com.example.permission.model.GrantType incoming) {
+        if (existing == com.example.permission.model.GrantType.DENY
+                || incoming == com.example.permission.model.GrantType.DENY) {
+            return com.example.permission.model.GrantType.DENY;
+        }
+        if (existing == com.example.permission.model.GrantType.MANAGE
+                || incoming == com.example.permission.model.GrantType.MANAGE) {
+            return com.example.permission.model.GrantType.MANAGE;
+        }
+        return incoming;
     }
 
     private Map<String, List<Long>> buildScopeMap(Long userId) {
