@@ -104,13 +104,13 @@ public class RelationshipDiscoveryService {
     }
 
     /**
-     * Converts single-column authoritative FKs into compatibility
-     * {@link Relationship}s ({@code source="fk_constraint"},
-     * {@code confidence=1.0}). Skipped (kept in the {@code ForeignKeyInfo}
-     * inventory only):
+     * Converts authoritative FKs into compatibility {@link Relationship}s
+     * ({@code confidence=1.0}; {@code source="fk_constraint"}, or
+     * {@code "fk_constraint_composite"} for a multi-column key, whose edge is
+     * the last column pair — the referenced side's own key — with the full
+     * column list left on the {@code ForeignKeyInfo} inventory; gitops#3631).
+     * Skipped (kept in the inventory only):
      * <ul>
-     *   <li>composite FKs — the dedup key ({@code fromTable|fromColumn|
-     *       toTable}) cannot represent a multi-column join;</li>
      *   <li>FKs whose {@code fromTable} or {@code toTable} is not in this
      *       snapshot's {@code tables} (Codex 019e2d7d REVISE) — a
      *       cross-schema FK target would otherwise inject a node outside
@@ -125,16 +125,24 @@ public class RelationshipDiscoveryService {
             return rels;
         }
         for (ForeignKeyInfo fk : foreignKeys) {
-            if (fk.isComposite() || fk.fromColumns().isEmpty() || fk.toColumns().isEmpty()) {
+            if (fk.fromColumns().isEmpty() || fk.toColumns().isEmpty()
+                    || fk.fromColumns().size() != fk.toColumns().size()) {
                 continue;
             }
             if (!tableNames.contains(fk.fromTable()) || !tableNames.contains(fk.toTable())) {
                 continue;
             }
+            // gitops#3631 slice 2: a composite key used to yield no edge at all, so a join that
+            // the dictionary states (IFS: company + own key) was invisible to the graph, the
+            // path finder and the report builder. The edge carries the LAST column pair — the
+            // referenced LU's own key — which is the pair that distinguishes the target; the
+            // parent columns are shared context, and the full column list stays on the
+            // ForeignKeyInfo inventory for anyone building the actual JOIN.
+            int last = fk.fromColumns().size() - 1;
             rels.add(new Relationship(
-                fk.fromTable(), fk.fromColumns().get(0),
-                fk.toTable(), fk.toColumns().get(0),
-                1.0, "fk_constraint"));
+                fk.fromTable(), fk.fromColumns().get(last),
+                fk.toTable(), fk.toColumns().get(last),
+                1.0, fk.isComposite() ? "fk_constraint_composite" : "fk_constraint"));
         }
         log.info("Authoritative FK compat: {} single-column in-snapshot relationships", rels.size());
         return rels;

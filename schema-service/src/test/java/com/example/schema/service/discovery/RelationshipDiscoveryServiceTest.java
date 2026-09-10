@@ -154,8 +154,15 @@ class RelationshipDiscoveryServiceTest {
         assertEquals(1.0, fkRel.confidence(), 1e-9);
     }
 
+    /**
+     * gitops#3631 slice 2: a composite key used to yield no edge at all, which made every
+     * IFS reference of the "company + own key" shape invisible to the graph and the report
+     * builder. It now yields ONE edge on the last column pair (the referenced side's own key),
+     * tagged so a reader can tell it from a plain constraint; the full column list stays on
+     * the ForeignKeyInfo inventory.
+     */
     @Test
-    void compositeFk_notFlattenedIntoRelationships() {
+    void compositeFk_yieldsOneEdgeOnTheOwnKeyPair() {
         var tables = Map.of(
             "PARENT", new TableInfo("PARENT", "dbo", List.of(
                 new ColumnInfo("KEY_A", "int", 4, false, false, true, 1),
@@ -170,9 +177,16 @@ class RelationshipDiscoveryServiceTest {
 
         List<Relationship> rels = service.discoverAll(tables, Map.of(), List.of(composite));
 
-        assertTrue(rels.stream().noneMatch(r -> "fk_constraint".equals(r.source())),
-            "composite FK must stay in the ForeignKeyInfo inventory only, "
-                + "not flattened into the relationship compat list");
+        List<Relationship> fromKey = rels.stream()
+            .filter(r -> r.source().startsWith("fk_constraint")).toList();
+        assertEquals(1, fromKey.size(), "one edge per composite key, not one per column and not none");
+        Relationship edge = fromKey.getFirst();
+        assertEquals("fk_constraint_composite", edge.source());
+        assertEquals("REF_B", edge.fromColumn(), "the last pair — the referenced side's own key");
+        assertEquals("KEY_B", edge.toColumn());
+        assertEquals(1.0, edge.confidence(), 1e-9);
+        assertTrue(rels.stream().noneMatch(r -> "REF_A".equals(r.fromColumn()) && r.source().startsWith("fk_constraint")),
+            "the parent-key column does not become a second edge");
     }
 
     @Test

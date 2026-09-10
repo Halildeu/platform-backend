@@ -364,7 +364,37 @@ public class OracleCatalogReader implements CatalogReader {
         }
 
         log.info("[{}] Oracle: {} foreign keys for owner '{}'", sourceId, byName.size(), owner);
-        return List.copyOf(byName.values());
+
+        // gitops#3631 slice 2: the reporting account sees views, never the _TAB tables that
+        // carry the constraints, so the query above answers nothing for it (measured: 0).
+        // IFS wrote the same references into every view column's comment (REF=), 28,440 of
+        // them on the live dictionary; those become keys here, marked not-trusted because
+        // no visible constraint enforces them. Read in one pass, in column order, because
+        // the target side's key composition (parent keys first, own keys next) is positional.
+        Map<String, List<IfsReferenceResolver.ColumnMeta>> viewColumns = new LinkedHashMap<>();
+        jdbc.query("""
+            SELECT c.TABLE_NAME, c.COLUMN_NAME, c.COLUMN_ID, cm.COMMENTS
+              FROM ALL_TAB_COLUMNS c
+              LEFT JOIN ALL_COL_COMMENTS cm
+                ON cm.OWNER = c.OWNER
+               AND cm.TABLE_NAME = c.TABLE_NAME
+               AND cm.COLUMN_NAME = c.COLUMN_NAME
+             WHERE c.OWNER = :owner
+             ORDER BY c.TABLE_NAME, c.COLUMN_ID
+            """, Map.of("owner", owner), rs -> {
+                viewColumns.computeIfAbsent(rs.getString("TABLE_NAME"), k -> new ArrayList<>())
+                    .add(new IfsReferenceResolver.ColumnMeta(
+                        rs.getString("COLUMN_NAME"), rs.getInt("COLUMN_ID"),
+                        IfsColumnComment.parse(rs.getString("COMMENTS"))));
+            });
+        IfsReferenceResolver.Result refs = IfsReferenceResolver.resolve(owner, viewColumns);
+        List<ForeignKeyInfo> all = new ArrayList<>(byName.values());
+        for (ForeignKeyInfo fk : refs.foreignKeys()) {
+            if (!byName.containsKey(fk.name())) all.add(fk);
+        }
+        log.info("[{}] Oracle: IFS REF= references {} -> {} keys ({} target not a view, {} key shape unresolved) for owner '{}'",
+            sourceId, refs.references(), refs.resolved(), refs.unresolvedTarget(), refs.unresolvedKeyShape(), owner);
+        return List.copyOf(all);
     }
 
     @Override
