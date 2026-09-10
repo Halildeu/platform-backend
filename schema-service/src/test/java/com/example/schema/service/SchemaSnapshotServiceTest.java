@@ -44,6 +44,31 @@ class SchemaSnapshotServiceTest {
         return new CatalogSourceRegistry(java.util.List.of(reader));
     }
 
+    /**
+     * gitops#3631 (Codex 01a08a98 P2): the row-count pass rebuilds every TableInfo. Before the
+     * fix it used the five-field constructor and silently dropped the object comment the
+     * reader had just read — for every table, as soon as one row count existed. A view with
+     * a comment and a different table with a count must both keep what they had.
+     */
+    @Test
+    void rowCountEnrichmentKeepsTheObjectComment() {
+        var view = new com.example.schema.model.TableInfo("TRYPE_ALL_VOUCHER_QRY", "IFSAPP",
+                List.of(new com.example.schema.model.ColumnInfo("COMPANY", "VARCHAR2", 20, false, false, true, 1)),
+                null, 1, "Voucher rows across all voucher types");
+        var table = new com.example.schema.model.TableInfo("TOAD_PLAN_TABLE", "IFSAPP", List.of(), null, 0, null);
+        when(extract.extractTables(anyString())).thenReturn(Map.of(view.name(), view, table.name(), table));
+        when(extract.getRowCounts(anyString())).thenReturn(Map.of("TOAD_PLAN_TABLE", 0L));
+
+        SchemaSnapshot snap = service.buildSnapshot(null, "IFSAPP");
+
+        assertThat(snap.tables().get("TRYPE_ALL_VOUCHER_QRY").comment())
+                .as("row-count rebuild must not drop the comment")
+                .isEqualTo("Voucher rows across all voucher types");
+        assertThat(snap.tables().get("TRYPE_ALL_VOUCHER_QRY").rowCount()).isNull();
+        assertThat(snap.tables().get("TOAD_PLAN_TABLE").rowCount()).isZero();
+        assertThat(snap.tables().get("TOAD_PLAN_TABLE").comment()).isNull();
+    }
+
     @Test
     void extractObjectsThrows_snapshotStillBuilt_objectsEmpty() {
         when(extract.extractObjects(anyString()))

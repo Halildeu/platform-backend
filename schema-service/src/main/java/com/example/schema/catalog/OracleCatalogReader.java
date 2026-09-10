@@ -119,12 +119,17 @@ public class OracleCatalogReader implements CatalogReader {
                    c.DATA_SCALE    AS data_scale,
                    c.NULLABLE      AS nullable,
                    c.COLUMN_ID     AS ordinal,
-                   CASE WHEN pk.COLUMN_NAME IS NULL THEN 0 ELSE 1 END AS is_pk
+                   CASE WHEN pk.COLUMN_NAME IS NULL THEN 0 ELSE 1 END AS is_pk,
+                   cm.COMMENTS     AS col_comment
               FROM ALL_TAB_COLUMNS c
               JOIN ALL_OBJECTS o
                 ON o.OWNER = c.OWNER
                AND o.OBJECT_NAME = c.TABLE_NAME
                AND o.OBJECT_TYPE IN ('TABLE', 'VIEW')
+              LEFT JOIN ALL_COL_COMMENTS cm
+                ON cm.OWNER = c.OWNER
+               AND cm.TABLE_NAME = c.TABLE_NAME
+               AND cm.COLUMN_NAME = c.COLUMN_NAME
               LEFT JOIN (
                    SELECT cc.OWNER, cc.TABLE_NAME, cc.COLUMN_NAME
                      FROM ALL_CONSTRAINTS ct
@@ -151,6 +156,12 @@ public class OracleCatalogReader implements CatalogReader {
             // then the snapshot collapsed on that cast.
             Integer precision = integerOrNull(rs.getObject("data_precision"));
             Integer scale = integerOrNull(rs.getObject("data_scale"));
+            // gitops#3631: IFS keeps the column's own metadata in the dictionary comment.
+            // The measured instance declares no PK constraints on its views (they live on
+            // the _TAB base tables this account cannot see), so the key flag in FLAGS= is
+            // the only primary-key signal available — it is OR-ed with the constraint, never
+            // instead of it. PROMPT= becomes the label; the raw comment travels as well.
+            IfsColumnComment comment = IfsColumnComment.parse(rs.getString("col_comment"));
             columnsByObject.computeIfAbsent(objectName, k -> new ArrayList<>())
                 .add(new ColumnInfo(
                     rs.getString("column_name"),
@@ -163,17 +174,32 @@ public class OracleCatalogReader implements CatalogReader {
                     false,                      // identity — Oracle identity lives in ALL_TAB_IDENTITY_COLS
                     null,
                     null,
-                    rs.getInt("is_pk") == 1,
+                    rs.getInt("is_pk") == 1 || comment.keyColumn(),
                     null,                       // default expression — extractDefaultConstraints
                     null,                       // computed expression — virtual columns not read here
                     false,
                     false,                      // sparse — no Oracle equivalent
-                    rs.getInt("ordinal")
+                    rs.getInt("ordinal"),
+                    comment.raw(),
+                    comment.label()
                 ));
         });
 
+        // Object comments in one pass (ALL_TAB_COMMENTS covers views too); IFS fills
+        // most of them with the logical unit's description.
+        Map<String, String> objectComments = new LinkedHashMap<>();
+        jdbc.query("""
+            SELECT TABLE_NAME, COMMENTS
+              FROM ALL_TAB_COMMENTS
+             WHERE OWNER = :owner
+               AND COMMENTS IS NOT NULL
+            """, Map.of("owner", owner), rs -> {
+                objectComments.put(rs.getString("TABLE_NAME"), rs.getString("COMMENTS"));
+            });
+
         Map<String, TableInfo> result = new LinkedHashMap<>();
-        columnsByObject.forEach((name, cols) -> result.put(name, new TableInfo(name, owner, cols)));
+        columnsByObject.forEach((name, cols) -> result.put(name,
+            new TableInfo(name, owner, cols, null, cols.size(), objectComments.get(name))));
 
         log.info("[{}] Oracle: {} objects, {} columns for owner '{}'", sourceId, result.size(),
             result.values().stream().mapToInt(t -> t.columns().size()).sum(), owner);
@@ -192,17 +218,55 @@ public class OracleCatalogReader implements CatalogReader {
             """, Map.of("owner", owner), String.class));
     }
 
+    /**
+     * Owners that are Oracle's own, on an instance too old for {@code ALL_USERS.ORACLE_MAINTAINED}
+     * (12c+). The dictionary flag is preferred; this list is the fallback and is also applied
+     * on top of it, because SYS and SYSTEM are never a schema a reporting user means to browse.
+     */
+    static final Set<String> ORACLE_OWNED_SCHEMAS = Set.of(
+        "SYS", "SYSTEM", "MDSYS", "CTXSYS", "WMSYS", "XDB", "OLAPSYS", "LBACSYS", "ORDSYS",
+        "ORDDATA", "ORDPLUGINS", "GSMADMIN_INTERNAL", "DBSNMP", "OUTLN", "APPQOSSYS", "AUDSYS",
+        "DVSYS", "DVF", "OJVMSYS", "ORACLE_OCM", "DBSFWUSER", "GGSYS", "REMOTE_SCHEDULER_AGENT",
+        "SYS$UMF", "DIP", "ANONYMOUS", "XS$NULL", "SI_INFORMTN_SCHEMA", "EXFSYS", "FLOWS_FILES",
+        "MDDATA", "SYSBACKUP", "SYSDG", "SYSKM", "SYSRAC", "WK_TEST", "WKSYS", "WKPROXY");
+
     @Override
     public List<Map<String, Object>> listSchemas() {
         // Mirrors the MSSQL listing contract: one row per schema with a count of
         // the objects a caller can actually browse.
-        return jdbc.queryForList("""
-            SELECT OWNER AS "name", COUNT(*) AS "tableCount"
-              FROM ALL_OBJECTS
-             WHERE OBJECT_TYPE IN ('TABLE', 'VIEW')
-             GROUP BY OWNER
-             ORDER BY COUNT(*) DESC
-            """, Map.of());
+        //
+        // gitops#3631: the measured instance listed 12 owners, 11 of them Oracle's own
+        // (SYS, MDSYS, CTXSYS, ...). A picker that offers SYS to a report author is noise,
+        // so Oracle-maintained owners are dropped — by the dictionary flag where the
+        // instance has it, and by the static list regardless.
+        List<Map<String, Object>> rows;
+        try {
+            rows = jdbc.queryForList("""
+                SELECT o.OWNER AS "name", COUNT(*) AS "tableCount"
+                  FROM ALL_OBJECTS o
+                  LEFT JOIN ALL_USERS u ON u.USERNAME = o.OWNER
+                 WHERE o.OBJECT_TYPE IN ('TABLE', 'VIEW')
+                   AND NVL(u.ORACLE_MAINTAINED, 'N') <> 'Y'
+                 GROUP BY o.OWNER
+                 ORDER BY COUNT(*) DESC
+                """, Map.of());
+        } catch (org.springframework.jdbc.BadSqlGrammarException preTwelveC) {
+            log.info("[{}] Oracle: ALL_USERS.ORACLE_MAINTAINED unavailable; static owner filter only", sourceId);
+            rows = jdbc.queryForList("""
+                SELECT OWNER AS "name", COUNT(*) AS "tableCount"
+                  FROM ALL_OBJECTS
+                 WHERE OBJECT_TYPE IN ('TABLE', 'VIEW')
+                 GROUP BY OWNER
+                 ORDER BY COUNT(*) DESC
+                """, Map.of());
+        }
+        List<Map<String, Object>> filtered = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            Object name = row.get("name");
+            if (name != null && ORACLE_OWNED_SCHEMAS.contains(name.toString().toUpperCase(java.util.Locale.ROOT))) continue;
+            filtered.add(row);
+        }
+        return filtered;
     }
 
     // --------------------------------------------------------------- lineage

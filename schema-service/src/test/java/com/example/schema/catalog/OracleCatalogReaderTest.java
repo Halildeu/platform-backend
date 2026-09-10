@@ -34,6 +34,22 @@ class OracleCatalogReaderTest {
         return sql.getValue();
     }
 
+    /**
+     * extractTables issues two callback queries since gitops#3631 — the column query and the
+     * ALL_TAB_COMMENTS pass. These helpers return the first (column) one, in order.
+     */
+    private String capturedColumnSql() {
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc, org.mockito.Mockito.times(2)).query(sql.capture(), anyMap(), any(RowCallbackHandler.class));
+        return sql.getAllValues().get(0);
+    }
+
+    private Map<String, Object> capturedColumnBinds() {
+        ArgumentCaptor<Map<String, Object>> binds = ArgumentCaptor.forClass(Map.class);
+        verify(jdbc, org.mockito.Mockito.times(2)).query(anyString(), binds.capture(), any(RowCallbackHandler.class));
+        return binds.getAllValues().get(0);
+    }
+
     @Test
     void identifiesItselfAsTheConfiguredOracleSource() {
         assertThat(reader.sourceId()).isEqualTo("ifs");
@@ -44,20 +60,16 @@ class OracleCatalogReaderTest {
     void ownerIsUpperCasedBecauseTheDictionaryStoresItThatWay() {
         reader.extractTables("ifsapp");
 
-        ArgumentCaptor<Map<String, Object>> binds = ArgumentCaptor.forClass(Map.class);
-        verify(jdbc).query(anyString(), binds.capture(), any(RowCallbackHandler.class));
         // A lower-case owner would match nothing at all — the query would
         // succeed and return an empty schema.
-        assertThat(binds.getValue()).containsEntry("owner", "IFSAPP");
+        assertThat(capturedColumnBinds()).containsEntry("owner", "IFSAPP");
     }
 
     @Test
     void anAbsentSchemaFallsBackToTheConfiguredDefaultOwner() {
         reader.extractTables(null);
 
-        ArgumentCaptor<Map<String, Object>> binds = ArgumentCaptor.forClass(Map.class);
-        verify(jdbc).query(anyString(), binds.capture(), any(RowCallbackHandler.class));
-        assertThat(binds.getValue()).containsEntry("owner", "IFSAPP");
+        assertThat(capturedColumnBinds()).containsEntry("owner", "IFSAPP");
     }
 
     @Test
@@ -67,7 +79,23 @@ class OracleCatalogReaderTest {
         // The measured IFS instance holds 10,885 views and exactly one table (a
         // Toad artefact). Restricting this to TABLE would render the schema
         // explorer empty while every query still succeeded.
-        assertThat(capturedSql()).contains("'TABLE', 'VIEW'");
+        assertThat(capturedColumnSql()).contains("'TABLE', 'VIEW'");
+    }
+
+    /**
+     * gitops#3631 — the dictionary comment is where IFS keeps the column's label and key
+     * flag; the measured snapshot had 205,874 columns and zero of either because it was
+     * never read. Both passes must be there: column comments joined into the column query,
+     * object comments in their own.
+     */
+    @Test
+    void columnAndObjectCommentsAreRead() {
+        reader.extractTables("IFSAPP");
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc, org.mockito.Mockito.times(2)).query(sql.capture(), anyMap(), any(RowCallbackHandler.class));
+        assertThat(sql.getAllValues().get(0)).contains("ALL_COL_COMMENTS").contains("col_comment");
+        assertThat(sql.getAllValues().get(1)).contains("ALL_TAB_COMMENTS");
     }
 
     @Test

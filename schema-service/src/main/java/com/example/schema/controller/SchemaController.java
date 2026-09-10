@@ -254,12 +254,12 @@ public class SchemaController {
             for (var col : entry.getValue().columns()) {
                 if (col.name().toUpperCase(Locale.ROOT).contains(query)) {
                     grouped.computeIfAbsent(col.name(), k -> new ArrayList<>())
-                        .add(Map.of(
+                        .add(labelled(Map.of(
                             "table", entry.getKey(),
                             "column", col.name(),
                             "type", col.dataType(),
                             "pk", col.pk()
-                        ));
+                        ), col));
                 }
             }
         }
@@ -471,5 +471,13 @@ public class SchemaController {
     public ResponseEntity<List<Map<String, Object>>> listSchemas(
             @RequestParam(required = false) String source) {
         return ResponseEntity.ok(sources.resolve(source).listSchemas());
+    }
+
+    /** gitops#3631: a source-provided label (IFS PROMPT=) rides along when present; Map.of cannot hold a null. */
+    private static Map<String, Object> labelled(Map<String, Object> base, com.example.schema.model.ColumnInfo col) {
+        if (col.label() == null) return base;
+        Map<String, Object> withLabel = new LinkedHashMap<>(base);
+        withLabel.put("label", col.label());
+        return withLabel;
     }
 }
