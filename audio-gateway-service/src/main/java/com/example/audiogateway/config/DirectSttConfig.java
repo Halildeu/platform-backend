@@ -320,7 +320,8 @@ public class DirectSttConfig {
                 cfg.getBearerToken(),
                 Duration.ofMillis(cfg.getTimeoutMs()),
                 meters,
-                liveAnalysisStreamHub);
+                liveAnalysisStreamHub,
+                Duration.ofMillis(cfg.getMinIntervalMs()));
     }
 
     /**

@@ -2,6 +2,7 @@ package com.example.audiogateway.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.awaitility.Awaitility.await;
 
 import com.example.audiogateway.dto.TranscriptResult;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -11,6 +12,7 @@ import java.util.concurrent.TimeUnit;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
+import okhttp3.mockwebserver.SocketPolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,6 +53,108 @@ class LiveAnalyzeTriggerTest {
 
     private double counter(final String name) {
         return meters.counter(name).count();
+    }
+
+    @Test
+    void coalescesUpdatesWhileThePreviousAnalysisIsRunning() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}").setBodyDelay(1, TimeUnit.SECONDS));
+        server.enqueue(new MockResponse().setBody("{}"));
+        final LiveAnalyzeTrigger trigger =
+                new LiveAnalyzeTrigger(client, 1, "", Duration.ofSeconds(3), meters);
+
+        trigger.offer("synthetic-meeting", resultWith("First decision."));
+        assertThat(server.takeRequest(2, TimeUnit.SECONDS)).isNotNull();
+        trigger.offer("synthetic-meeting", resultWith("Second decision."));
+        trigger.offer("synthetic-meeting", resultWith("Third decision."));
+
+        assertThat(server.takeRequest(200, TimeUnit.MILLISECONDS)).isNull();
+        final RecordedRequest next = server.takeRequest(2, TimeUnit.SECONDS);
+        assertThat(next).isNotNull();
+        assertThat(next.getBody().readUtf8())
+                .contains("First decision.", "Second decision.", "Third decision.");
+        assertThat(server.takeRequest(200, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    @Test
+    void cadenceRetainsNewestCumulativeContextUntilItCanStart() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}"));
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (LiveAnalyzeTrigger trigger = new LiveAnalyzeTrigger(
+                client, 1, "", Duration.ofSeconds(2), meters, null, Duration.ofMillis(500))) {
+            trigger.offer("cadence", resultWith("Original decision."));
+            assertThat(server.takeRequest(2, TimeUnit.SECONDS)).isNotNull();
+            await().atMost(Duration.ofSeconds(1)).untilAsserted(() ->
+                    assertThat(counter("audio_gw_live_analyze_publish_success_total")).isEqualTo(1));
+            trigger.offer("cadence", resultWith("Second decision."));
+            trigger.offer("cadence", resultWith("Newest decision."));
+            assertThat(server.takeRequest(100, TimeUnit.MILLISECONDS)).isNull();
+            final RecordedRequest next = server.takeRequest(2, TimeUnit.SECONDS);
+            assertThat(next).isNotNull();
+            assertThat(next.getBody().readUtf8())
+                    .contains("Original decision.", "Second decision.", "Newest decision.", "\"segment_seq\":3");
+            assertThat(counter("audio_gw_live_analyze_coalesced_total")).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void timeoutReleasesSingleFlightAndPublishesLatestPendingContext() throws Exception {
+        server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE));
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (LiveAnalyzeTrigger trigger = new LiveAnalyzeTrigger(
+                client, 1, "", Duration.ofMillis(400), meters)) {
+            trigger.offer("timeout", resultWith("First decision."));
+            assertThat(server.takeRequest(2, TimeUnit.SECONDS)).isNotNull();
+            trigger.offer("timeout", resultWith("Latest decision."));
+            assertThat(server.takeRequest(100, TimeUnit.MILLISECONDS)).isNull();
+            final RecordedRequest next = server.takeRequest(2, TimeUnit.SECONDS);
+            assertThat(next).isNotNull();
+            assertThat(next.getBody().readUtf8()).contains("First decision.", "Latest decision.");
+            await().atMost(Duration.ofSeconds(1)).untilAsserted(() -> {
+                assertThat(counter("audio_gw_live_analyze_publish_error_total")).isEqualTo(1);
+                assertThat(counter("audio_gw_live_analyze_publish_success_total")).isEqualTo(1);
+            });
+        }
+    }
+
+    @Test
+    void aSlowMeetingDoesNotBlockOrContaminateAnotherMeeting() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}").setBodyDelay(1, TimeUnit.SECONDS));
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (LiveAnalyzeTrigger trigger = new LiveAnalyzeTrigger(
+                client, 1, "", Duration.ofSeconds(3), meters)) {
+            trigger.offer("slow", resultWith("Slow meeting decision."));
+            assertThat(server.takeRequest(2, TimeUnit.SECONDS)).isNotNull();
+            trigger.offer("other", resultWith("Other meeting decision."));
+            final RecordedRequest other = server.takeRequest(500, TimeUnit.MILLISECONDS);
+            assertThat(other).isNotNull();
+            assertThat(other.getBody().readUtf8())
+                    .contains("Other meeting decision.").doesNotContain("Slow meeting decision.");
+        }
+    }
+
+    @Test
+    void closeCancelsDelayedWorkAndRejectsFurtherOffers() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}"));
+        final LiveAnalyzeTrigger trigger = new LiveAnalyzeTrigger(
+                client, 1, "", Duration.ofSeconds(2), meters, null, Duration.ofMillis(500));
+        trigger.offer("closing", resultWith("First decision."));
+        assertThat(server.takeRequest(2, TimeUnit.SECONDS)).isNotNull();
+        await().atMost(Duration.ofSeconds(1)).untilAsserted(() ->
+                assertThat(counter("audio_gw_live_analyze_publish_success_total")).isEqualTo(1));
+        trigger.offer("closing", resultWith("Pending decision."));
+        trigger.close();
+        trigger.offer("closing", resultWith("Ignored after close."));
+        assertThat(server.takeRequest(700, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    @Test
+    void liveCadenceConfigurationIsBoundedAndDefaultsToFifteenSeconds() {
+        final var config = new com.example.audiogateway.config.AudioGatewayProperties.DirectStt.LiveAnalyze();
+        assertThat(config.getMinIntervalMs()).isEqualTo(15_000);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> config.setMinIntervalMs(-1))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> config.setMinIntervalMs(300_001))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
