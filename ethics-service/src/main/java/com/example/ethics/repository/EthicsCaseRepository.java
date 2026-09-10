@@ -50,4 +50,25 @@ public interface EthicsCaseRepository extends JpaRepository<EthicsCase,UUID>{
             + " where c.acknowledgedAt is null and c.status <> 'CLOSED'"
             + " and c.createdAt <= :cutoff order by c.createdAt")
     java.util.List<UUID> findUnacknowledgedOpenBefore(@Param("cutoff") Instant cutoff);
+
+    /**
+     * ES-301 (#882): every case that still owes something — an acknowledgement, or the
+     * reporter's feedback. Ids only; the escalation sweeper re-reads each row under a lock
+     * before deciding anything, because what it read here may already be stale.
+     */
+    @Query("select c.id from EthicsCase c"
+            + " where c.acknowledgedAt is null or c.closedAt is null order by c.createdAt")
+    java.util.List<UUID> findWithUnmetObligations();
+
+    /**
+     * The row, locked for the rest of the transaction.
+     *
+     * <p>The escalation sweeper decides "still unacknowledged" and "still open" from this
+     * read. Taking the row lock makes that decision and the acknowledgement/closure writes
+     * serialise on the same row: whichever commits first, the other sees its result rather
+     * than a snapshot taken a moment before.
+     */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select c from EthicsCase c where c.id = :caseId")
+    Optional<EthicsCase> lockById(@Param("caseId") UUID caseId);
 }

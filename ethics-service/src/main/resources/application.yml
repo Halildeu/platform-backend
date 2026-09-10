@@ -60,6 +60,18 @@ ethics:
   # Public mutations are accepted only after ingress-nginx overwrites the
   # transport proof header. The NetworkPolicy admits only that namespace.
   secure-transport-required: ${ETHICS_SECURE_TRANSPORT_REQUIRED:true}
+  sla:
+    escalation:
+      # ES-301 (#882): the organisation's escalation policy — owner-supplied, off by default.
+      # `steps` are offsets AFTER the statutory deadline at which level 1..n are reached
+      # (comma-separated ISO-8601 or simple durations, e.g. "PT0S,P3D,P10D"; max 5, strictly
+      # increasing). They never soften the deadline; PT0S means "the moment it was missed".
+      # Rows are self-describing (threshold_at), so changing the policy later does not
+      # rewrite what an earlier level meant. One poller per replica is safe: each case is
+      # escalated under its row lock and (case, obligation, level) is unique.
+      enabled: ${ETHICS_SLA_ESCALATION_ENABLED:false}
+      steps: ${ETHICS_SLA_ESCALATION_STEPS:PT0S}
+      poll-delay: ${ETHICS_SLA_ESCALATION_POLL_DELAY:15m}
   acknowledgement:
     # ES-2 (#3271): the last-day net under the seven-day acknowledgement promise.
     # Fail-safe by design INTENT but explicit by deployment: only the request-facing

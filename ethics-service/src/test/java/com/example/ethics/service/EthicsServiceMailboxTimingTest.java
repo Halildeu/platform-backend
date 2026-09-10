@@ -68,7 +68,8 @@ class EthicsServiceMailboxTimingTest {
                 org.mockito.Mockito.mock(com.example.ethics.intake.IntakeChannelGate.class),
                 org.mockito.Mockito.mock(com.example.ethics.intake.ReportModePolicy.class),
                 org.mockito.Mockito.mock(RetaliationMonitoringService.class),
-                org.mockito.Mockito.mock(com.example.ethics.identity.ReporterIdentityService.class));
+                org.mockito.Mockito.mock(com.example.ethics.identity.ReporterIdentityService.class),
+                org.mockito.Mockito.mock(com.example.ethics.repository.CaseEscalationRepository.class));
     }
 
     @Test

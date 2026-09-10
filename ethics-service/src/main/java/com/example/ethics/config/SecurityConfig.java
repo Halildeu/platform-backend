@@ -29,6 +29,7 @@ import java.util.Map;
 @EnableConfigurationProperties({
     EthicsSlaProperties.class,
     EthicsSlaCalendarProperties.class,
+    EthicsSlaEscalationProperties.class,
     EthicsProperties.class,
     EvidenceProperties.class,
     AuditDeliveryProperties.class,

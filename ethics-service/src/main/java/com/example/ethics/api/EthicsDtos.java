@@ -172,7 +172,8 @@ public final class EthicsDtos {
                               Instant acknowledgementDueAt, String acknowledgementState,
                               boolean acknowledgedLate, Long acknowledgementOverdueSeconds,
                               Instant feedbackDueAt, String feedbackState, boolean feedbackLate,
-                              Long feedbackOverdueSeconds) {}
+                              Long feedbackOverdueSeconds,
+                              int escalationLevel, Instant escalatedAt) {}
     /**
      * One case, opened.
      *
@@ -192,7 +193,8 @@ public final class EthicsDtos {
                              Instant acknowledgementDueAt, String acknowledgementState,
                              boolean acknowledgedLate, Long acknowledgementOverdueSeconds,
                              Instant feedbackDueAt, String feedbackState, boolean feedbackLate,
-                             Long feedbackOverdueSeconds) {}
+                             Long feedbackOverdueSeconds,
+                             int escalationLevel, Instant escalatedAt) {}
     /**
      * ES-301A / ES-301B. {@code outcome} is required when closing and refused otherwise;
      * {@code reason} is required only when reopening a closed case. Neither is a free-form
