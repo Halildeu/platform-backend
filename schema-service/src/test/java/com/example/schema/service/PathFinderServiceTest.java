@@ -95,8 +95,41 @@ class PathFinderServiceTest {
             reverse.joinSql());
 
         List<PathResult> all = service.findAllPaths("CHILD", "COMPANY", rels, 3);
-        assertFalse(all.isEmpty());
+        assertEquals(1, all.size());
         assertTrue(all.getFirst().joinSql().contains("t0.COMPANY = t1.COMPANY AND t0.EMP_NO = t1.EMP_NO"), all.getFirst().joinSql());
         assertTrue(all.getFirst().joinSql().contains("JOIN COMPANY t2 ON t1.COMPANY = t2.COMPANY"), all.getFirst().joinSql());
+        assertEquals(2, all.getFirst().hops());
+    }
+
+    /** Codex 01a08afc iter-2 #4: two relationships between the same tables are two paths with two JOINs. */
+    @Test
+    void findAllPathsReturnsOnePathPerDistinctEdge() {
+        List<Relationship> rels = List.of(
+            new Relationship("ORDERS", "BILL_TO", "CUSTOMER", "ID", 0.9, "common_fk"),
+            new Relationship("ORDERS", "SHIP_TO", "CUSTOMER", "ID", 0.8, "common_fk"));
+
+        List<PathResult> all = service.findAllPaths("ORDERS", "CUSTOMER", rels, 5);
+
+        assertEquals(2, all.size());
+        assertEquals("SELECT *\nFROM ORDERS t0\nJOIN CUSTOMER t1 ON t0.BILL_TO = t1.ID", all.get(0).joinSql(), "higher confidence first");
+        assertEquals("SELECT *\nFROM ORDERS t0\nJOIN CUSTOMER t1 ON t0.SHIP_TO = t1.ID", all.get(1).joinSql());
+        assertEquals(1, service.findAllPaths("ORDERS", "CUSTOMER", rels, 1).size(), "limit is honoured");
+    }
+
+    /** Codex 01a08afc iter-2 #5: only paths of the minimum hop count; the direct join hides A→C→B. */
+    @Test
+    void findAllPathsReturnsOnlyTheShortestPaths() {
+        List<Relationship> rels = List.of(
+            new Relationship("A", "B_ID", "B", "ID", 0.9, "common_fk"),
+            new Relationship("A", "C_ID", "C", "ID", 0.9, "common_fk"),
+            new Relationship("C", "B_ID", "B", "ID", 0.9, "common_fk"));
+
+        List<PathResult> all = service.findAllPaths("A", "B", rels, 5);
+
+        assertEquals(1, all.size(), all.toString());
+        assertEquals(1, all.getFirst().hops());
+        assertEquals("SELECT *\nFROM A t0\nJOIN B t1 ON t0.B_ID = t1.ID", all.getFirst().joinSql());
+        assertTrue(service.findAllPaths("A", "A", rels, 5).isEmpty());
+        assertTrue(service.findAllPaths("A", "NOWHERE", rels, 5).isEmpty());
     }
 }

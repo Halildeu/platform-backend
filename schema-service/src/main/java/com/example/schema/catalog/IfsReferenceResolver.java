@@ -106,9 +106,12 @@ public final class IfsReferenceResolver {
      *                    restricts the query to {@code ALL_VIEWS}), so every target here is one
      */
     public static Result resolve(String owner, Map<String, List<ColumnMeta>> viewColumns) {
+        Map<String, List<KeyColumn>> keysByView = new LinkedHashMap<>();
         Map<String, List<String>> keyColumnsByView = new LinkedHashMap<>();
         for (Map.Entry<String, List<ColumnMeta>> e : viewColumns.entrySet()) {
-            keyColumnsByView.put(e.getKey(), keyColumns(e.getValue()));
+            List<KeyColumn> keys = keyColumns(e.getValue());
+            keysByView.put(e.getKey(), keys);
+            keyColumnsByView.put(e.getKey(), keys.stream().map(KeyColumn::name).toList());
         }
 
         Map<String, ForeignKeyInfo> byIdentity = new LinkedHashMap<>();
@@ -140,8 +143,12 @@ public final class IfsReferenceResolver {
                 for (String s : source) if (!viewColumnNames.contains(s)) { missing = true; break; }
                 if (missing) { unresolvedSource++; continue; }
                 if (source.isEmpty() && targetKey.size() > 1) {
-                    // Implicit parent part: the other key columns of the target, by name, from this view.
-                    String own = targetKey.contains(column) ? column : targetKey.get(targetKey.size() - 1);
+                    // Implicit parent part: the other key columns of the target, by name, from this
+                    // view. The referencing column takes the target's own key: itself when it carries
+                    // that name, else the target's single K column; with no or several K columns the
+                    // choice would be a guess (Codex 01a08afc iter-2 #2), so it is counted instead.
+                    String own = ownKey(column, keysByView.get(targetView));
+                    if (own == null) { unresolvedShape++; continue; }
                     for (String k : targetKey) {
                         if (k.equals(own)) continue;
                         if (!viewColumnNames.contains(k)) { missing = true; break; }
@@ -194,16 +201,41 @@ public final class IfsReferenceResolver {
         return List.of(assigned);
     }
 
+    /** A key column of a view with its {@code FLAGS} class: {@code 'K'} own, {@code 'P'} parent. */
+    record KeyColumn(String name, char keyClass) {}
+
     /** The view's key columns ({@code P} or {@code K}) in column order. */
-    static List<String> keyColumns(List<ColumnMeta> columns) {
+    static List<KeyColumn> keyColumns(List<ColumnMeta> columns) {
         List<ColumnMeta> sorted = new ArrayList<>(columns);
         sorted.sort((a, b) -> Integer.compare(a.ordinal(), b.ordinal()));
-        List<String> keys = new ArrayList<>();
+        List<KeyColumn> keys = new ArrayList<>();
         for (ColumnMeta c : sorted) {
             if (c.comment() == null) continue;
             char k = c.comment().keyClass();
-            if (k == 'P' || k == 'K') keys.add(c.name().toUpperCase(Locale.ROOT));
+            if (k == 'P' || k == 'K') keys.add(new KeyColumn(c.name().toUpperCase(Locale.ROOT), k));
         }
         return keys;
+    }
+
+    /** Names only, in column order. */
+    static List<String> keyNames(List<ColumnMeta> columns) {
+        return keyColumns(columns).stream().map(KeyColumn::name).toList();
+    }
+
+    /**
+     * Which target key column a parenthesis-less referencing column stands for: the column
+     * of the same name, a single-column key, or the target's one own ({@code K}) column.
+     * Null when that is ambiguous (no K, or several).
+     */
+    static String ownKey(String column, List<KeyColumn> targetKeys) {
+        for (KeyColumn k : targetKeys) if (k.name().equals(column)) return column;
+        if (targetKeys.size() == 1) return targetKeys.getFirst().name();
+        String own = null;
+        for (KeyColumn k : targetKeys) {
+            if (k.keyClass() != 'K') continue;
+            if (own != null) return null;
+            own = k.name();
+        }
+        return own;
     }
 }

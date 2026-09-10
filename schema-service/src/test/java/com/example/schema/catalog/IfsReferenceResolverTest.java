@@ -81,14 +81,41 @@ class IfsReferenceResolverTest {
     @Test
     @DisplayName("hedefin anahtarı: P ve K kolonları kolon sırasıyla — 164 view'da K, P'den önce gelir ve sıra korunur")
     void targetKeyIsEveryKeyColumnInColumnOrder() {
-        assertThat(IfsReferenceResolver.keyColumns(ifs().get("COMPANY_PERSON"))).containsExactly("COMPANY", "EMP_NO");
-        assertThat(IfsReferenceResolver.keyColumns(ifs().get("SITE"))).containsExactly("CONTRACT");
+        assertThat(IfsReferenceResolver.keyNames(ifs().get("COMPANY_PERSON"))).containsExactly("COMPANY", "EMP_NO");
+        assertThat(IfsReferenceResolver.keyNames(ifs().get("SITE"))).containsExactly("CONTRACT");
         // Given out of order and with the own key sitting before the parent key: column order wins.
         List<ColumnMeta> shuffled = List.of(
             col("NAME", 3, "FLAGS=AMIUL^"),
             col("COMPANY", 2, "FLAGS=PMI--^"),
             col("NODE_ID", 1, "FLAGS=KMI-L^"));
-        assertThat(IfsReferenceResolver.keyColumns(shuffled)).containsExactly("NODE_ID", "COMPANY");
+        assertThat(IfsReferenceResolver.keyNames(shuffled)).containsExactly("NODE_ID", "COMPANY");
+        assertThat(IfsReferenceResolver.keyColumns(shuffled).getFirst().keyClass()).isEqualTo('K');
+    }
+
+    @Test
+    @DisplayName("parantezsiz, yeniden adlandırılmış referans: K önce gelse bile kendi anahtar (K) kolonuna bağlanır; K yoksa/çoksa sayılır")
+    void renamedReferenceTakesTheTargetsOwnKeyNotTheLastColumn() {
+        // Codex 01a08afc iter-2 #2: PERSON's key is ID(K) then COMPANY(P); MANAGER_ID → Person must land on ID.
+        Map<String, List<ColumnMeta>> views = new LinkedHashMap<>();
+        views.put("PERSON", List.of(
+            col("ID", 1, "FLAGS=KMI-L^"),
+            col("COMPANY", 2, "FLAGS=PMI--^"),
+            col("MANAGER_ID", 3, "FLAGS=A-IU-^REF=Person^")));
+        views.put("TWO_OWN", List.of(col("A", 1, "FLAGS=KMI-L^"), col("B", 2, "FLAGS=KMI-L^")));
+        views.put("ALL_PARENT", List.of(col("COMPANY", 1, "FLAGS=PMI--^"), col("YEAR", 2, "FLAGS=PMI--^")));
+        views.put("USER_OF", List.of(
+            col("A", 1, "FLAGS=A-IU-^"), col("COMPANY", 2, "FLAGS=A-IU-^"),
+            col("X", 3, "FLAGS=A-IU-^REF=TwoOwn^"),        // two K columns: which one is X? not guessed
+            col("FISCAL", 4, "FLAGS=A-IU-^REF=AllParent^"))); // no K column at all: not guessed
+
+        var result = IfsReferenceResolver.resolve("IFSAPP", views);
+
+        var byName = byName(result);
+        assertThat(byName).containsOnlyKeys("IFS_REF_PERSON.MANAGER_ID");
+        assertThat(byName.get("IFS_REF_PERSON.MANAGER_ID").fromColumns()).containsExactly("MANAGER_ID", "COMPANY");
+        assertThat(byName.get("IFS_REF_PERSON.MANAGER_ID").toColumns()).containsExactly("ID", "COMPANY");
+        assertThat(result.unresolvedKeyShape()).isEqualTo(2);
+        assertThat(result.unresolvedSourceColumn()).isZero();
     }
 
     @Test
@@ -206,13 +233,14 @@ class IfsReferenceResolverTest {
             col("TOO_MANY", 3, "FLAGS=A-IU-^REF=TwoKey(p1,p2)^"),     // 3 source columns for a 2-column key
             col("Z", 4, "FLAGS=A-IU-^REF=NoKey^")));                  // target without any key column
         views.put("USER_OF_TWO", List.of(
-            col("Y", 1, "FLAGS=A-IU-^REF=TwoKey^")));                  // 1 source column, 2-column key, no same-named A/B here
+            col("A", 1, "FLAGS=A-IU-^"),
+            col("Y", 2, "FLAGS=A-IU-^REF=TwoKey^")));                  // 1 source column, 2-column key with two K: which one is Y?
 
         var result = IfsReferenceResolver.resolve("IFSAPP", views);
 
         assertThat(result.foreignKeys()).isEmpty();
-        assertThat(result.unresolvedKeyShape()).isEqualTo(2);
-        assertThat(result.unresolvedSourceColumn()).as("USER_OF_TWO.Y: implicit A missing").isEqualTo(1);
+        assertThat(result.unresolvedKeyShape()).as("TOO_MANY, Z (keyless target), USER_OF_TWO.Y (two own keys)").isEqualTo(3);
+        assertThat(result.unresolvedSourceColumn()).isZero();
     }
 
     @Test

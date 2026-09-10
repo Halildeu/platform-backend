@@ -218,6 +218,35 @@ class RelationshipDiscoveryServiceTest {
         assertTrue(edge.source().contains("fk_constraint_composite"), edge.source());
         assertEquals(List.of("COMPANY", "PARENT_ID"), edge.fromColumns());
         assertEquals(List.of("COMPANY", "PARENT_ID"), edge.toColumns());
+        assertEquals(1, rels.stream().filter(r -> "CHILD".equals(r.fromTable()) && "PARENT".equals(r.toTable())).count(),
+            "the heuristic sighting of the same join is folded into the key, not kept as a narrower second edge");
+    }
+
+    @Test
+    void twoCompositeFksSharingARepresentativeColumn_bothSurviveDeduplication() {
+        // Codex 01a08afc iter-2 #3: same representative column REF_ID, different keys — two joins.
+        var tables = Map.of(
+            "PARENT", new TableInfo("PARENT", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, true, 1),
+                new ColumnInfo("ID", "int", 4, false, false, true, 2),
+                new ColumnInfo("ALT_ID", "int", 4, false, false, false, 3))),
+            "CHILD", new TableInfo("CHILD", "dbo", List.of(
+                new ColumnInfo("COMPANY", "int", 4, false, false, false, 1),
+                new ColumnInfo("OTHER_COMPANY", "int", 4, false, false, false, 2),
+                new ColumnInfo("REF_ID", "int", 4, false, false, false, 3))));
+        ForeignKeyInfo fk1 = new ForeignKeyInfo("FK1", "dbo", "CHILD", List.of("COMPANY", "REF_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "ID"), false, false, "NO_ACTION", "NO_ACTION");
+        ForeignKeyInfo fk2 = new ForeignKeyInfo("FK2", "dbo", "CHILD", List.of("OTHER_COMPANY", "REF_ID"),
+            "dbo", "PARENT", List.of("COMPANY", "ALT_ID"), false, false, "NO_ACTION", "NO_ACTION");
+
+        List<Relationship> rels = service.discoverAll(tables, Map.of(), List.of(fk1, fk2));
+
+        List<Relationship> composite = rels.stream().filter(Relationship::isComposite).toList();
+        assertEquals(2, composite.size(), composite.toString());
+        assertTrue(composite.stream().anyMatch(r -> r.fromColumns().equals(List.of("COMPANY", "REF_ID"))
+            && r.toColumns().equals(List.of("COMPANY", "ID"))));
+        assertTrue(composite.stream().anyMatch(r -> r.fromColumns().equals(List.of("OTHER_COMPANY", "REF_ID"))
+            && r.toColumns().equals(List.of("COMPANY", "ALT_ID"))));
     }
 
     @Test

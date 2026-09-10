@@ -47,6 +47,20 @@ class QuerySuggestionServiceTest {
     }
 
     @Test
+    @DisplayName("ters yön (reverse_join) da her çifti bağlar — iterasyon 1'de tek çiftle kalmıştı (Codex iter-2 #1)")
+    void reverseJoinConditionCoversEveryPair() {
+        var snapshot = snapshot(List.of(
+            new Relationship("CHILD", "EMP_NO", "COMPANY_PERSON", "EMP_NO", 1.0, "fk_constraint_composite", false,
+                List.of("COMPANY", "EMP_NO"), List.of("COMPANY", "EMP_NO"))));
+
+        QuerySuggestion reverse = service.suggest("COMPANY_PERSON", snapshot).stream()
+            .filter(s -> "reverse_join".equals(s.pattern())).findFirst().orElseThrow();
+
+        assertThat(reverse.sql()).contains("FROM [dbo].[CHILD] r\nJOIN [dbo].[COMPANY_PERSON] t ON r.[COMPANY] = t.[COMPANY] AND r.[EMP_NO] = t.[EMP_NO]");
+        assertThat(reverse.sql()).contains("-- Example: CHILD.COMPANY, EMP_NO");
+    }
+
+    @Test
     @DisplayName("tek kolonlu ilişki: JOIN koşulu tek çift, metin değişmedi")
     void singleColumnJoinIsUnchanged() {
         var snapshot = snapshot(List.of(

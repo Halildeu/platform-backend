@@ -48,19 +48,12 @@ public class QuerySuggestionService {
             .toList();
 
         for (Relationship rel : outgoing.stream().limit(5).toList()) {
-            // Every column pair of the key, AND-ed: a composite join on its representative
-            // pair alone returns rows of other parents (gitops#3631, Codex 01a08afc P1).
-            StringBuilder on = new StringBuilder();
-            for (int c = 0; c < rel.fromColumns().size(); c++) {
-                if (c > 0) on.append(" AND ");
-                on.append(String.format("t.[%s] = r.[%s]", rel.fromColumns().get(c), rel.toColumns().get(c)));
-            }
             suggestions.add(new QuerySuggestion(
                 "Join to " + rel.toTable(),
                 String.format("Join via %s.%s → %s", tableName, String.join(", ", rel.fromColumns()), rel.toTable()),
                 String.format("SELECT t.*, r.*\nFROM [%s].[%s] t\nJOIN [%s].[%s] r ON %s\nORDER BY t.[%s] DESC\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY;",
                     table.schema(), tableName, table.schema(), rel.toTable(),
-                    on, rel.fromColumn()),
+                    joinCondition(rel, "t", "r"), rel.fromColumn()),
                 "join"
             ));
         }
@@ -123,14 +116,31 @@ public class QuerySuggestionService {
             suggestions.add(new QuerySuggestion(
                 "Referenced by " + topRef.fromTable(),
                 tableName + " referenced from " + incoming.size() + " tables",
-                String.format("-- %s is referenced by %d tables\n-- Example: %s.%s\nSELECT r.*, t.*\nFROM [%s].[%s] r\nJOIN [%s].[%s] t ON r.[%s] = t.[%s]\nORDER BY 1 DESC\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY;",
-                    tableName, incoming.size(), topRef.fromTable(), topRef.fromColumn(),
+                String.format("-- %s is referenced by %d tables\n-- Example: %s.%s\nSELECT r.*, t.*\nFROM [%s].[%s] r\nJOIN [%s].[%s] t ON %s\nORDER BY 1 DESC\nOFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY;",
+                    tableName, incoming.size(), topRef.fromTable(), String.join(", ", topRef.fromColumns()),
                     table.schema(), topRef.fromTable(), table.schema(), tableName,
-                    topRef.fromColumn(), topRef.toColumn()),
+                    joinCondition(topRef, "r", "t")),
                 "reverse_join"
             ));
         }
 
         return suggestions;
+    }
+
+    /**
+     * The ON clause of a relationship, every column pair AND-ed, with {@code sourceAlias}
+     * on the referencing side and {@code targetAlias} on the referenced side. Both the
+     * forward and the reverse suggestion use it: a composite key joined on its
+     * representative pair alone returns rows of other parents (gitops#3631, Codex
+     * 01a08afc P1 — the reverse join was still doing that in iteration 1).
+     */
+    static String joinCondition(Relationship rel, String sourceAlias, String targetAlias) {
+        StringBuilder on = new StringBuilder();
+        for (int c = 0; c < rel.fromColumns().size(); c++) {
+            if (c > 0) on.append(" AND ");
+            on.append(String.format("%s.[%s] = %s.[%s]",
+                sourceAlias, rel.fromColumns().get(c), targetAlias, rel.toColumns().get(c)));
+        }
+        return on.toString();
     }
 }

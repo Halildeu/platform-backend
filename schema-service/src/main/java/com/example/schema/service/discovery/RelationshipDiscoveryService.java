@@ -267,10 +267,30 @@ public class RelationshipDiscoveryService {
     }
 
     private List<Relationship> deduplicateAndScore(List<Relationship> all) {
+        // A single-column edge groups on (from table, from column, to table) as it always
+        // did. A composite edge is its own group, identified by every column pair: two keys
+        // that share a representative column but reference different target columns are two
+        // joins, not two sightings of one (Codex 01a08afc iter-2 #3). A single-column edge
+        // that a composite key on the same tables covers is folded into that key — it is the
+        // same join seen by a heuristic — rather than kept as a second, narrower edge.
         Map<String, List<Relationship>> grouped = new LinkedHashMap<>();
+        Map<String, String> compositeCovering = new HashMap<>();
         for (Relationship rel : all) {
-            String key = rel.fromTable() + "|" + rel.fromColumn() + "|" + rel.toTable();
+            String key = rel.isComposite()
+                ? rel.fromTable() + "|" + rel.fromColumns() + "|" + rel.toTable() + "|" + rel.toColumns()
+                : rel.fromTable() + "|" + rel.fromColumn() + "|" + rel.toTable();
             grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(rel);
+            if (rel.isComposite()) {
+                for (String c : rel.fromColumns()) {
+                    compositeCovering.putIfAbsent(rel.fromTable() + "|" + c + "|" + rel.toTable(), key);
+                }
+            }
+        }
+        for (String key : new ArrayList<>(grouped.keySet())) {
+            String covering = compositeCovering.get(key);
+            if (covering != null && !covering.equals(key) && grouped.containsKey(covering)) {
+                grouped.get(covering).addAll(grouped.remove(key));
+            }
         }
 
         List<Relationship> deduped = new ArrayList<>();

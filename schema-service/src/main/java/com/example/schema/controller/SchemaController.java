@@ -381,8 +381,9 @@ public class SchemaController {
             return ResponseEntity.badRequest().body(Map.of("error", "Table not found: " + to));
         }
 
-        var singlePath = pathFinderService.findPath(from, to, snapshot.relationships());
-        var paths = singlePath.hops() >= 0 ? List.of(singlePath) : List.<PathFinderService.PathResult>of();
+        // Every shortest join path, one per distinct edge sequence, best-confidence first
+        // (the first is the path findPath picks); `limit` was accepted but unused before.
+        var paths = pathFinderService.findAllPaths(from, to, snapshot.relationships(), Math.max(1, limit));
         return ResponseEntity.ok(Map.of(
             "from", from,
             "to", to,
