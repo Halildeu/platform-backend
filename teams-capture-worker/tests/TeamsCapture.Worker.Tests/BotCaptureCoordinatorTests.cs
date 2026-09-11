@@ -53,6 +53,28 @@ public sealed class BotCaptureCoordinatorTests
 
     private static CaptureStartCommand ValidCommand() => new(Guid.NewGuid(), Guid.NewGuid(), "corr-1");
 
+    [Fact]
+    public void Does_not_report_ready_when_Teams_tenant_registration_is_missing()
+    {
+        var options = new TeamsCaptureOptions { Enabled = true };
+
+        Assert.False(options.IsReadyForRegistration());
+    }
+
+    [Fact]
+    public void Requires_an_https_callback_and_tenant_owned_identifiers()
+    {
+        var options = new TeamsCaptureOptions
+        {
+            Enabled = true,
+            TenantId = Guid.NewGuid().ToString(),
+            ApplicationId = Guid.NewGuid().ToString(),
+            PublicCallbackBaseUrl = "https://teams-capture.test.example"
+        };
+
+        Assert.True(options.IsReadyForRegistration());
+    }
+
     private sealed class RecordingStatusClient(bool accepted) : IRecordingStatusClient
     {
         public bool WasCalled { get; private set; }
