@@ -5,9 +5,4 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
-  <ItemGroup>
-    <!-- Official Microsoft real-time media SDK. It is intentionally not activated
-         until tenant registration, media permissions and recording notice are ready. -->
-    <PackageReference Include="Microsoft.Graph.Communications.Calls.Media" Version="1.2.0.18725" />
-  </ItemGroup>
 </Project>

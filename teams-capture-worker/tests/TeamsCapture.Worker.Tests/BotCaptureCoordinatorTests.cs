@@ -75,6 +75,34 @@ public sealed class BotCaptureCoordinatorTests
         Assert.True(options.IsReadyForRegistration());
     }
 
+    [Fact]
+    public async Task Joins_a_calendar_meeting_without_becoming_an_audio_source()
+    {
+        var teams = new MeetingPresenceClient("conversation-1");
+        var result = await new TeamsMeetingPresenceCoordinator().JoinAsync(
+            new MeetingPresenceCommand(Guid.NewGuid(), "calendar-event-1", "corr-2"),
+            teams,
+            CancellationToken.None);
+
+        Assert.True(result.Joined);
+        Assert.Equal("conversation-1", result.ConversationId);
+        Assert.True(teams.WasCalled);
+    }
+
+    [Fact]
+    public async Task Rejects_a_join_without_the_canonical_platform_meeting_id()
+    {
+        var teams = new MeetingPresenceClient("conversation-1");
+        var result = await new TeamsMeetingPresenceCoordinator().JoinAsync(
+            new MeetingPresenceCommand(Guid.Empty, "calendar-event-1", "corr-2"),
+            teams,
+            CancellationToken.None);
+
+        Assert.False(result.Joined);
+        Assert.Equal("invalid_meeting_reference", result.FailureCode);
+        Assert.False(teams.WasCalled);
+    }
+
     private sealed class RecordingStatusClient(bool accepted) : IRecordingStatusClient
     {
         public bool WasCalled { get; private set; }
@@ -94,6 +122,19 @@ public sealed class BotCaptureCoordinatorTests
         {
             WasCalled = true;
             return Task.FromResult<string?>(sessionId);
+        }
+    }
+
+    private sealed class MeetingPresenceClient(string conversationId) : ITeamsMeetingPresenceClient
+    {
+        public bool WasCalled { get; private set; }
+
+        public Task<TeamsJoinReceipt?> JoinAsync(
+            MeetingPresenceCommand command,
+            CancellationToken cancellationToken)
+        {
+            WasCalled = true;
+            return Task.FromResult<TeamsJoinReceipt?>(new TeamsJoinReceipt(conversationId));
         }
     }
 }
