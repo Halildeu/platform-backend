@@ -30,6 +30,15 @@ public class NotificationDeliveryProperties {
     private String tokenAudience = "notification-orchestrator";
     private List<String> tokenPermissions = List.of("notify:intents:system");
     private String recipientSubscriberId = "";
+    /**
+     * ES-301b (#1153). Escalation signals (CASE_ESCALATED_L*) are produced only when this is
+     * on — a rollout flag, not a feature toggle: an older worker that claims one of these rows
+     * would route it as ordinary case activity to the first tier. Turn it on only after every
+     * replica runs an image that knows the events; turn it off first when rolling back.
+     */
+    private boolean escalationSignalsEnabled = false;
+    /** Second tier (compliance / board). Level 1 stays with the first tier; 2+ go here. */
+    private String escalationRecipientSubscriberId = "";
     private String locale = "tr-TR";
     private String channel = "inapp";
     private Duration httpTimeout = Duration.ofSeconds(3);
@@ -83,6 +92,15 @@ public class NotificationDeliveryProperties {
             require(recipientSubscriberId, "recipient-subscriber-id", 128);
             require(locale, "locale", 16);
             require(channel, "channel", 32);
+            if (escalationSignalsEnabled) {
+                require(escalationRecipientSubscriberId, "escalation-recipient-subscriber-id", 128);
+                if (escalationRecipientSubscriberId.equals(recipientSubscriberId)) {
+                    // Two tiers on one subscriber would make "L2 reached the second tier"
+                    // unprovable; the cell must name a distinct second-tier recipient.
+                    throw new IllegalArgumentException(
+                            "ethics.notification-delivery.escalation-recipient-subscriber-id must differ from recipient-subscriber-id");
+                }
+            }
         }
     }
 
@@ -129,6 +147,14 @@ public class NotificationDeliveryProperties {
     public String getRecipientSubscriberId() { return recipientSubscriberId; }
     public void setRecipientSubscriberId(String recipientSubscriberId) {
         this.recipientSubscriberId = recipientSubscriberId;
+    }
+    public boolean isEscalationSignalsEnabled() { return escalationSignalsEnabled; }
+    public void setEscalationSignalsEnabled(boolean escalationSignalsEnabled) {
+        this.escalationSignalsEnabled = escalationSignalsEnabled;
+    }
+    public String getEscalationRecipientSubscriberId() { return escalationRecipientSubscriberId; }
+    public void setEscalationRecipientSubscriberId(String escalationRecipientSubscriberId) {
+        this.escalationRecipientSubscriberId = escalationRecipientSubscriberId;
     }
     public String getLocale() { return locale; }
     public void setLocale(String locale) { this.locale = locale; }

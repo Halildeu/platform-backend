@@ -103,6 +103,9 @@ class NoAutomaticLegalJudgementTest {
                 }
             }
         }
+        // ES-301b (#1153): the escalation events are derived (CASE_ESCALATED_L1..L5), not
+        // constants — the publisher's own allowlist is the complete vocabulary.
+        events.addAll(NotificationOutboxPublisher.allowed());
         assertTrue(events.contains(NotificationOutboxPublisher.NEW_REPORT)
                         && events.contains(NotificationOutboxPublisher.REPORTER_MESSAGE),
                 "the known internal events must still be present — an empty scan would pass "
@@ -117,13 +120,17 @@ class NoAutomaticLegalJudgementTest {
                         + ". Reporting is a human decision (ADR-0051 §5); automate it and a false "
                         + "positive can never be taken back.");
 
-        // Pinned as a set. All four are internal: two case signals and the two SLA timers the
-        // acknowledgement net raises for staff (#3271). None addresses anyone outside the org,
-        // which is the property under test — a new member must be checked against that, and a
-        // named set makes the reviewer see exactly which one appeared.
+        // Pinned as a set. All nine are internal: two case signals, the two SLA timers the
+        // acknowledgement net raises for staff (#3271), and the five escalation levels
+        // (ES-301b, #1153) addressed to the organisation's own first and second tier
+        // (manager, then compliance/board) — still nobody outside the org. That is the
+        // property under test; a new member must be checked against it, and a named set
+        // makes the reviewer see exactly which one appeared.
         assertEquals(
                 new java.util.TreeSet<>(Set.of(
-                        "NEW_REPORT", "REPORTER_MESSAGE", "SLA_BREACH", "SLA_APPROACHING")),
+                        "NEW_REPORT", "REPORTER_MESSAGE", "SLA_BREACH", "SLA_APPROACHING",
+                        "CASE_ESCALATED_L1", "CASE_ESCALATED_L2", "CASE_ESCALATED_L3",
+                        "CASE_ESCALATED_L4", "CASE_ESCALATED_L5")),
                 new java.util.TreeSet<>(events),
                 "the notification vocabulary changed; ADR-0051 §4 bounds what the product may "
                         + "emit on its own — confirm the new event stays inside the organisation");
