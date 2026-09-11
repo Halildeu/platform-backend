@@ -397,7 +397,7 @@ public class OracleCatalogReader implements CatalogReader {
         // the name rule missed and leaves 278 ambiguous ones counted.
         Map<String, List<IfsReferenceResolver.LuView>> luIndex = new LinkedHashMap<>();
         jdbc.query("""
-            SELECT c.TABLE_NAME, c.COMMENTS
+            SELECT c.TABLE_NAME, c.COMMENTS, v.TEXT_VC
               FROM ALL_TAB_COMMENTS c
               JOIN ALL_VIEWS v
                 ON v.OWNER = c.OWNER
@@ -411,8 +411,11 @@ public class OracleCatalogReader implements CatalogReader {
                 if (lu == null || lu.isBlank()) return;
                 String table = parsed.entries().get("TABLE");
                 boolean base = table != null && table.trim().equalsIgnoreCase(viewName + "_TAB");
+                // TEXT_VC holds the first 4,000 characters: enough to see a top-level WHERE
+                // (gitops#3651 — a filtered projection is never taken as an LU's view).
+                boolean filtered = hasTopLevelWhere(rs.getString("TEXT_VC"));
                 luIndex.computeIfAbsent(lu.trim(), k -> new ArrayList<>())
-                    .add(new IfsReferenceResolver.LuView(viewName, base));
+                    .add(new IfsReferenceResolver.LuView(viewName, base, filtered));
             });
         IfsReferenceResolver.Result refs = IfsReferenceResolver.resolve(owner, viewColumns, luIndex);
         viewColumns.clear();
@@ -430,6 +433,22 @@ public class OracleCatalogReader implements CatalogReader {
             sourceId, refs.references(), refs.resolved(), refs.resolvedViaLuIndex(), refs.resolvedViaKeyShape(), refs.unresolvedTarget(), refs.ambiguousTarget(),
             refs.unresolvedKeyShape(), refs.unresolvedSourceColumn(), refs.duplicates(), shadowed, owner);
         return List.copyOf(byIdentity.values());
+    }
+
+    /** A WHERE outside any parenthesis: the view filters rows rather than projecting the table. */
+    static boolean hasTopLevelWhere(String viewText) {
+        if (viewText == null) return false;
+        String text = viewText.toUpperCase(java.util.Locale.ROOT);
+        int depth = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (ch == '(') depth++;
+            else if (ch == ')') depth--;
+            else if (depth == 0 && ch == 'W' && text.startsWith("WHERE", i)
+                && (i == 0 || !Character.isLetterOrDigit(text.charAt(i - 1)))
+                && (i + 5 >= text.length() || !Character.isLetterOrDigit(text.charAt(i + 5)))) return true;
+        }
+        return false;
     }
 
     private static String identityOf(ForeignKeyInfo fk) {

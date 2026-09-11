@@ -371,7 +371,8 @@ class IfsReferenceResolverTest {
     @DisplayName("belirsiz adaylar anahtar şekline göre süzülür: tam bir aday uyarsa çözülür, birden fazla/hiçbiri uyarsa belirsiz kalır (gitops#3651)")
     void ambiguousCandidatesAreDisambiguatedByKeyShape() {
         Map<String, List<ColumnMeta>> views = new LinkedHashMap<>();
-        // Live: EngPartMaster declared by three views; only MAIN carries a single PART_NO key.
+        // Live: EngPartMaster declared by three views; only MAIN carries a single PART_NO key —
+        // but MAIN filters rows (WHERE), so it is not taken either (all 66 live sole fits were filtered).
         views.put("ENG_PART_MASTER_ALTERNATIVE", List.of(col("PART_NO", 1, "FLAGS=AMIUL^")));           // no key at all
         views.put("ENG_PART_MASTER_ALT_LOV", List.of(col("PART_NO", 1, "FLAGS=PMI--^"), col("ALT_NO", 2, "FLAGS=KMI-L^")));
         views.put("ENG_PART_MASTER_MAIN", List.of(col("PART_NO", 1, "FLAGS=KMI-L^")));
@@ -386,21 +387,48 @@ class IfsReferenceResolverTest {
         views.put("CASH_ACCOUNT_CUSTOMER_DIST_LOV", List.of(col("Y", 1, "FLAGS=KMI-L^")));
         Map<String, List<IfsReferenceResolver.LuView>> index = new LinkedHashMap<>();
         index.put("EngPartMaster", List.of(
-            new IfsReferenceResolver.LuView("ENG_PART_MASTER_ALTERNATIVE", false),
-            new IfsReferenceResolver.LuView("ENG_PART_MASTER_ALT_LOV", false),
-            new IfsReferenceResolver.LuView("ENG_PART_MASTER_MAIN", false)));
+            new IfsReferenceResolver.LuView("ENG_PART_MASTER_ALTERNATIVE", false, false),
+            new IfsReferenceResolver.LuView("ENG_PART_MASTER_ALT_LOV", false, true),
+            new IfsReferenceResolver.LuView("ENG_PART_MASTER_MAIN", false, true)));
         index.put("Resource", List.of(
             new IfsReferenceResolver.LuView("RESOURCE_LOV", false), new IfsReferenceResolver.LuView("RESOURCE_PUB", false)));
+        // Live shape "one unfiltered among the fits" (8 references): Dictionary -> DICTIONARY_SYS_LU.
+        views.put("DICTIONARY_SYS_LU", List.of(col("LU_NAME", 1, "FLAGS=KMI-L^")));
+        views.put("FND_TAB_COMMENTS", List.of(col("LU_NAME", 1, "FLAGS=KMI-L^")));
+        views.put("CES_ONAY", List.of(col("LU_NAME", 1, "FLAGS=A-IU-^REF=Dictionary^")));
+        index.put("Dictionary", List.of(
+            new IfsReferenceResolver.LuView("DICTIONARY_SYS_LU", false, false),
+            new IfsReferenceResolver.LuView("FND_TAB_COMMENTS", false, true)));
         index.put("CashAccountCustomer", List.of(
             new IfsReferenceResolver.LuView("CASH_ACCOUNT_CUSTOMER_LOV", false), new IfsReferenceResolver.LuView("CASH_ACCOUNT_CUSTOMER_DIST_LOV", false)));
 
         var result = IfsReferenceResolver.resolve("IFSAPP", views, index);
 
         var byName = byName(result);
-        assertThat(byName).containsOnlyKeys("IFS_REF_PROJECT_SPARE.SPARE_PART_NO");
-        assertThat(byName.get("IFS_REF_PROJECT_SPARE.SPARE_PART_NO").toTable()).isEqualTo("ENG_PART_MASTER_MAIN");
+        assertThat(byName).containsOnlyKeys("IFS_REF_CES_ONAY.LU_NAME");
+        assertThat(byName.get("IFS_REF_CES_ONAY.LU_NAME").toTable()).as("the sole fit that is not a filtered projection").isEqualTo("DICTIONARY_SYS_LU");
         assertThat(result.resolvedViaKeyShape()).isEqualTo(1);
         assertThat(result.resolvedViaLuIndex()).isZero();
-        assertThat(result.ambiguousTarget()).as("Resource (two fit), CashAccountCustomer (none fit)").isEqualTo(2);
+        assertThat(result.ambiguousTarget()).as("EngPartMaster (sole fit filtered), Resource (two fit), CashAccountCustomer (none fit)").isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("kendine-referans aday da bir uyumdur: diğer adayı 'tek uyum' yapmaz (Codex 01a08f06 #1)")
+    void identityCandidateStillCountsAsAFit() {
+        Map<String, List<ColumnMeta>> views = new LinkedHashMap<>();
+        views.put("RESOURCE_LOV", List.of(col("RESOURCE_SEQ", 1, "FLAGS=KMI-L^REF=Resource^")));   // fits itself (identity)
+        views.put("RESOURCE_PUB", List.of(col("RESOURCE_SEQ", 1, "FLAGS=KMI-L^")));                // fits too
+        views.put("ONLY_SELF", List.of(col("ID", 1, "FLAGS=KMI-L^REF=OnlySelf^")));                 // the sole fit is the identity
+        views.put("ONLY_SELF_NOKEY", List.of(col("ID", 1, "FLAGS=AMIUL^")));
+        Map<String, List<IfsReferenceResolver.LuView>> index = new LinkedHashMap<>();
+        index.put("Resource", List.of(new IfsReferenceResolver.LuView("RESOURCE_LOV", false), new IfsReferenceResolver.LuView("RESOURCE_PUB", false)));
+        index.put("OnlySelf", List.of(new IfsReferenceResolver.LuView("ONLY_SELF", false), new IfsReferenceResolver.LuView("ONLY_SELF_NOKEY", false)));
+
+        var result = IfsReferenceResolver.resolve("IFSAPP", views, index);
+
+        assertThat(result.foreignKeys()).isEmpty();
+        assertThat(result.ambiguousTarget()).as("RESOURCE_LOV.RESOURCE_SEQ: two fits, one of them itself").isEqualTo(1);
+        assertThat(result.unresolvedKeyShape()).as("ONLY_SELF.ID: the only fit is the identity").isEqualTo(1);
+        assertThat(result.resolvedViaKeyShape()).isZero();
     }
 }

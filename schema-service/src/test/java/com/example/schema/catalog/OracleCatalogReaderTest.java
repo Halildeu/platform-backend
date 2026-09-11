@@ -269,4 +269,13 @@ class OracleCatalogReaderTest {
         assertThat(composite.isNotTrusted()).isTrue();
         assertThat(composite.fromSchema()).isEqualTo("IFSAPP");
     }
+
+    @Test
+    void topLevelWhereMarksAFilteredView() {
+        assertThat(OracleCatalogReader.hasTopLevelWhere("SELECT a, b FROM x_tab")).isFalse();
+        assertThat(OracleCatalogReader.hasTopLevelWhere("SELECT a FROM x_tab WHERE rowstate = 'Active'")).isTrue();
+        assertThat(OracleCatalogReader.hasTopLevelWhere("SELECT a, (SELECT MAX(d) FROM y WHERE y.k = x.k) m FROM x_tab")).isFalse();
+        assertThat(OracleCatalogReader.hasTopLevelWhere("SELECT nowhere_col FROM x_tab")).isFalse();
+        assertThat(OracleCatalogReader.hasTopLevelWhere(null)).isFalse();
+    }
 }

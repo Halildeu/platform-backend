@@ -64,7 +64,9 @@ public final class IfsReferenceResolver {
      * A view that declares itself as the LU's view in its own comment ({@code LU=Name^…^TABLE=X_TAB^}).
      * {@code base} is true when its TABLE entry is {@code <VIEW>_TAB} — the LU's primary view.
      */
-    public record LuView(String view, boolean base) {}
+    public record LuView(String view, boolean base, boolean filtered) {
+        public LuView(String view, boolean base) { this(view, base, false); }
+    }
 
     /** {@code Lu}, {@code Lu(a,b)}, {@code Lu/NOCHECK}, {@code Lu(a,b)/CUSTOM=(…)}. */
     record Reference(String logicalUnit, List<String> parentColumns, String tail) {}
@@ -94,10 +96,10 @@ public final class IfsReferenceResolver {
     }
 
     /** Where an LU name lands: a view, nothing, or several views none of which is the base. */
-    record Target(String view, boolean viaIndex, boolean ambiguous, List<String> candidates) {
+    record Target(String view, boolean viaIndex, boolean ambiguous, List<LuView> candidates) {
         static final Target NONE = new Target(null, false, false, List.of());
         static Target ambiguousAmong(List<LuView> known) {
-            return new Target(null, true, true, known.stream().map(LuView::view).toList());
+            return new Target(null, true, true, List.copyOf(known));
         }
     }
 
@@ -195,21 +197,31 @@ public final class IfsReferenceResolver {
                     // reference's column shape fits is the target — live, 66 of 278 ambiguous
                     // references have exactly one such candidate (gitops#3651). Several or none:
                     // still ambiguous, not guessed.
+                    // A candidate that is this very view (identity) still fits the key: it is
+                    // counted as a fit so that it cannot make the other candidate look unique
+                    // (Codex 01a08f06 #1); only a sole fit is taken, and a sole identity fit is
+                    // the identity case, not a join. A filtered projection (a top-level WHERE in
+                    // its definition) is never a candidate (#2): live, every one of the 66 sole
+                    // key-shape fits was filtered while 75% of name-rule targets are not — a LOV
+                    // that fits the key is still not the LU's view. Exactly one unfiltered fit
+                    // resolves (live: 8 references), otherwise the reference stays ambiguous.
                     List<Attempt> fits = new ArrayList<>();
-                    for (String candidate : target.candidates()) {
-                        Attempt a = attempt(view, viewColumnNames, column, ref, candidate,
-                            keyColumnsByView.get(candidate), keysByView.get(candidate));
-                        if (a.status() == Status.OK) fits.add(a);
+                    for (LuView candidate : target.candidates()) {
+                        if (candidate.filtered()) continue;   // a LOV over the LU, never the LU's view
+                        Attempt a = attempt(view, viewColumnNames, column, ref, candidate.view(),
+                            keyColumnsByView.get(candidate.view()), keysByView.get(candidate.view()));
+                        if (a.status() == Status.OK || a.status() == Status.IDENTITY) fits.add(a);
                     }
                     if (fits.size() != 1) { ambiguous++; continue; }
                     attempt = fits.getFirst();
+                    if (attempt.status() == Status.IDENTITY) { unresolvedShape++; continue; }
                     byShape = true;
                 } else {
                     if (target.view() == null) { unresolvedTarget++; continue; }
                     attempt = attempt(view, viewColumnNames, column, ref, target.view(),
                         keyColumnsByView.get(target.view()), keysByView.get(target.view()));
                     if (attempt.status() == Status.SOURCE) { unresolvedSource++; continue; }
-                    if (attempt.status() == Status.SHAPE) { unresolvedShape++; continue; }
+                    if (attempt.status() == Status.SHAPE || attempt.status() == Status.IDENTITY) { unresolvedShape++; continue; }
                 }
 
                 ForeignKeyInfo fk = new ForeignKeyInfo(
@@ -229,7 +241,8 @@ public final class IfsReferenceResolver {
             unresolvedTarget, unresolvedShape, unresolvedSource, duplicates, viaIndex, ambiguous, viaShape);
     }
 
-    enum Status { OK, SOURCE, SHAPE }
+    /** {@code IDENTITY}: the key fits but maps every column onto itself — a fit for choosing a target, never a join. */
+    enum Status { OK, IDENTITY, SOURCE, SHAPE }
 
     /** One reference tried against one target view: the pairs in target key order, or why not. */
     record Attempt(Status status, String targetView, List<String> targetKey, List<String> fromOrdered) {
@@ -262,7 +275,7 @@ public final class IfsReferenceResolver {
         // Emit in target key order so the last pair is the target's own key.
         List<String> fromOrdered = new ArrayList<>(toColumns.size());
         for (String t : targetKey) fromOrdered.add(source.get(toColumns.indexOf(t)));
-        if (targetView.equals(view) && fromOrdered.equals(targetKey)) return Attempt.fail(Status.SHAPE); // identity, not a join
+        if (targetView.equals(view) && fromOrdered.equals(targetKey)) return new Attempt(Status.IDENTITY, targetView, targetKey, fromOrdered);
         return new Attempt(Status.OK, targetView, targetKey, fromOrdered);
     }
 
