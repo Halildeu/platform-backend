@@ -4,10 +4,11 @@
 -- escalation level, and a case-independent intent id. Level 1 is the first tier's
 -- signal; levels 2+ are addressed to the second tier (compliance / board). No
 -- subject, narrative, category, receipt, reporter identity or case identifier is
--- rendered. The level is Thymeleaf's escaped inline expression `[[${vars.level}]]`, valid in
--- both the TEXT parts (subject, body_text) and the HTML body; it is spelled below as
--- '[[' || '$' || '{vars.level}]]' because Flyway would otherwise read `${vars.level}` as one
--- of its own placeholders and refuse the migration.
+-- rendered. The level is Thymeleaf's escaped inline expression (double square brackets
+-- around the dollar-brace vars.level reference), valid in both the TEXT parts (subject,
+-- body_text) and the HTML body; it is spelled below as a concatenation
+-- '[[' || '$' || '{vars.level}]]' because Flyway reads a dollar-brace token — even inside
+-- this comment — as one of its own placeholders and refuses the migration.
 
 INSERT INTO notify.notification_template
     (template_id, version, locale, subject, body_html, body_text,
