@@ -40,7 +40,7 @@ public class NotificationOutboxPublisher {
      * counts each level on its own. Level 1 goes to the first tier, higher levels to the
      * second tier — the routing lives in {@link NotificationIntentPayloadFactory}.
      */
-    public static final String CASE_ESCALATED_PREFIX = "CASE_ESCALATED_L";
+    static final String CASE_ESCALATED_PREFIX = "CASE_ESCALATED_L";
 
     private static final Set<String> ALLOWED_EVENTS = allowedEvents();
 
