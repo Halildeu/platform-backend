@@ -20,7 +20,7 @@ public sealed class TeamsMeetingPresenceCoordinator
         var result = await teamsClient.JoinAsync(command, cancellationToken).ConfigureAwait(false);
         return result is null
             ? MeetingPresenceResult.Rejected("teams_join_not_confirmed")
-            : MeetingPresenceResult.Succeeded(result.ConversationId);
+            : MeetingPresenceResult.Succeeded(result.CallId);
     }
 }
 
@@ -34,13 +34,13 @@ public sealed record MeetingPresenceCommand(
     string CalendarEventId,
     string CorrelationId);
 
-public sealed record TeamsJoinReceipt(string ConversationId);
+public sealed record TeamsJoinReceipt(string CallId);
 
-public sealed record MeetingPresenceResult(bool Joined, string? ConversationId, string? FailureCode)
+public sealed record MeetingPresenceResult(bool Joined, string? CallId, string? FailureCode)
 {
     public static MeetingPresenceResult Rejected(string failureCode) => new(false, null, failureCode);
 
-    public static MeetingPresenceResult Succeeded(string conversationId) => new(true, conversationId, null);
+    public static MeetingPresenceResult Succeeded(string callId) => new(true, callId, null);
 }
 
 public interface ITeamsMeetingPresenceClient
