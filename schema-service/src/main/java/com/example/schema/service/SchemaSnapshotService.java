@@ -16,6 +16,7 @@ import com.example.schema.model.UniqueConstraintInfo;
 import com.example.schema.catalog.CatalogReader;
 import com.example.schema.catalog.CatalogSourceRegistry;
 import com.example.schema.service.discovery.RelationshipDiscoveryService;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.annotation.Cacheable;
@@ -23,6 +24,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 @Service
@@ -33,18 +36,64 @@ public class SchemaSnapshotService {
         "((#source == null || #source.isBlank()) ? T(com.example.schema.catalog.CatalogSourceRegistry).PRIMARY_SOURCE_ID"
             + " : #source.trim().toLowerCase(T(java.util.Locale).ROOT)) + '|' + #schema";
 
+    /** Timer per extraction phase of one build, tagged {@code source} + {@code phase} (gitops#3652). */
+    public static final String PHASE_TIMER = "schema.snapshot.phase";
+    /** Timer for the whole build, tagged {@code source} (gitops#3652). */
+    public static final String BUILD_TIMER = "schema.snapshot.build";
+
     private static final Logger log = LoggerFactory.getLogger(SchemaSnapshotService.class);
 
     private final CatalogSourceRegistry sources;
     private final RelationshipDiscoveryService discoveryService;
     private final DomainClusteringService clusteringService;
+    private final MeterRegistry meters;
 
     public SchemaSnapshotService(CatalogSourceRegistry sources,
                                   RelationshipDiscoveryService discoveryService,
-                                  DomainClusteringService clusteringService) {
+                                  DomainClusteringService clusteringService,
+                                  MeterRegistry meters) {
         this.sources = sources;
         this.discoveryService = discoveryService;
         this.clusteringService = clusteringService;
+        this.meters = meters;
+    }
+
+    /**
+     * Times the phases of one build (gitops#3652). Until this existed the only
+     * number a build produced was its total: the 130–300 s Workcube warm-up could
+     * not be attributed to a phase from the logs, and the measured answer (the
+     * storage read alone was 83 s of 130 s) had to be reconstructed from the
+     * timestamps of unrelated count lines. Every phase is recorded whether it
+     * succeeds or throws — the non-fatal try/catch contract of
+     * {@link #buildSnapshot} stays exactly as it was.
+     */
+    private final class PhaseClock {
+        private final String source;
+        private final Map<String, Long> phaseMillis = new LinkedHashMap<>();
+
+        PhaseClock(String source) {
+            this.source = source;
+        }
+
+        <T> T time(String phase, Supplier<T> body) {
+            long started = System.nanoTime();
+            try {
+                return body.get();
+            } finally {
+                long nanos = System.nanoTime() - started;
+                phaseMillis.put(phase, nanos / 1_000_000);
+                meters.timer(PHASE_TIMER, "source", source, "phase", phase)
+                    .record(nanos, TimeUnit.NANOSECONDS);
+            }
+        }
+
+        /** Phases longest first, so the line reads "where did the time go". */
+        String summary() {
+            return phaseMillis.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .map(e -> e.getKey() + "=" + e.getValue() + "ms")
+                .collect(Collectors.joining(" "));
+        }
     }
 
     /**
@@ -71,6 +120,22 @@ public class SchemaSnapshotService {
         CatalogReader extractService = sources.resolve(source);
         log.info("Building schema snapshot for '{}' from source '{}' ({})...",
             schema, extractService.sourceId(), extractService.engine());
+        long startNanos = System.nanoTime();
+        PhaseClock clock = new PhaseClock(extractService.sourceId());
+        try {
+            return build(extractService, schema, clock);
+        } finally {
+            // Recorded whether the build completed or the fatal base extraction
+            // threw (Codex 01a091b4 P3): the build timer is "attempts", not
+            // "successes", and the phase line is what tells a failed attempt apart.
+            meters.timer(BUILD_TIMER, "source", extractService.sourceId())
+                .record(System.nanoTime() - startNanos, TimeUnit.NANOSECONDS);
+            log.info("Snapshot phases for '{}' (source '{}'): {}",
+                schema, extractService.sourceId(), clock.summary());
+        }
+    }
+
+    private SchemaSnapshot build(CatalogReader extractService, String schema, PhaseClock clock) {
         long start = System.currentTimeMillis();
 
         // 1. Extract tables — MANDATORY base extraction. Q3 (Codex 019e335c):
@@ -81,7 +146,7 @@ public class SchemaSnapshotService {
         // inventory reads below stay non-fatal — they degrade in place.
         Map<String, TableInfo> tables;
         try {
-            tables = extractService.extractTables(schema);
+            tables = clock.time("tables", () -> extractService.extractTables(schema));
         } catch (Exception e) {
             log.error("Base table extraction failed for schema '{}' — "
                 + "snapshot cannot be built", schema, e);
@@ -91,7 +156,7 @@ public class SchemaSnapshotService {
         // 2. Extract view definitions for parsing
         Map<String, String> viewDefs = Collections.emptyMap();
         try {
-            viewDefs = extractService.getViewDefinitions(schema);
+            viewDefs = clock.time("views", () -> extractService.getViewDefinitions(schema));
         } catch (Exception e) {
             log.warn("View extraction failed: {}", e.getMessage());
         }
@@ -100,40 +165,43 @@ public class SchemaSnapshotService {
         // 019e2d7d). Non-fatal: snapshot continues with empty inventory.
         List<ForeignKeyInfo> foreignKeys = List.of();
         try {
-            foreignKeys = extractService.extractForeignKeys(schema);
+            foreignKeys = clock.time("foreignKeys", () -> extractService.extractForeignKeys(schema));
         } catch (Exception e) {
             log.warn("Foreign key extraction failed: {}", e.getMessage());
         }
         List<UniqueConstraintInfo> uniqueConstraints = List.of();
         try {
-            uniqueConstraints = extractService.extractUniqueConstraints(schema);
+            uniqueConstraints = clock.time("uniqueConstraints",
+                () -> extractService.extractUniqueConstraints(schema));
         } catch (Exception e) {
             log.warn("Unique constraint extraction failed: {}", e.getMessage());
         }
         // Authoritative check + default constraint inventory (B1-3 — M3).
         List<CheckConstraintInfo> checkConstraints = List.of();
         try {
-            checkConstraints = extractService.extractCheckConstraints(schema);
+            checkConstraints = clock.time("checkConstraints",
+                () -> extractService.extractCheckConstraints(schema));
         } catch (Exception e) {
             log.warn("Check constraint extraction failed: {}", e.getMessage());
         }
         List<DefaultConstraintInfo> defaultConstraints = List.of();
         try {
-            defaultConstraints = extractService.extractDefaultConstraints(schema);
+            defaultConstraints = clock.time("defaultConstraints",
+                () -> extractService.extractDefaultConstraints(schema));
         } catch (Exception e) {
             log.warn("Default constraint extraction failed: {}", e.getMessage());
         }
         // Authoritative physical (rowstore) index inventory (B1-4 — M4).
         List<IndexInfo> indexes = List.of();
         try {
-            indexes = extractService.extractIndexes(schema);
+            indexes = clock.time("indexes", () -> extractService.extractIndexes(schema));
         } catch (Exception e) {
             log.warn("Index extraction failed: {}", e.getMessage());
         }
         // Authoritative object catalog inventory (B1-5 — M1).
         List<ObjectInfo> objects = List.of();
         try {
-            objects = extractService.extractObjects(schema);
+            objects = clock.time("objects", () -> extractService.extractObjects(schema));
         } catch (Exception e) {
             log.warn("Object extraction failed: {}", e.getMessage());
         }
@@ -142,7 +210,7 @@ public class SchemaSnapshotService {
         // the read fails and storage stays empty (source-ready, not live-ready).
         List<StorageInfo> storage = List.of();
         try {
-            storage = extractService.extractStorage(schema);
+            storage = clock.time("storage", () -> extractService.extractStorage(schema));
         } catch (Exception e) {
             log.warn("Storage extraction failed: {}", e.getMessage());
         }
@@ -151,7 +219,7 @@ public class SchemaSnapshotService {
         // yields an empty inventory (degraded, not "no features").
         List<ChangeDataInfo> changeData = List.of();
         try {
-            changeData = extractService.extractChangeData(schema);
+            changeData = clock.time("changeData", () -> extractService.extractChangeData(schema));
         } catch (Exception e) {
             log.warn("Change-data extraction failed: {}", e.getMessage());
         }
@@ -159,25 +227,41 @@ public class SchemaSnapshotService {
         // failed read leaves databaseOptions null (degraded snapshot).
         DatabaseOptionsInfo databaseOptions = null;
         try {
-            databaseOptions = extractService.extractDatabaseOptions();
+            databaseOptions = clock.time("databaseOptions", extractService::extractDatabaseOptions);
         } catch (Exception e) {
             log.warn("Database options extraction failed: {}", e.getMessage());
         }
 
         // 3. Discover relationships (heuristic + authoritative FK compat layer)
-        List<Relationship> relationships = discoveryService.discoverAll(tables, viewDefs, foreignKeys);
+        Map<String, TableInfo> discoveredTables = tables;
+        Map<String, String> discoveredViewDefs = viewDefs;
+        List<ForeignKeyInfo> discoveredForeignKeys = foreignKeys;
+        List<Relationship> relationships = clock.time("relationships",
+            () -> discoveryService.discoverAll(discoveredTables, discoveredViewDefs, discoveredForeignKeys));
 
         // 4. Domain clustering
-        Map<String, List<String>> domains = clusteringService.detectDomains(
-            tables.keySet(), relationships
-        );
+        Map<String, List<String>> domains = clock.time("domains",
+            () -> clusteringService.detectDomains(discoveredTables.keySet(), relationships));
 
-        // 5. Row counts (optional, may fail)
+        // 5. Row counts (optional, may fail). When the reader says its storage
+        // inventory carries the row count (MSSQL: the same sys.partitions
+        // index_id IN (0,1) aggregate getRowCounts would run again) and that
+        // inventory is present, the second pass is skipped (gitops#3652:
+        // measured 4 s of a 130 s Workcube build). Oracle keeps the dedicated
+        // read: its storage row is ALL_TABLES.NUM_ROWS read through getLong(),
+        // where "no statistics" (NULL) comes back as 0 — the separate read
+        // filters NUM_ROWS IS NOT NULL so the snapshot keeps "unknown" as null
+        // (Codex 01a091b4 P2). A failed storage read also falls back.
         Map<String, Long> rowCounts = Collections.emptyMap();
-        try {
-            rowCounts = extractService.getRowCounts(schema);
-        } catch (Exception e) {
-            log.warn("Row count extraction failed: {}", e.getMessage());
+        List<StorageInfo> countedStorage = storage;
+        if (extractService.storageCarriesRowCounts() && !countedStorage.isEmpty()) {
+            rowCounts = clock.time("rowCounts", () -> rowCountsOf(countedStorage));
+        } else {
+            try {
+                rowCounts = clock.time("rowCounts", () -> extractService.getRowCounts(schema));
+            } catch (Exception e) {
+                log.warn("Row count extraction failed: {}", e.getMessage());
+            }
         }
 
         // 6. Enrich tables with row counts
@@ -243,5 +327,14 @@ public class SchemaSnapshotService {
             elapsed, tables.size(), totalCols, relationships.size(), domains.size());
 
         return snapshot;
+    }
+
+    /** Table → base row count, straight from the storage inventory (first row wins on a duplicate name). */
+    static Map<String, Long> rowCountsOf(List<StorageInfo> storage) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (StorageInfo s : storage) {
+            counts.putIfAbsent(s.table(), s.rowCount());
+        }
+        return counts;
     }
 }
