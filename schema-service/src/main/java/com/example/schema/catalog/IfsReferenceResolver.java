@@ -57,7 +57,8 @@ public final class IfsReferenceResolver {
     /** What resolution produced, with the counts a log line and a test want. */
     public record Result(List<ForeignKeyInfo> foreignKeys, int references, int resolved,
                          int unresolvedTarget, int unresolvedKeyShape, int unresolvedSourceColumn,
-                         int duplicates, int resolvedViaLuIndex, int ambiguousTarget) {}
+                         int duplicates, int resolvedViaLuIndex, int ambiguousTarget,
+                         int resolvedViaKeyShape) {}
 
     /**
      * A view that declares itself as the LU's view in its own comment ({@code LU=Name^…^TABLE=X_TAB^}).
@@ -93,9 +94,11 @@ public final class IfsReferenceResolver {
     }
 
     /** Where an LU name lands: a view, nothing, or several views none of which is the base. */
-    record Target(String view, boolean viaIndex, boolean ambiguous) {
-        static final Target NONE = new Target(null, false, false);
-        static final Target AMBIGUOUS = new Target(null, true, true);
+    record Target(String view, boolean viaIndex, boolean ambiguous, List<String> candidates) {
+        static final Target NONE = new Target(null, false, false, List.of());
+        static Target ambiguousAmong(List<LuView> known) {
+            return new Target(null, true, true, known.stream().map(LuView::view).toList());
+        }
     }
 
     /**
@@ -106,15 +109,15 @@ public final class IfsReferenceResolver {
      */
     static Target targetView(String lu, Set<String> views, Map<String, List<LuView>> luIndex) {
         String byName = luToViewName(lu);
-        if (views.contains(byName)) return new Target(byName, false, false);
+        if (views.contains(byName)) return new Target(byName, false, false, List.of());
         List<LuView> candidates = luIndex == null ? List.of() : luIndex.getOrDefault(lu, List.of());
         List<LuView> known = new ArrayList<>();
         for (LuView c : candidates) if (views.contains(c.view())) known.add(c);
-        if (known.size() == 1) return new Target(known.getFirst().view(), true, false);
+        if (known.size() == 1) return new Target(known.getFirst().view(), true, false, List.of());
         List<LuView> base = new ArrayList<>();
         for (LuView c : known) if (c.base()) base.add(c);
-        if (base.size() == 1) return new Target(base.getFirst().view(), true, false);
-        return known.isEmpty() ? Target.NONE : Target.AMBIGUOUS;
+        if (base.size() == 1) return new Target(base.getFirst().view(), true, false, List.of());
+        return known.isEmpty() ? Target.NONE : Target.ambiguousAmong(known);
     }
 
     /** Parses a raw {@code REF=} value; null when it has no recognisable head. */
@@ -171,6 +174,7 @@ public final class IfsReferenceResolver {
         int duplicates = 0;
         int viaIndex = 0;
         int ambiguous = 0;
+        int viaShape = 0;
         for (Map.Entry<String, List<ColumnMeta>> e : viewColumns.entrySet()) {
             String view = e.getKey();
             Set<String> viewColumnNames = new HashSet<>();
@@ -182,57 +186,84 @@ public final class IfsReferenceResolver {
                 references++;
                 Reference ref = parseReference(raw);
                 if (ref == null) { unresolvedShape++; continue; }
-                Target target = targetView(ref.logicalUnit(), views, luIndex);
-                if (target.ambiguous()) { ambiguous++; continue; }
-                if (target.view() == null) { unresolvedTarget++; continue; }
-                String targetView = target.view();
-                List<String> targetKey = keyColumnsByView.get(targetView);
-                if (targetKey.isEmpty()) { unresolvedShape++; continue; }
-
                 String column = col.name().toUpperCase(Locale.ROOT);
-                List<String> source = new ArrayList<>(ref.parentColumns());
-                if (new HashSet<>(source).size() != source.size() || source.contains(column)) { unresolvedSource++; continue; }
-                boolean missing = false;
-                for (String s : source) if (!viewColumnNames.contains(s)) { missing = true; break; }
-                if (missing) { unresolvedSource++; continue; }
-                if (source.isEmpty() && targetKey.size() > 1) {
-                    // Implicit parent part: the other key columns of the target, by name, from this
-                    // view. The referencing column takes the target's own key: itself when it carries
-                    // that name, else the target's single K column; with no or several K columns the
-                    // choice would be a guess (Codex 01a08afc iter-2 #2), so it is counted instead.
-                    String own = ownKey(column, keysByView.get(targetView));
-                    if (own == null) { unresolvedShape++; continue; }
-                    for (String k : targetKey) {
-                        if (k.equals(own)) continue;
-                        if (!viewColumnNames.contains(k)) { missing = true; break; }
-                        source.add(k);
+                Target target = targetView(ref.logicalUnit(), views, luIndex);
+                Attempt attempt;
+                boolean byShape = false;
+                if (target.ambiguous()) {
+                    // Several views declare the LU and none is the base: the one whose key the
+                    // reference's column shape fits is the target — live, 66 of 278 ambiguous
+                    // references have exactly one such candidate (gitops#3651). Several or none:
+                    // still ambiguous, not guessed.
+                    List<Attempt> fits = new ArrayList<>();
+                    for (String candidate : target.candidates()) {
+                        Attempt a = attempt(view, viewColumnNames, column, ref, candidate,
+                            keyColumnsByView.get(candidate), keysByView.get(candidate));
+                        if (a.status() == Status.OK) fits.add(a);
                     }
-                    if (missing) { unresolvedSource++; continue; }
+                    if (fits.size() != 1) { ambiguous++; continue; }
+                    attempt = fits.getFirst();
+                    byShape = true;
+                } else {
+                    if (target.view() == null) { unresolvedTarget++; continue; }
+                    attempt = attempt(view, viewColumnNames, column, ref, target.view(),
+                        keyColumnsByView.get(target.view()), keysByView.get(target.view()));
+                    if (attempt.status() == Status.SOURCE) { unresolvedSource++; continue; }
+                    if (attempt.status() == Status.SHAPE) { unresolvedShape++; continue; }
                 }
-                source.add(column);
-                if (source.size() != targetKey.size()) { unresolvedShape++; continue; }
-
-                List<String> toColumns = pair(source, targetKey);
-                if (toColumns == null) { unresolvedShape++; continue; }
-                // Emit in target key order so the last pair is the target's own key.
-                List<String> fromOrdered = new ArrayList<>(toColumns.size());
-                for (String t : targetKey) fromOrdered.add(source.get(toColumns.indexOf(t)));
-                if (targetView.equals(view) && fromOrdered.equals(targetKey)) { unresolvedShape++; continue; } // identity, not a join
 
                 ForeignKeyInfo fk = new ForeignKeyInfo(
                     "IFS_REF_" + view + "." + column,
-                    owner, view, List.copyOf(fromOrdered),
-                    owner, targetView, List.copyOf(targetKey),
+                    owner, view, List.copyOf(attempt.fromOrdered()),
+                    owner, attempt.targetView(), List.copyOf(attempt.targetKey()),
                     false,
                     true,           // not enforced as a constraint the account can see
                     "NO ACTION", "NO ACTION");
-                String identity = view + "|" + fromOrdered + "|" + targetView + "|" + targetKey;
+                String identity = view + "|" + attempt.fromOrdered() + "|" + attempt.targetView() + "|" + attempt.targetKey();
                 if (byIdentity.putIfAbsent(identity, fk) != null) duplicates++;
+                else if (byShape) viaShape++;
                 else if (target.viaIndex()) viaIndex++;   // keys the LU= index produced, not merely targets it named
             }
         }
         return new Result(List.copyOf(byIdentity.values()), references, byIdentity.size(),
-            unresolvedTarget, unresolvedShape, unresolvedSource, duplicates, viaIndex, ambiguous);
+            unresolvedTarget, unresolvedShape, unresolvedSource, duplicates, viaIndex, ambiguous, viaShape);
+    }
+
+    enum Status { OK, SOURCE, SHAPE }
+
+    /** One reference tried against one target view: the pairs in target key order, or why not. */
+    record Attempt(Status status, String targetView, List<String> targetKey, List<String> fromOrdered) {
+        static Attempt fail(Status status) { return new Attempt(status, null, List.of(), List.of()); }
+    }
+
+    static Attempt attempt(String view, Set<String> viewColumnNames, String column, Reference ref,
+                           String targetView, List<String> targetKey, List<KeyColumn> targetKeys) {
+        if (targetKey == null || targetKey.isEmpty()) return Attempt.fail(Status.SHAPE);
+        List<String> source = new ArrayList<>(ref.parentColumns());
+        if (new HashSet<>(source).size() != source.size() || source.contains(column)) return Attempt.fail(Status.SOURCE);
+        for (String s : source) if (!viewColumnNames.contains(s)) return Attempt.fail(Status.SOURCE);
+        if (source.isEmpty() && targetKey.size() > 1) {
+            // Implicit parent part: the other key columns of the target, by name, from this
+            // view. The referencing column takes the target's own key: itself when it carries
+            // that name, else the target's single K column; with no or several K columns the
+            // choice would be a guess (Codex 01a08afc iter-2 #2), so it is counted instead.
+            String own = ownKey(column, targetKeys);
+            if (own == null) return Attempt.fail(Status.SHAPE);
+            for (String k : targetKey) {
+                if (k.equals(own)) continue;
+                if (!viewColumnNames.contains(k)) return Attempt.fail(Status.SOURCE);
+                source.add(k);
+            }
+        }
+        source.add(column);
+        if (source.size() != targetKey.size()) return Attempt.fail(Status.SHAPE);
+        List<String> toColumns = pair(source, targetKey);
+        if (toColumns == null) return Attempt.fail(Status.SHAPE);
+        // Emit in target key order so the last pair is the target's own key.
+        List<String> fromOrdered = new ArrayList<>(toColumns.size());
+        for (String t : targetKey) fromOrdered.add(source.get(toColumns.indexOf(t)));
+        if (targetView.equals(view) && fromOrdered.equals(targetKey)) return Attempt.fail(Status.SHAPE); // identity, not a join
+        return new Attempt(Status.OK, targetView, targetKey, fromOrdered);
     }
 
     /**

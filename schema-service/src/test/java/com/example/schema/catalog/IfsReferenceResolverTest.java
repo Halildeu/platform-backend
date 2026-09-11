@@ -131,9 +131,9 @@ class IfsReferenceResolverTest {
         index.put("Resource", List.of(new IfsReferenceResolver.LuView("A_LOV", false), new IfsReferenceResolver.LuView("B_LOV", false)));
         index.put("Ghost", List.of(new IfsReferenceResolver.LuView("INVISIBLE_VIEW", true)));
 
-        assertThat(IfsReferenceResolver.targetView("Company", views, index)).isEqualTo(new IfsReferenceResolver.Target("COMPANY", false, false));
-        assertThat(IfsReferenceResolver.targetView("DeliveryNote", views, index)).isEqualTo(new IfsReferenceResolver.Target("DELIVERY_NOTE_JOIN", true, false));
-        assertThat(IfsReferenceResolver.targetView("EngPartMaster", views, index)).isEqualTo(new IfsReferenceResolver.Target("ENG_PART_MASTER_MAIN", true, false));
+        assertThat(IfsReferenceResolver.targetView("Company", views, index)).isEqualTo(new IfsReferenceResolver.Target("COMPANY", false, false, List.of()));
+        assertThat(IfsReferenceResolver.targetView("DeliveryNote", views, index)).isEqualTo(new IfsReferenceResolver.Target("DELIVERY_NOTE_JOIN", true, false, List.of()));
+        assertThat(IfsReferenceResolver.targetView("EngPartMaster", views, index)).isEqualTo(new IfsReferenceResolver.Target("ENG_PART_MASTER_MAIN", true, false, List.of()));
         assertThat(IfsReferenceResolver.targetView("Resource", views, index).ambiguous()).isTrue();
         assertThat(IfsReferenceResolver.targetView("Ghost", views, index)).isEqualTo(IfsReferenceResolver.Target.NONE);
         assertThat(IfsReferenceResolver.targetView("ACCOUNTING_YEAR", Set.of("ACCOUNTING_YEAR"), null).view()).isEqualTo("ACCOUNTING_YEAR");
@@ -365,5 +365,42 @@ class IfsReferenceResolverTest {
         assertThat(names).doesNotHaveDuplicates();
         assertThat(result.duplicates()).isZero();
         assertThat(result.unresolvedKeyShape()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("belirsiz adaylar anahtar şekline göre süzülür: tam bir aday uyarsa çözülür, birden fazla/hiçbiri uyarsa belirsiz kalır (gitops#3651)")
+    void ambiguousCandidatesAreDisambiguatedByKeyShape() {
+        Map<String, List<ColumnMeta>> views = new LinkedHashMap<>();
+        // Live: EngPartMaster declared by three views; only MAIN carries a single PART_NO key.
+        views.put("ENG_PART_MASTER_ALTERNATIVE", List.of(col("PART_NO", 1, "FLAGS=AMIUL^")));           // no key at all
+        views.put("ENG_PART_MASTER_ALT_LOV", List.of(col("PART_NO", 1, "FLAGS=PMI--^"), col("ALT_NO", 2, "FLAGS=KMI-L^")));
+        views.put("ENG_PART_MASTER_MAIN", List.of(col("PART_NO", 1, "FLAGS=KMI-L^")));
+        // Live: Resource declared by many keyed views with the same single key — still ambiguous.
+        views.put("RESOURCE_LOV", List.of(col("RESOURCE_SEQ", 1, "FLAGS=KMI-L^")));
+        views.put("RESOURCE_PUB", List.of(col("RESOURCE_SEQ", 1, "FLAGS=KMI-L^")));
+        views.put("PROJECT_SPARE", List.of(
+            col("SPARE_PART_NO", 1, "FLAGS=A-IU-^REF=EngPartMaster^"),
+            col("RESOURCE_SEQ", 2, "FLAGS=A-IU-^REF=Resource^"),
+            col("CASH_ID", 3, "FLAGS=A-IU-^REF=CashAccountCustomer(company,identity)^")));   // no candidate fits
+        views.put("CASH_ACCOUNT_CUSTOMER_LOV", List.of(col("X", 1, "FLAGS=KMI-L^")));
+        views.put("CASH_ACCOUNT_CUSTOMER_DIST_LOV", List.of(col("Y", 1, "FLAGS=KMI-L^")));
+        Map<String, List<IfsReferenceResolver.LuView>> index = new LinkedHashMap<>();
+        index.put("EngPartMaster", List.of(
+            new IfsReferenceResolver.LuView("ENG_PART_MASTER_ALTERNATIVE", false),
+            new IfsReferenceResolver.LuView("ENG_PART_MASTER_ALT_LOV", false),
+            new IfsReferenceResolver.LuView("ENG_PART_MASTER_MAIN", false)));
+        index.put("Resource", List.of(
+            new IfsReferenceResolver.LuView("RESOURCE_LOV", false), new IfsReferenceResolver.LuView("RESOURCE_PUB", false)));
+        index.put("CashAccountCustomer", List.of(
+            new IfsReferenceResolver.LuView("CASH_ACCOUNT_CUSTOMER_LOV", false), new IfsReferenceResolver.LuView("CASH_ACCOUNT_CUSTOMER_DIST_LOV", false)));
+
+        var result = IfsReferenceResolver.resolve("IFSAPP", views, index);
+
+        var byName = byName(result);
+        assertThat(byName).containsOnlyKeys("IFS_REF_PROJECT_SPARE.SPARE_PART_NO");
+        assertThat(byName.get("IFS_REF_PROJECT_SPARE.SPARE_PART_NO").toTable()).isEqualTo("ENG_PART_MASTER_MAIN");
+        assertThat(result.resolvedViaKeyShape()).isEqualTo(1);
+        assertThat(result.resolvedViaLuIndex()).isZero();
+        assertThat(result.ambiguousTarget()).as("Resource (two fit), CashAccountCustomer (none fit)").isEqualTo(2);
     }
 }

@@ -425,9 +425,9 @@ public class OracleCatalogReader implements CatalogReader {
         for (ForeignKeyInfo fk : refs.foreignKeys()) {
             if (byIdentity.putIfAbsent(identityOf(fk), fk) != null) shadowed++;
         }
-        log.info("[{}] Oracle: IFS REF= references {} -> {} keys ({} via LU index; {} target not a view, {} target ambiguous,"
+        log.info("[{}] Oracle: IFS REF= references {} -> {} keys ({} via LU index, {} via key shape; {} target not a view, {} target ambiguous,"
                 + " {} key shape unresolved, {} source column missing, {} duplicate, {} already declared) for owner '{}'",
-            sourceId, refs.references(), refs.resolved(), refs.resolvedViaLuIndex(), refs.unresolvedTarget(), refs.ambiguousTarget(),
+            sourceId, refs.references(), refs.resolved(), refs.resolvedViaLuIndex(), refs.resolvedViaKeyShape(), refs.unresolvedTarget(), refs.ambiguousTarget(),
             refs.unresolvedKeyShape(), refs.unresolvedSourceColumn(), refs.duplicates(), shadowed, owner);
         return List.copyOf(byIdentity.values());
     }
