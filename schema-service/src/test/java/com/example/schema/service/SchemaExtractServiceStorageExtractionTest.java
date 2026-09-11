@@ -180,4 +180,39 @@ class SchemaExtractServiceStorageExtractionTest {
                 .contains("au.type = 2")
                 .contains("au.type = 3");
     }
+
+    /**
+     * gitops#3652: the partition and allocation-unit aggregates must be scoped
+     * to the requested schema INSIDE the CTEs. The earlier shape aggregated the
+     * whole database (canonical schema + 300-odd tenant / year schemas) and
+     * discarded everything but the requested schema afterwards — measured
+     * 83.5 s of a 130 s warm-up. Every scan of {@code sys.partitions} has to
+     * join the schema-scoped table set, and no scan may be left unscoped.
+     */
+    @Test
+    void extractStorage_sqlScopesEveryPartitionScanToTheSchema() throws SQLException {
+        extract(new Row());
+
+        // whitespace-normalised: the text block's indentation is not the contract
+        String sql = capturedSql.replaceAll("\\s+", " ");
+        String scopedScan = "FROM sys.partitions p JOIN schema_tables st ON st.object_id = p.object_id";
+        int scans = countOf(sql, "FROM sys.partitions");
+        int scopedScans = countOf(sql, scopedScan);
+        assertThat(scans).as("sys.partitions scans").isGreaterThanOrEqualTo(3);
+        assertThat(scopedScans).as("schema-scoped sys.partitions scans").isEqualTo(scans);
+        assertThat(capturedSql)
+                .contains("WHERE sch.name = :schema")
+                // the allocation-unit join is two equality joins, not a CASE predicate
+                .contains("au.container_id = p.hobt_id AND au.type IN (1, 3)")
+                .contains("au.container_id = p.partition_id AND au.type = 2")
+                .doesNotContain("CASE WHEN au.type IN (1, 3)");
+    }
+
+    private static int countOf(String haystack, String needle) {
+        int count = 0;
+        for (int i = haystack.indexOf(needle); i >= 0; i = haystack.indexOf(needle, i + needle.length())) {
+            count++;
+        }
+        return count;
+    }
 }

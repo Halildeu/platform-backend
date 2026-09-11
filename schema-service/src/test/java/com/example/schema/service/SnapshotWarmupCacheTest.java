@@ -46,7 +46,8 @@ class SnapshotWarmupCacheTest {
         volatile boolean failNext;
 
         CountingSnapshotService(CatalogSourceRegistry sources) {
-            super(sources, mock(RelationshipDiscoveryService.class), mock(DomainClusteringService.class));
+            super(sources, mock(RelationshipDiscoveryService.class), mock(DomainClusteringService.class),
+                    new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         }
 
         @Override

@@ -4,13 +4,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.schema.exception.SnapshotUnavailableException;
 import com.example.schema.catalog.CatalogSourceRegistry;
 import com.example.schema.model.ObjectInfo;
 import com.example.schema.model.SchemaSnapshot;
+import com.example.schema.model.StorageInfo;
+import com.example.schema.model.TableInfo;
 import com.example.schema.service.discovery.RelationshipDiscoveryService;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -35,8 +41,89 @@ class SchemaSnapshotServiceTest {
     // (gitops#3594). A registry holding only the MSSQL reader reproduces the
     // single-source topology these tests were written against.
     private final CatalogSourceRegistry sources = registryOf(extract);
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
     private final SchemaSnapshotService service =
-            new SchemaSnapshotService(sources, discovery, clustering);
+            new SchemaSnapshotService(sources, discovery, clustering, meters);
+
+    private static StorageInfo storageRow(String table, long rowCount) {
+        return new StorageInfo(table, "workcube_mikrolink", rowCount, 800, 700, 400, 200, 80, 20);
+    }
+
+    private Timer phaseTimer(String phase) {
+        return meters.find(SchemaSnapshotService.PHASE_TIMER)
+                .tag("source", CatalogSourceRegistry.PRIMARY_SOURCE_ID)
+                .tag("phase", phase)
+                .timer();
+    }
+
+    // --- gitops#3652: row counts ride on the storage inventory; the dedicated
+    //     sys.partitions pass runs only when storage is absent ---
+
+    @Test
+    void rowCountsComeFromStorageWhenStorageIsPresent() {
+        var invoice = new TableInfo("INVOICE", "workcube_mikrolink", List.of());
+        var empty = new TableInfo("EMPTY_TABLE", "workcube_mikrolink", List.of());
+        when(extract.extractTables(anyString())).thenReturn(Map.of(invoice.name(), invoice, empty.name(), empty));
+        when(extract.extractStorage(anyString()))
+                .thenReturn(List.of(storageRow("INVOICE", 1_234L), storageRow("EMPTY_TABLE", 0L)));
+
+        SchemaSnapshot snap = service.buildSnapshot(null, "workcube_mikrolink");
+
+        assertThat(snap.tables().get("INVOICE").rowCount()).isEqualTo(1_234L);
+        assertThat(snap.tables().get("EMPTY_TABLE").rowCount()).isZero();
+        verify(extract, never()).getRowCounts(anyString());
+    }
+
+    @Test
+    void rowCountsFallBackToTheDedicatedReadWhenStorageIsEmpty() {
+        // Oracle has no storage inventory, and a failed MSSQL storage read
+        // degrades to an empty one: the row counts must still arrive.
+        var invoice = new TableInfo("INVOICE", "workcube_mikrolink", List.of());
+        when(extract.extractTables(anyString())).thenReturn(Map.of(invoice.name(), invoice));
+        when(extract.extractStorage(anyString())).thenThrow(new RuntimeException("storage read timed out"));
+        when(extract.getRowCounts(anyString())).thenReturn(Map.of("INVOICE", 77L));
+
+        SchemaSnapshot snap = service.buildSnapshot(null, "workcube_mikrolink");
+
+        assertThat(snap.tables().get("INVOICE").rowCount()).isEqualTo(77L);
+        assertThat(snap.storage()).isEmpty();
+    }
+
+    @Test
+    void rowCountsOf_firstRowWinsOnADuplicateTableName() {
+        assertThat(SchemaSnapshotService.rowCountsOf(
+                List.of(storageRow("A", 1L), storageRow("A", 2L), storageRow("B", 3L))))
+                .containsExactly(Map.entry("A", 1L), Map.entry("B", 3L));
+    }
+
+    // --- gitops#3652: every phase of a build is timed, success or failure ---
+
+    @Test
+    void everyPhaseIsTimedAndTheBuildTimerRecordsOnce() {
+        service.buildSnapshot(null, "workcube_mikrolink");
+
+        for (String phase : List.of("tables", "views", "foreignKeys", "uniqueConstraints",
+                "checkConstraints", "defaultConstraints", "indexes", "objects", "storage",
+                "changeData", "databaseOptions", "relationships", "domains", "rowCounts")) {
+            assertThat(phaseTimer(phase)).as("phase timer " + phase).isNotNull();
+            assertThat(phaseTimer(phase).count()).as("phase timer " + phase).isEqualTo(1);
+        }
+        Timer build = meters.find(SchemaSnapshotService.BUILD_TIMER)
+                .tag("source", CatalogSourceRegistry.PRIMARY_SOURCE_ID).timer();
+        assertThat(build).isNotNull();
+        assertThat(build.count()).isEqualTo(1);
+    }
+
+    @Test
+    void aFailingPhaseIsStillTimed() {
+        when(extract.extractStorage(anyString()))
+                .thenThrow(new RuntimeException("VIEW DATABASE STATE denied"));
+
+        service.buildSnapshot(null, "workcube_mikrolink");
+
+        assertThat(phaseTimer("storage")).isNotNull();
+        assertThat(phaseTimer("storage").count()).isEqualTo(1);
+    }
 
     private static CatalogSourceRegistry registryOf(SchemaExtractService reader) {
         when(reader.sourceId()).thenReturn(CatalogSourceRegistry.PRIMARY_SOURCE_ID);

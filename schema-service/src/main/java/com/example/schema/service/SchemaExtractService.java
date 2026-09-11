@@ -761,44 +761,67 @@ public class SchemaExtractService implements CatalogReader {
      * ({@code type=2}) and {@code rowOverflowKb} ({@code type=3}) stay distinct.
      * {@code indexKb} is the clamped remainder
      * {@code max(0, usedKb - dataKb - lobKb - rowOverflowKb)}.
+     *
+     * <p>gitops#3652: both aggregates are scoped to the requested schema
+     * <em>inside</em> the CTEs. The earlier shape aggregated every partition and
+     * allocation unit of the whole database — on Workcube that is the canonical
+     * schema plus 300-odd tenant / year schemas — and only then discarded all but
+     * the requested schema in the outer {@code WHERE}: measured 83.5 s of a
+     * 130 s warm-up on k3d-test (2026-09-10). The allocation-unit join is also
+     * written as two equality joins ({@code hobt_id} for in-row / row-overflow,
+     * {@code partition_id} for LOB) instead of one {@code CASE} join predicate
+     * the optimiser cannot seek on.
      */
     @Cacheable(value = "storage", key = "#schema")
     public List<StorageInfo> extractStorage(String schema) {
         String targetSchema = schema != null ? schema : defaultSchema;
         String sql = """
-            WITH part_rows AS (
-                SELECT object_id,
-                       SUM(CASE WHEN index_id IN (0, 1) THEN rows ELSE 0 END) AS row_count
-                FROM sys.partitions
-                GROUP BY object_id
+            WITH schema_tables AS (
+                SELECT t.object_id, t.name AS table_name, sch.name AS schema_name
+                FROM sys.tables t
+                JOIN sys.schemas sch ON sch.schema_id = t.schema_id
+                WHERE sch.name = :schema
+            ),
+            part_rows AS (
+                SELECT p.object_id,
+                       SUM(CASE WHEN p.index_id IN (0, 1) THEN p.rows ELSE 0 END) AS row_count
+                FROM sys.partitions p
+                JOIN schema_tables st ON st.object_id = p.object_id
+                GROUP BY p.object_id
+            ),
+            au_rows AS (
+                SELECT p.object_id, p.index_id, au.type, au.total_pages, au.used_pages, au.data_pages
+                FROM sys.partitions p
+                JOIN schema_tables st ON st.object_id = p.object_id
+                JOIN sys.allocation_units au ON au.container_id = p.hobt_id AND au.type IN (1, 3)
+                UNION ALL
+                SELECT p.object_id, p.index_id, au.type, au.total_pages, au.used_pages, au.data_pages
+                FROM sys.partitions p
+                JOIN schema_tables st ON st.object_id = p.object_id
+                JOIN sys.allocation_units au ON au.container_id = p.partition_id AND au.type = 2
             ),
             au_size AS (
-                SELECT p.object_id,
+                SELECT au.object_id,
                        SUM(au.total_pages) AS reserved_pages,
                        SUM(au.used_pages)  AS used_pages,
-                       SUM(CASE WHEN au.type = 1 AND p.index_id IN (0, 1)
+                       SUM(CASE WHEN au.type = 1 AND au.index_id IN (0, 1)
                                 THEN au.data_pages ELSE 0 END) AS data_pages,
                        SUM(CASE WHEN au.type = 2 THEN au.used_pages ELSE 0 END) AS lob_pages,
                        SUM(CASE WHEN au.type = 3 THEN au.used_pages ELSE 0 END) AS row_overflow_pages
-                FROM sys.partitions p
-                LEFT JOIN sys.allocation_units au
-                    ON au.container_id = CASE WHEN au.type IN (1, 3)
-                                              THEN p.hobt_id ELSE p.partition_id END
-                GROUP BY p.object_id
+                FROM au_rows au
+                GROUP BY au.object_id
             )
-            SELECT t.name AS table_name, sch.name AS schema_name,
+            SELECT st.table_name, st.schema_name,
                    COALESCE(pr.row_count, 0)              AS row_count,
                    COALESCE(az.reserved_pages, 0) * 8     AS reserved_kb,
                    COALESCE(az.used_pages, 0) * 8         AS used_kb,
                    COALESCE(az.data_pages, 0) * 8         AS data_kb,
                    COALESCE(az.lob_pages, 0) * 8          AS lob_kb,
                    COALESCE(az.row_overflow_pages, 0) * 8 AS row_overflow_kb
-            FROM sys.tables t
-            JOIN sys.schemas sch ON sch.schema_id = t.schema_id
-            LEFT JOIN part_rows pr ON pr.object_id = t.object_id
-            LEFT JOIN au_size az ON az.object_id = t.object_id
-            WHERE sch.name = :schema
-            ORDER BY t.name
+            FROM schema_tables st
+            LEFT JOIN part_rows pr ON pr.object_id = st.object_id
+            LEFT JOIN au_size az ON az.object_id = st.object_id
+            ORDER BY st.table_name
             """;
 
         List<StorageInfo> result = new ArrayList<>();
