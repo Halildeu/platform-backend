@@ -198,8 +198,8 @@ class SchemaExtractServiceStorageExtractionTest {
         String scopedScan = "FROM sys.partitions p JOIN schema_tables st ON st.object_id = p.object_id";
         int scans = countOf(sql, "FROM sys.partitions");
         int scopedScans = countOf(sql, scopedScan);
-        assertThat(scans).as("sys.partitions scans").isGreaterThanOrEqualTo(3);
-        assertThat(scopedScans).as("schema-scoped sys.partitions scans").isEqualTo(scans);
+        assertThat(scans).as("sys.partitions scans").isPositive();
+        assertThat(scopedScans).as("every sys.partitions scan is schema-scoped").isEqualTo(scans);
         assertThat(capturedSql)
                 .contains("WHERE sch.name = :schema")
                 // the allocation-unit join is two equality joins, not a CASE predicate

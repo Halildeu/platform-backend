@@ -772,6 +772,16 @@ public class SchemaExtractService implements CatalogReader {
      * {@code partition_id} for LOB) instead of one {@code CASE} join predicate
      * the optimiser cannot seek on.
      */
+    /**
+     * {@code part_rows} in {@link #extractStorage} is the exact aggregate
+     * {@link #getRowCounts} runs ({@code sys.partitions}, {@code index_id IN
+     * (0, 1)}, summed per table), so the builder may take the count from there.
+     */
+    @Override
+    public boolean storageCarriesRowCounts() {
+        return true;
+    }
+
     @Cacheable(value = "storage", key = "#schema")
     public List<StorageInfo> extractStorage(String schema) {
         String targetSchema = schema != null ? schema : defaultSchema;

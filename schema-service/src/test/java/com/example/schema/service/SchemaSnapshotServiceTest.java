@@ -60,9 +60,10 @@ class SchemaSnapshotServiceTest {
     //     sys.partitions pass runs only when storage is absent ---
 
     @Test
-    void rowCountsComeFromStorageWhenStorageIsPresent() {
+    void rowCountsComeFromStorageWhenTheReaderVouchesForThemAndStorageIsPresent() {
         var invoice = new TableInfo("INVOICE", "workcube_mikrolink", List.of());
         var empty = new TableInfo("EMPTY_TABLE", "workcube_mikrolink", List.of());
+        when(extract.storageCarriesRowCounts()).thenReturn(true);
         when(extract.extractTables(anyString())).thenReturn(Map.of(invoice.name(), invoice, empty.name(), empty));
         when(extract.extractStorage(anyString()))
                 .thenReturn(List.of(storageRow("INVOICE", 1_234L), storageRow("EMPTY_TABLE", 0L)));
@@ -75,10 +76,11 @@ class SchemaSnapshotServiceTest {
     }
 
     @Test
-    void rowCountsFallBackToTheDedicatedReadWhenStorageIsEmpty() {
-        // Oracle has no storage inventory, and a failed MSSQL storage read
-        // degrades to an empty one: the row counts must still arrive.
+    void rowCountsFallBackToTheDedicatedReadWhenTheStorageReadFails() {
+        // A failed MSSQL storage read degrades to an empty inventory: the row
+        // counts must still arrive through the dedicated read.
         var invoice = new TableInfo("INVOICE", "workcube_mikrolink", List.of());
+        when(extract.storageCarriesRowCounts()).thenReturn(true);
         when(extract.extractTables(anyString())).thenReturn(Map.of(invoice.name(), invoice));
         when(extract.extractStorage(anyString())).thenThrow(new RuntimeException("storage read timed out"));
         when(extract.getRowCounts(anyString())).thenReturn(Map.of("INVOICE", 77L));
@@ -87,6 +89,51 @@ class SchemaSnapshotServiceTest {
 
         assertThat(snap.tables().get("INVOICE").rowCount()).isEqualTo(77L);
         assertThat(snap.storage()).isEmpty();
+    }
+
+    /**
+     * Codex 01a091b4 P2: Oracle DOES produce a storage inventory (ALL_TABLES),
+     * and its rowCount is NUM_ROWS through getLong() — an unanalysed table's
+     * NULL reads as 0. Its dedicated read filters NUM_ROWS IS NOT NULL, so the
+     * snapshot said "unknown" (null) for that table. A reader that does not
+     * vouch for its storage row counts must keep that behaviour even when the
+     * storage inventory is present.
+     */
+    @Test
+    void aReaderThatDoesNotVouchForStorageRowCountsKeepsTheDedicatedReadAndItsNulls() {
+        var analysed = new TableInfo("CUSTOMER_ORDER_TAB", "IFSAPP", List.of());
+        var unanalysed = new TableInfo("UNANALYZED_TABLE", "IFSAPP", List.of());
+        when(extract.storageCarriesRowCounts()).thenReturn(false);
+        when(extract.extractTables(anyString()))
+                .thenReturn(Map.of(analysed.name(), analysed, unanalysed.name(), unanalysed));
+        when(extract.extractStorage(anyString())).thenReturn(List.of(
+                new StorageInfo("CUSTOMER_ORDER_TAB", "IFSAPP", 500L, 0, 0, 0, 0, 0, 0),
+                new StorageInfo("UNANALYZED_TABLE", "IFSAPP", 0L, 0, 0, 0, 0, 0, 0)));
+        when(extract.getRowCounts(anyString())).thenReturn(Map.of("CUSTOMER_ORDER_TAB", 500L));
+
+        SchemaSnapshot snap = service.buildSnapshot(null, "IFSAPP");
+
+        verify(extract).getRowCounts("IFSAPP");
+        assertThat(snap.tables().get("CUSTOMER_ORDER_TAB").rowCount()).isEqualTo(500L);
+        assertThat(snap.tables().get("UNANALYZED_TABLE").rowCount())
+                .as("no statistics stays unknown, not zero").isNull();
+        assertThat(snap.storage()).hasSize(2);
+    }
+
+    @Test
+    void theBuildTimerAndPhaseLineCoverAFailedAttemptToo() {
+        // Codex 01a091b4 P3: a fatal base extraction still records the attempt.
+        when(extract.extractTables(anyString())).thenThrow(new RuntimeException("base extraction down"));
+
+        assertThatThrownBy(() -> service.buildSnapshot(null, "workcube_mikrolink"))
+                .isInstanceOf(SnapshotUnavailableException.class);
+
+        Timer build = meters.find(SchemaSnapshotService.BUILD_TIMER)
+                .tag("source", CatalogSourceRegistry.PRIMARY_SOURCE_ID).timer();
+        assertThat(build).isNotNull();
+        assertThat(build.count()).isEqualTo(1);
+        assertThat(phaseTimer("tables").count()).isEqualTo(1);
+        assertThat(phaseTimer("storage")).as("phases after the fatal one never ran").isNull();
     }
 
     @Test

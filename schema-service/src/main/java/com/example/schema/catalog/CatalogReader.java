@@ -85,6 +85,18 @@ public interface CatalogReader {
     /** Per-table storage footprint. */
     List<StorageInfo> extractStorage(String schema);
 
+    /**
+     * Whether {@link StorageInfo#rowCount()} is the same number
+     * {@link #getRowCounts} would return, so the snapshot builder may skip the
+     * dedicated row-count read when the storage inventory is present
+     * (gitops#3652). Default {@code false}: an engine whose storage row count is
+     * an estimate or loses "unknown" (Oracle's {@code NUM_ROWS} is {@code NULL}
+     * for an unanalysed table and reads as 0) must keep the dedicated read.
+     */
+    default boolean storageCarriesRowCounts() {
+        return false;
+    }
+
     /** Change-tracking / CDC / temporal features. Engine-specific; may be empty. */
     List<ChangeDataInfo> extractChangeData(String schema);
 

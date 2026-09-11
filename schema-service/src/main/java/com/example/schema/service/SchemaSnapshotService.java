@@ -120,9 +120,23 @@ public class SchemaSnapshotService {
         CatalogReader extractService = sources.resolve(source);
         log.info("Building schema snapshot for '{}' from source '{}' ({})...",
             schema, extractService.sourceId(), extractService.engine());
-        long start = System.currentTimeMillis();
         long startNanos = System.nanoTime();
         PhaseClock clock = new PhaseClock(extractService.sourceId());
+        try {
+            return build(extractService, schema, clock);
+        } finally {
+            // Recorded whether the build completed or the fatal base extraction
+            // threw (Codex 01a091b4 P3): the build timer is "attempts", not
+            // "successes", and the phase line is what tells a failed attempt apart.
+            meters.timer(BUILD_TIMER, "source", extractService.sourceId())
+                .record(System.nanoTime() - startNanos, TimeUnit.NANOSECONDS);
+            log.info("Snapshot phases for '{}' (source '{}'): {}",
+                schema, extractService.sourceId(), clock.summary());
+        }
+    }
+
+    private SchemaSnapshot build(CatalogReader extractService, String schema, PhaseClock clock) {
+        long start = System.currentTimeMillis();
 
         // 1. Extract tables — MANDATORY base extraction. Q3 (Codex 019e335c):
         // after P1, extractTables = extractBaseTables (fatal) + enrichTables
@@ -229,15 +243,18 @@ public class SchemaSnapshotService {
         Map<String, List<String>> domains = clock.time("domains",
             () -> clusteringService.detectDomains(discoveredTables.keySet(), relationships));
 
-        // 5. Row counts (optional, may fail). When the storage inventory is
-        // present it already carries every table's base heap / clustered-index
-        // row count — the same sys.partitions aggregate getRowCounts would run
-        // again — so the second pass is skipped (gitops#3652: measured 4 s of a
-        // 130 s Workcube build). An engine without a storage inventory (Oracle)
-        // or a failed storage read still takes the dedicated row-count read.
+        // 5. Row counts (optional, may fail). When the reader says its storage
+        // inventory carries the row count (MSSQL: the same sys.partitions
+        // index_id IN (0,1) aggregate getRowCounts would run again) and that
+        // inventory is present, the second pass is skipped (gitops#3652:
+        // measured 4 s of a 130 s Workcube build). Oracle keeps the dedicated
+        // read: its storage row is ALL_TABLES.NUM_ROWS read through getLong(),
+        // where "no statistics" (NULL) comes back as 0 — the separate read
+        // filters NUM_ROWS IS NOT NULL so the snapshot keeps "unknown" as null
+        // (Codex 01a091b4 P2). A failed storage read also falls back.
         Map<String, Long> rowCounts = Collections.emptyMap();
         List<StorageInfo> countedStorage = storage;
-        if (!countedStorage.isEmpty()) {
+        if (extractService.storageCarriesRowCounts() && !countedStorage.isEmpty()) {
             rowCounts = clock.time("rowCounts", () -> rowCountsOf(countedStorage));
         } else {
             try {
@@ -306,12 +323,8 @@ public class SchemaSnapshotService {
             .build();
 
         long elapsed = System.currentTimeMillis() - start;
-        meters.timer(BUILD_TIMER, "source", extractService.sourceId())
-            .record(System.nanoTime() - startNanos, TimeUnit.NANOSECONDS);
         log.info("Snapshot built in {}ms: {} tables, {} columns, {} relationships, {} domains",
             elapsed, tables.size(), totalCols, relationships.size(), domains.size());
-        log.info("Snapshot phases for '{}' (source '{}'): {}",
-            schema, extractService.sourceId(), clock.summary());
 
         return snapshot;
     }
