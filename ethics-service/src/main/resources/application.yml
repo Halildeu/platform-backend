@@ -109,6 +109,10 @@ ethics:
     token-audience: ${ETHICS_NOTIFICATION_TOKEN_AUDIENCE:notification-orchestrator}
     token-permissions: ${ETHICS_NOTIFICATION_TOKEN_PERMISSIONS:notify:intents:system}
     recipient-subscriber-id: ${ETHICS_NOTIFICATION_RECIPIENT_SUBSCRIBER_ID:}
+    # ES-301b (#1153): escalation signals are a rollout flag (see the properties class) and
+    # the second tier must be a distinct subscriber. Both off/blank by default.
+    escalation-signals-enabled: ${ETHICS_NOTIFICATION_ESCALATION_SIGNALS_ENABLED:false}
+    escalation-recipient-subscriber-id: ${ETHICS_NOTIFICATION_ESCALATION_RECIPIENT_SUBSCRIBER_ID:}
     locale: ${ETHICS_NOTIFICATION_LOCALE:tr-TR}
     # The orchestrator's channel allow-set spells this `in-app`. `inapp` was
     # rejected at the submit gate with an opaque 400, so every Faz 35 signal

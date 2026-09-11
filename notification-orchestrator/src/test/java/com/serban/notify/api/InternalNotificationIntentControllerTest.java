@@ -136,4 +136,36 @@ class InternalNotificationIntentControllerTest extends AbstractPostgresTest {
                 .content(objectMapper.writeValueAsString(req)))
             .andExpect(status().isAccepted());
     }
+
+    /**
+     * ES-301b (#1153): the escalation intent ethics-service builds for level 2+ — the second
+     * tier, the new template, severity warning and exactly one payload variable. Pinned here
+     * for the same reason as the activity shape above.
+     */
+    @Test
+    void internalSubmit_ethicsEscalationPayloadShape_isAccepted() throws Exception {
+        String intentId = "ethics-" + UUID.randomUUID();
+        SubmitIntentRequest req = new SubmitIntentRequest(
+            intentId,
+            intentId,
+            null,
+            "00000000-0000-0000-0000-000000000003",
+            "ethics.case.escalation",
+            NotificationIntent.Severity.warning,
+            NotificationIntent.DataClassification.security,
+            List.of(new SubmitIntentRequest.RecipientRef(
+                SubmitIntentRequest.RecipientRef.Type.subscriber,
+                "42", null, null, null, "tr-TR"
+            )),
+            new SubmitIntentRequest.TemplateRef("ethics.case.escalated", 1, "tr-TR"),
+            List.of("in-app"),
+            Map.of("level", 2),
+            null, null, null, null, null
+        );
+
+        mockMvc.perform(post("/api/v1/internal/notify/intents")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(req)))
+            .andExpect(status().isAccepted());
+    }
 }

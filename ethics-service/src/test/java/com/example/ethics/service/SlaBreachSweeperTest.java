@@ -189,8 +189,11 @@ class SlaBreachSweeperTest {
                 })
                 .reduce("", String::concat);
 
-        for (String event : java.util.List.of(
-                "NEW_REPORT", "REPORTER_MESSAGE", "SLA_BREACH", "SLA_APPROACHING")) {
+        // The Java side of the pair is the publisher's own allowlist — nine events after
+        // ES-301b (#1153). The effective-constraint half lives in
+        // EscalationPostgresIntegrationTest (pg_get_constraintdef against the migrated schema).
+        assertThat(NotificationOutboxPublisher.allowed()).hasSize(9);
+        for (String event : NotificationOutboxPublisher.allowed()) {
             assertThat(constraint)
                     .as("%s Java tarafinda var ama veritabani kisitinda yok", event)
                     .contains("'" + event + "'");

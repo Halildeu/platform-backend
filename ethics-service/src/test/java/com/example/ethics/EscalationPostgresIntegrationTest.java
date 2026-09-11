@@ -40,6 +40,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         "ethics.sla.escalation.enabled=true",
         "ethics.sla.escalation.initial-delay=PT720H",
         "ethics.sla.escalation.steps=PT0S,P3D",
+        "ethics.notification-delivery.escalation-signals-enabled=true",
         "spring.jpa.hibernate.ddl-auto=validate"})
 @Testcontainers(disabledWithoutDocker = true)
 class EscalationPostgresIntegrationTest {
@@ -57,6 +58,9 @@ class EscalationPostgresIntegrationTest {
     @Autowired com.example.ethics.service.CaseSlaClock slaClock;
     @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     @Autowired com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    @Autowired com.example.ethics.notification.NotificationOutboxPublisher notifications;
+    @Autowired com.example.ethics.notification.NotificationSignalBudget signalBudget;
+    @Autowired com.example.ethics.config.NotificationDeliveryProperties delivery;
 
     private UUID insertCase(UUID orgId, Instant createdAt) {
         UUID id = UUID.randomUUID();
@@ -183,7 +187,8 @@ class EscalationPostgresIntegrationTest {
         UUID caseId = insertCase(orgId, NOW.minus(Duration.ofDays(7))); // due at NOW exactly
         var fractional = new EscalationSweeper(cases, escalations, auditOutbox, slaClock,
                 new com.example.ethics.config.EthicsSlaEscalationProperties(true, List.of(Duration.ofNanos(999))),
-                transactions, objectMapper, new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+                transactions, objectMapper, new io.micrometer.core.instrument.simple.SimpleMeterRegistry(),
+                notifications, signalBudget, delivery);
 
         var result = fractional.runCycle(NOW.plusNanos(1_000));
 
@@ -229,5 +234,99 @@ class EscalationPostgresIntegrationTest {
                 Timestamp.from(row.getDueAt()), Timestamp.from(row.getThresholdAt()), Timestamp.from(NOW)))
                 .isInstanceOf(DataAccessException.class)
                 .hasMessageContaining(EscalationSweeper.LEVEL_INDEX);
+    }
+
+    // ── ES-301b (#1153): one signal per organisation, per level, per rolling day ────────
+
+    private long outboxRows(UUID orgId, String eventType) {
+        return jdbc.queryForObject("""
+                SELECT COUNT(*) FROM ethics_service.ethics_notification_outbox
+                WHERE org_id = ? AND event_type = ?
+                """, Long.class, orgId, eventType);
+    }
+
+    @Test
+    @DisplayName("aynı kurumun iki vakası iki eşzamanlı taramada seviye başına tek bildirim sinyali üretir")
+    void twoCasesOfOneOrganisationSignalEachLevelOnce() throws Exception {
+        UUID org = UUID.fromString("00000000-0000-0000-0000-0000000f1150");
+        insertCase(org, NOW.minus(Duration.ofDays(12)));
+        insertCase(org, NOW.minus(Duration.ofDays(12)));
+
+        var start = new CountDownLatch(1);
+        List<EscalationSweeper.CycleResult> results;
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> { start.await(); return sweeper.runCycle(NOW); });
+            var second = pool.submit(() -> { start.await(); return sweeper.runCycle(NOW); });
+            start.countDown();
+            results = List.of(first.get(60, TimeUnit.SECONDS), second.get(60, TimeUnit.SECONDS));
+        }
+
+        assertThat(results).allSatisfy(r -> assertThat(r.failed()).isZero());
+        assertThat(results.stream().mapToInt(EscalationSweeper.CycleResult::recorded).sum()).isEqualTo(4);
+        assertThat(outboxRows(org, "CASE_ESCALATED_L1")).as("L1: tek sinyal").isEqualTo(1);
+        assertThat(outboxRows(org, "CASE_ESCALATED_L2")).as("L2: tek sinyal").isEqualTo(1);
+
+        // A third case a minute later, same day: levels recorded, no new signal.
+        insertCase(org, NOW.minus(Duration.ofDays(12)));
+        var later = sweeper.runCycle(NOW.plus(Duration.ofMinutes(1)));
+        assertThat(later.recorded()).isEqualTo(2);
+        assertThat(outboxRows(org, "CASE_ESCALATED_L1")).isEqualTo(1);
+        assertThat(outboxRows(org, "CASE_ESCALATED_L2")).isEqualTo(1);
+
+        // Past the rolling day the budget opens again.
+        insertCase(org, NOW.minus(Duration.ofDays(12)));
+        sweeper.runCycle(NOW.plus(Duration.ofHours(25)));
+        assertThat(outboxRows(org, "CASE_ESCALATED_L1")).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("geri alınan vaka işlemi bildirim bütçesini de geri verir")
+    void aRolledBackCaseTransactionReturnsTheSignalBudget() {
+        UUID org = UUID.fromString("00000000-0000-0000-0000-0000000f1151");
+        Instant now = NOW.plus(Duration.ofDays(2));
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+            assertThat(signalBudget.claim(org, "CASE_ESCALATED_L3", now)).isTrue();
+            throw new IllegalStateException("simulated failure after the claim");
+        })).isInstanceOf(IllegalStateException.class);
+
+        Boolean afterRollback = tx.execute(status -> signalBudget.claim(org, "CASE_ESCALATED_L3", now));
+        assertThat(afterRollback).as("the rolled-back claim did not spend the budget").isTrue();
+        Boolean afterCommit = tx.execute(status -> signalBudget.claim(org, "CASE_ESCALATED_L3", now.plusSeconds(60)));
+        assertThat(afterCommit).as("a committed claim did").isFalse();
+    }
+
+    @Test
+    @DisplayName("Java izin listesi ile etkin CHECK kısıtı aynı olay kümesini tanır (gerçek Postgres)")
+    void theJavaAllowlistAndTheEffectiveCheckConstraintAgree() {
+        String definition = jdbc.queryForObject("""
+                SELECT pg_get_constraintdef(c.oid)
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid = c.conrelid
+                JOIN pg_namespace n ON n.oid = t.relnamespace
+                WHERE c.conname = 'ck_ethics_notification_event'
+                  AND t.relname = 'ethics_notification_outbox'
+                  AND n.nspname = 'ethics_service'
+                """, String.class);
+        var inConstraint = new java.util.TreeSet<String>();
+        var matcher = java.util.regex.Pattern.compile("'([A-Z0-9_]+)'").matcher(definition);
+        while (matcher.find()) inConstraint.add(matcher.group(1));
+        assertThat(inConstraint).containsExactlyInAnyOrderElementsOf(
+                com.example.ethics.notification.NotificationOutboxPublisher.allowed());
+
+        UUID org = UUID.fromString("00000000-0000-0000-0000-0000000f1153"); // no case rows: nothing sweeps it
+        for (String event : com.example.ethics.notification.NotificationOutboxPublisher.allowed()) {
+            tx.executeWithoutResult(status -> notifications.enqueue(org, event, NOW));
+        }
+        assertThat(jdbc.queryForList("""
+                SELECT event_type FROM ethics_service.ethics_notification_outbox WHERE org_id = ?
+                """, String.class, org))
+                .as("every allowed event was accepted by the CHECK, each exactly once")
+                .containsExactlyInAnyOrderElementsOf(com.example.ethics.notification.NotificationOutboxPublisher.allowed());
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO ethics_service.ethics_notification_outbox (id, org_id, event_type, created_at)
+                VALUES (?, ?, 'CASE_ESCALATED_L6', ?)
+                """, UUID.randomUUID(), org, Timestamp.from(NOW)))
+                .as("the database refuses an event the Java side never writes")
+                .isInstanceOf(DataAccessException.class);
     }
 }

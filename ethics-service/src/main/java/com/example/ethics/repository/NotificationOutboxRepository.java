@@ -18,6 +18,35 @@ public interface NotificationOutboxRepository extends JpaRepository<Notification
 
     long countByStatus(String status);
 
+    // ES-301b (#1153) — the per-(org, event) signal budget, see NotificationSignalBudget.
+    @Query(value = """
+            SELECT COUNT(*) FROM {h-schema}ethics_notification_signal_window
+            WHERE org_id = :orgId AND event_type = :eventType
+            """, nativeQuery = true)
+    long countSignalWindow(@Param("orgId") UUID orgId, @Param("eventType") String eventType);
+
+    @Modifying
+    @Query(value = """
+            INSERT INTO {h-schema}ethics_notification_signal_window (org_id, event_type, last_signal_at)
+            VALUES (:orgId, :eventType, :at)
+            """, nativeQuery = true)
+    int openSignalWindow(@Param("orgId") UUID orgId, @Param("eventType") String eventType, @Param("at") Instant at);
+
+    /** Claims the window: 1 when the previous signal is older than the threshold, else 0. */
+    @Modifying
+    @Query(value = """
+            UPDATE {h-schema}ethics_notification_signal_window
+            SET last_signal_at = :now
+            WHERE org_id = :orgId
+              AND event_type = :eventType
+              AND last_signal_at <= :threshold
+            """, nativeQuery = true)
+    int claimSignalWindow(
+            @Param("orgId") UUID orgId,
+            @Param("eventType") String eventType,
+            @Param("now") Instant now,
+            @Param("threshold") Instant threshold);
+
     @Modifying
     @Query(value = """
             UPDATE {h-schema}ethics_notification_outbox

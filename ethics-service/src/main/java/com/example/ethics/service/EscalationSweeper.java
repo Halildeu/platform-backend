@@ -2,9 +2,12 @@ package com.example.ethics.service;
 
 import com.example.ethics.audit.EthicsAuditChain;
 import com.example.ethics.config.EthicsSlaEscalationProperties;
+import com.example.ethics.config.NotificationDeliveryProperties;
 import com.example.ethics.model.AuditOutbox;
 import com.example.ethics.model.CaseEscalation;
 import com.example.ethics.model.EthicsCase;
+import com.example.ethics.notification.NotificationOutboxPublisher;
+import com.example.ethics.notification.NotificationSignalBudget;
 import com.example.ethics.repository.AuditOutboxRepository;
 import com.example.ethics.repository.CaseEscalationRepository;
 import com.example.ethics.repository.EthicsCaseRepository;
@@ -98,6 +101,9 @@ public class EscalationSweeper {
     private final TransactionOperations perCase;
     private final ObjectMapper mapper;
     private final Clock clock;
+    private final NotificationOutboxPublisher notifications;
+    private final NotificationSignalBudget signalBudget;
+    private final NotificationDeliveryProperties delivery;
     private final Counter recorded;
     private final Counter deferred;
     private final Counter failed;
@@ -113,9 +119,12 @@ public class EscalationSweeper {
             EthicsSlaEscalationProperties policy,
             PlatformTransactionManager transactions,
             ObjectMapper mapper,
-            MeterRegistry metrics) {
+            MeterRegistry metrics,
+            NotificationOutboxPublisher notifications,
+            NotificationSignalBudget signalBudget,
+            NotificationDeliveryProperties delivery) {
         this(cases, escalations, audit, sla, policy, requiresNew(transactions), mapper, metrics,
-                Clock.systemUTC());
+                Clock.systemUTC(), notifications, signalBudget, delivery);
     }
 
     EscalationSweeper(
@@ -127,7 +136,13 @@ public class EscalationSweeper {
             TransactionOperations perCase,
             ObjectMapper mapper,
             MeterRegistry metrics,
-            Clock clock) {
+            Clock clock,
+            NotificationOutboxPublisher notifications,
+            NotificationSignalBudget signalBudget,
+            NotificationDeliveryProperties delivery) {
+        this.notifications = notifications;
+        this.signalBudget = signalBudget;
+        this.delivery = delivery;
         this.cases = cases;
         this.escalations = escalations;
         this.audit = audit;
@@ -261,9 +276,24 @@ public class EscalationSweeper {
                     obligation, level, dueAt, thresholdAt, now));
             audit.save(new AuditOutbox(UUID.randomUUID(), item.getOrgId(), item.getId(), EVENT_TYPE,
                     payload(obligation, level, dueAt, thresholdAt, now), now));
+            signal(item.getOrgId(), level, now);
             written++;
         }
         return written;
+    }
+
+    /**
+     * ES-301b (#1153): the notification for a level, inside the same per-case transaction as
+     * the level itself — a rollback takes the signal (and its budget claim) with it. One
+     * signal per organisation, per level, per rolling day; the budget row decides across
+     * replicas. Off until the rollout flag says every replica knows the events.
+     */
+    private void signal(UUID orgId, int level, Instant now) {
+        if (!delivery.isEscalationSignalsEnabled()) return;
+        String event = NotificationOutboxPublisher.escalation(level);
+        if (signalBudget.claim(orgId, event, now)) {
+            notifications.enqueue(orgId, event, now);
+        }
     }
 
     /**

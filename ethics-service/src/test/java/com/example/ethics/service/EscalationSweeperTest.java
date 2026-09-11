@@ -12,6 +12,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.ethics.config.EthicsSlaEscalationProperties;
+import com.example.ethics.config.NotificationDeliveryProperties;
+import com.example.ethics.notification.NotificationOutboxPublisher;
+import com.example.ethics.notification.NotificationSignalBudget;
 import com.example.ethics.config.EthicsSlaProperties;
 import com.example.ethics.model.AuditOutbox;
 import com.example.ethics.model.CaseEscalation;
@@ -51,12 +54,20 @@ class EscalationSweeperTest {
     private EthicsCaseRepository cases;
     private CaseEscalationRepository escalations;
     private AuditOutboxRepository audit;
+    private NotificationOutboxPublisher notifications;
+    private NotificationSignalBudget signalBudget;
+    private NotificationDeliveryProperties delivery;
 
     @BeforeEach
     void setUp() {
         cases = mock(EthicsCaseRepository.class);
         escalations = mock(CaseEscalationRepository.class);
         audit = mock(AuditOutboxRepository.class);
+        notifications = mock(NotificationOutboxPublisher.class);
+        signalBudget = mock(NotificationSignalBudget.class);
+        when(signalBudget.claim(any(), anyString(), any())).thenReturn(true);
+        delivery = new NotificationDeliveryProperties();
+        delivery.setEscalationSignalsEnabled(true);
         when(escalations.existsByCaseIdAndObligationAndLevel(any(), anyString(), anyInt())).thenReturn(false);
     }
 
@@ -65,7 +76,8 @@ class EscalationSweeperTest {
         var policy = new EthicsSlaEscalationProperties(enabled, List.of(steps));
         return new EscalationSweeper(cases, escalations, audit, sla, policy,
                 TransactionOperations.withoutTransaction(), new ObjectMapper(),
-                new SimpleMeterRegistry(), Clock.fixed(NOW, ZoneOffset.UTC));
+                new SimpleMeterRegistry(), Clock.fixed(NOW, ZoneOffset.UTC),
+                notifications, signalBudget, delivery);
     }
 
     /** A case the candidate query returns and the row lock re-reads. */
@@ -359,7 +371,7 @@ class EscalationSweeperTest {
         var sweeper = new EscalationSweeper(cases, escalations, audit, sla,
                 new EthicsSlaEscalationProperties(true, List.of(Duration.ZERO)),
                 TransactionOperations.withoutTransaction(), new ObjectMapper(), metrics,
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                Clock.fixed(NOW, ZoneOffset.UTC), notifications, signalBudget, delivery);
 
         var result = sweeper.runCycle(NOW);
 
@@ -378,5 +390,53 @@ class EscalationSweeperTest {
                 .findFirst().orElseThrow();
         assertThat(method.getParameterTypes()).containsExactly(Instant.class, Instant.class);
         assertThat(method.getParameterTypes()).doesNotContain(Duration.class);
+    }
+
+    // ── ES-301b (#1153): the notification for each recorded level ─────────────────────
+
+    @Test
+    @DisplayName("her kaydedilen seviye kendi olayıyla bir bildirim sinyali üretir")
+    void everyRecordedLevelSignalsItsOwnEvent() {
+        caseCreatedAt(NOW.minus(ACK).minus(Duration.ofDays(4)), null, null);
+        sweeper(true, Duration.ZERO, Duration.ofDays(3)).runCycle(NOW);
+
+        verify(notifications).enqueue(ORG, "CASE_ESCALATED_L1", NOW);
+        verify(notifications).enqueue(ORG, "CASE_ESCALATED_L2", NOW);
+        verify(signalBudget).claim(ORG, "CASE_ESCALATED_L1", NOW);
+        verify(signalBudget).claim(ORG, "CASE_ESCALATED_L2", NOW);
+    }
+
+    @Test
+    @DisplayName("bütçe verilmezse (aynı kurum, aynı seviye, aynı gün) sinyal üretilmez; seviye yine kaydedilir")
+    void aSpentBudgetSuppressesTheSignalButNotTheLevel() {
+        when(signalBudget.claim(any(), anyString(), any())).thenReturn(false);
+        caseCreatedAt(NOW.minus(ACK).minus(Duration.ofDays(1)), null, null);
+        var result = sweeper(true, Duration.ZERO).runCycle(NOW);
+
+        assertThat(result.recorded()).isEqualTo(1);
+        verify(escalations).save(any());
+        verify(notifications, never()).enqueue(any(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("rollout bayrağı kapalıyken seviye kaydedilir, bildirim üretilmez, bütçeye dokunulmaz")
+    void theRolloutFlagOffRecordsLevelsSilently() {
+        delivery.setEscalationSignalsEnabled(false);
+        caseCreatedAt(NOW.minus(ACK).minus(Duration.ofDays(1)), null, null);
+        var result = sweeper(true, Duration.ZERO).runCycle(NOW);
+
+        assertThat(result.recorded()).isEqualTo(1);
+        verify(notifications, never()).enqueue(any(), anyString(), any());
+        verify(signalBudget, never()).claim(any(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("daha önce kaydedilmiş bir seviye için yeniden sinyal üretilmez")
+    void anAlreadyRecordedLevelDoesNotSignalAgain() {
+        when(escalations.existsByCaseIdAndObligationAndLevel(any(), anyString(), anyInt())).thenReturn(true);
+        caseCreatedAt(NOW.minus(ACK).minus(Duration.ofDays(1)), null, null);
+        sweeper(true, Duration.ZERO).runCycle(NOW);
+
+        verify(notifications, never()).enqueue(any(), anyString(), any());
     }
 }
