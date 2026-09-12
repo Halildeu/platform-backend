@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
@@ -41,11 +42,14 @@ public class MeetingIntelligenceController {
     @GetMapping("/result")
     @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.VIEWER)
     public ResponseEntity<MeetingIntelligenceResultResponse> getLatestResult(
-            @PathVariable("meetingId") UUID meetingId) {
+            @PathVariable("meetingId") UUID meetingId,
+            @RequestParam(name = "sessionId", required = false) String sessionId) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
-                .body(meetingIntelligenceResultService.getLatest(tenant, meetingId));
+                .body(sessionId == null
+                        ? meetingIntelligenceResultService.getLatest(tenant, meetingId)
+                        : meetingIntelligenceResultService.getForSession(tenant, meetingId, sessionId));
     }
 
     @PostMapping("/analyze")
