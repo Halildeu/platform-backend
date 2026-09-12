@@ -670,6 +670,80 @@ class MeetingAnalysisRunPostgresIntegrationTest {
     // helpers
     // ----------------------------------------------------------------
 
+    @Test
+    void sessionSelectionSurvivesAnotherSessionAndLateStaleResults() {
+        UUID org = UUID.randomUUID();
+        UUID meeting = insertMeeting(org);
+        UUID first = UUID.randomUUID();
+        UUID newer = UUID.randomUUID();
+        UUID otherSession = UUID.randomUUID();
+        UUID lateStale = UUID.randomUUID();
+        insertRunForSession(first, meeting, org, "session-a", SHA_A, HASH_1);
+        makeCanonical(first, 1, "2026-09-12T01:00:00Z");
+        insertRunForSession(newer, meeting, org, "session-a", SHA_B, HASH_2, first);
+        makeCanonical(newer, 2, "2026-09-12T01:00:00Z");
+        insertRunForSession(otherSession, meeting, org, "session-b", SHA_A, HASH_2);
+        makeCanonical(otherSession, 1, "2026-09-12T02:00:00Z");
+        insertRunForSession(lateStale, meeting, org, "session-a", "c".repeat(64), "3".repeat(64));
+        makeCanonical(lateStale, 1, "2026-09-12T00:59:00Z");
+
+        assertThat(runRepository.findLatestByMeetingIdVisibleToOrg(meeting, org).orElseThrow()
+                .getAnalysisRunId()).isEqualTo(otherSession);
+        for (int read = 0; read < 3; read++) {
+            var selected = runRepository.findLatestBySessionVisibleToOrg(meeting, org, "session-a")
+                    .orElseThrow();
+            assertThat(selected.getAnalysisRunId()).isEqualTo(newer);
+            assertThat(selected.getTranscriptSessionId()).isEqualTo("session-a");
+            assertThat(selected.getTranscriptSha256()).isEqualTo(SHA_B);
+            assertThat(selected.getSupersedesAnalysisRunId()).isEqualTo(first);
+            assertThat(runRepository.findLatestBySessionVisibleToOrg(meeting, org, "session-b")
+                    .orElseThrow().getAnalysisRunId()).isEqualTo(otherSession);
+        }
+        assertThat(runCount(meeting)).isEqualTo(4);
+    }
+
+    @Test
+    void sessionSelectionIsTenantAndMeetingScopedWithoutFallback() {
+        UUID org = UUID.randomUUID();
+        UUID foreignOrg = UUID.randomUUID();
+        UUID meeting = insertMeeting(org);
+        UUID otherMeeting = insertMeeting(org);
+        UUID foreignMeeting = insertMeeting(foreignOrg);
+        UUID owned = UUID.randomUUID();
+        insertRunForSession(owned, meeting, org, "shared-id", SHA_A, HASH_1);
+        insertRunForSession(UUID.randomUUID(), otherMeeting, org, "other-session", SHA_B, HASH_2);
+        insertRunForSession(UUID.randomUUID(), foreignMeeting, foreignOrg, "shared-id", SHA_B, HASH_2);
+
+        assertThat(runRepository.findLatestBySessionVisibleToOrg(meeting, org, "shared-id")
+                .orElseThrow().getAnalysisRunId()).isEqualTo(owned);
+        assertThat(runRepository.findLatestBySessionVisibleToOrg(meeting, org, "missing")).isEmpty();
+        assertThat(runRepository.findLatestBySessionVisibleToOrg(meeting, org, "other-session")).isEmpty();
+        assertThat(runRepository.findLatestBySessionVisibleToOrg(foreignMeeting, org, "shared-id")).isEmpty();
+        assertThat(runRepository.findLatestBySessionVisibleToOrg(meeting, foreignOrg, "shared-id")).isEmpty();
+    }
+
+    @Test
+    void sessionSelectionUsesStableRunIdTieBreakForLegacyRows() {
+        UUID org = UUID.randomUUID();
+        UUID meeting = insertMeeting(org);
+        UUID low = UUID.fromString("11111111-1111-4111-8111-111111111111");
+        UUID high = UUID.fromString("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+        insertRunForSession(low, meeting, org, "legacy", SHA_A, HASH_1);
+        insertRunForSession(high, meeting, org, "legacy", SHA_B, HASH_2);
+        Timestamp same = Timestamp.from(Instant.parse("2026-09-12T01:00:00Z"));
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_analysis_runs SET generated_at=?, created_at=? WHERE meeting_id=?",
+                same, same, meeting);
+        assertThat(runRepository.findLatestBySessionVisibleToOrg(meeting, org, "legacy")
+                .orElseThrow().getAnalysisRunId()).isEqualTo(high);
+    }
+
+    private void makeCanonical(UUID run, long version, String finalizedAt) {
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_analysis_runs "
+                        + "SET finalization_version=?, finalized_at=?, analysis_spec_version='test-v1', "
+                        + "job_capability_id=? WHERE analysis_run_id=?",
+                version, Timestamp.from(Instant.parse(finalizedAt)), UUID.randomUUID(), run);
+    }
+
     private static Timestamp now() {
         return Timestamp.from(Instant.now());
     }

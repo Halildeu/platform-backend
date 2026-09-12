@@ -107,6 +107,77 @@ class MeetingIntelligenceResultServiceTest {
     }
 
     @Test
+    void selectedSessionReturnsOnlyItsExactRunAndAuditsRepeatedReads() {
+        MeetingAnalysisRun run = analysisRun();
+        when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID))
+                .thenReturn(Optional.of(new Meeting()));
+        when(runRepository.findLatestBySessionVisibleToOrg(MEETING_ID, ORG_ID, "SES-1"))
+                .thenReturn(Optional.of(run));
+        when(decisionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(RUN_ID, MEETING_ID, ORG_ID))
+                .thenReturn(List.of());
+        when(actionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(RUN_ID, MEETING_ID, ORG_ID))
+                .thenReturn(List.of());
+
+        var first = service.getForSession(tenant, MEETING_ID, "SES-1");
+        assertThat(service.getForSession(tenant, MEETING_ID, "SES-1")).isEqualTo(first);
+        assertThat(first.analysisRunId()).isEqualTo(RUN_ID);
+        assertThat(first.sessionId()).isEqualTo(run.getTranscriptSessionId());
+        verify(runRepository, org.mockito.Mockito.never())
+                .findLatestByMeetingIdVisibleToOrg(MEETING_ID, ORG_ID);
+        verify(accessAuditService, org.mockito.Mockito.times(2))
+                .recordCanonicalRead(tenant, MEETING_ID, RUN_ID);
+    }
+
+    @Test
+    void missingOrForeignSelectedSessionDoesNotFallBackOrAudit() {
+        when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID))
+                .thenReturn(Optional.of(new Meeting()));
+        when(runRepository.findLatestBySessionVisibleToOrg(MEETING_ID, ORG_ID, "foreign"))
+                .thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.getForSession(tenant, MEETING_ID, "foreign"))
+                .isInstanceOfSatisfying(ResponseStatusException.class, error -> {
+                    assertThat(error.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(error.getReason()).isEqualTo("ANALYSIS_RESULT_NOT_FOUND");
+                });
+        verify(runRepository, org.mockito.Mockito.never())
+                .findLatestByMeetingIdVisibleToOrg(MEETING_ID, ORG_ID);
+        verifyNoInteractions(decisionRepository, actionRepository, accessAuditService);
+    }
+
+    @Test
+    void selectedSessionStillChecksMeetingVisibilityBeforeAnalysis() {
+        when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID)).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.getForSession(tenant, MEETING_ID, "SES-1"))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
+        verifyNoInteractions(runRepository, decisionRepository, actionRepository, accessAuditService);
+    }
+
+    @Test
+    void invalidSelectedSessionFailsBeforeStorageWithoutEchoingInput() {
+        for (String session : new String[]{null, "", " ", "x".repeat(65)}) {
+            assertThatThrownBy(() -> service.getForSession(tenant, MEETING_ID, session))
+                    .isInstanceOfSatisfying(ResponseStatusException.class, error -> {
+                        assertThat(error.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                        assertThat(error.getReason()).isEqualTo("INVALID_SESSION_ID");
+                    });
+        }
+        verifyNoInteractions(meetingRepository, runRepository, decisionRepository, actionRepository, accessAuditService);
+    }
+
+    @Test
+    void selectedSessionAuditFailurePreventsDisclosure() {
+        when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID))
+                .thenReturn(Optional.of(new Meeting()));
+        when(runRepository.findLatestBySessionVisibleToOrg(MEETING_ID, ORG_ID, "SES-1"))
+                .thenReturn(Optional.of(analysisRun()));
+        doThrow(new IllegalStateException("audit unavailable"))
+                .when(accessAuditService).recordCanonicalRead(tenant, MEETING_ID, RUN_ID);
+        assertThatThrownBy(() -> service.getForSession(tenant, MEETING_ID, "SES-1"))
+                .isInstanceOf(IllegalStateException.class).hasMessage("audit unavailable");
+    }
+
+    @Test
     void getLatest_unknownOrForeignMeeting_doesNotProbeAnalysisTables() {
         when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID))
                 .thenReturn(Optional.empty());

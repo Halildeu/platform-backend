@@ -142,4 +142,47 @@ class MeetingIntelligenceControllerTest {
         when(tenantContextResolver.resolveRequired()).thenReturn(ctx);
         return ctx;
     }
+
+    @Test
+    void selectedSessionMustNeverFallBackToMeetingWideLatest() throws Exception {
+        AdminTenantContext tenant = tenant();
+        mockMvc.perform(get("/api/v1/admin/meetings/{meetingId}/intelligence/result", MEETING_ID)
+                        .param("sessionId", "44444444-4444-4444-8444-444444444444"))
+                .andExpect(status().isOk());
+        verify(meetingIntelligenceResultService, org.mockito.Mockito.never())
+                .getLatest(tenant, MEETING_ID);
+        verify(meetingIntelligenceResultService)
+                .getForSession(tenant, MEETING_ID, "44444444-4444-4444-8444-444444444444");
+    }
+
+    @Test
+    void selectedSessionReturnsRunBoundNoStoreSnapshot() throws Exception {
+        AdminTenantContext tenant = tenant();
+        UUID runId = UUID.randomUUID();
+        when(meetingIntelligenceResultService.getForSession(tenant, MEETING_ID, "SES-1"))
+                .thenReturn(new MeetingIntelligenceResultResponse(
+                        runId, MEETING_ID, "SES-1", "5-adr0043", "qwen", "ollama",
+                        "ollama-v1", "Earlier session", "verified", List.of(), List.of(),
+                        List.of(), List.of(), List.of(), 0, true, 1,
+                        Instant.parse("2026-07-11T20:00:00Z"), null, true, "canonical"));
+        mockMvc.perform(get("/api/v1/admin/meetings/{meetingId}/intelligence/result", MEETING_ID)
+                        .param("sessionId", "SES-1"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.analysisRunId").value(runId.toString()))
+                .andExpect(jsonPath("$.sessionId").value("SES-1"))
+                .andExpect(jsonPath("$.summary").value("Earlier session"));
+    }
+
+    @Test
+    void unknownSessionPropagatesNotFoundInsteadOfLatest() throws Exception {
+        AdminTenantContext tenant = tenant();
+        when(meetingIntelligenceResultService.getForSession(tenant, MEETING_ID, "missing"))
+                .thenThrow(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.NOT_FOUND, "ANALYSIS_RESULT_NOT_FOUND"));
+        mockMvc.perform(get("/api/v1/admin/meetings/{meetingId}/intelligence/result", MEETING_ID)
+                        .param("sessionId", "missing"))
+                .andExpect(status().isNotFound());
+        verify(meetingIntelligenceResultService, org.mockito.Mockito.never()).getLatest(tenant, MEETING_ID);
+    }
 }
