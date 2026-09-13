@@ -172,7 +172,7 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                         final long receiptMs = clock.getAsLong();
                         final SessionState state =
                                 existing == null ? new SessionState(receiptMs) : existing;
-                        state.outbox.addAll(accept(state, result, context, receiptMs));
+                        state.outbox.addAll(accept(state, result, context, receiptMs, eventId));
                         target[0] = state;
                         return state;
                     });
@@ -215,7 +215,8 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
             final SessionState state,
             final TranscriptResult result,
             final DirectSttTranscriptResultContext context,
-            final long receiptMs) {
+            final long receiptMs,
+            final String eventId) {
         final List<Pending> pending = new ArrayList<>();
         state.touchedAtMs = receiptMs;
 
@@ -226,7 +227,7 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
             // A straggler from a closed sequence space. It must not reopen that space,
             // so it is neither folded nor allowed to move the epoch backwards.
             count("assembly_stale_epoch_total", context.transport().name());
-            staleLine(envelopeOf(result, context, receiptMs)).ifPresent(pending::add);
+            staleLine(envelopeOf(result, context, receiptMs, eventId)).ifPresent(pending::add);
             return pending;
         }
 
@@ -244,7 +245,7 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
         state.transport = context.transport();
         state.epoch = Math.max(state.epoch, incoming);
 
-        final Envelope envelope = envelopeOf(result, context, receiptMs);
+        final Envelope envelope = envelopeOf(result, context, receiptMs, eventId);
         pending.addAll(
                 foldOrdered(state, state.reorder.offer(context.windowSeq(), receiptMs, envelope)));
         return pending;
@@ -253,10 +254,11 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
     private Envelope envelopeOf(
             final TranscriptResult result,
             final DirectSttTranscriptResultContext context,
-            final long receiptMs) {
+            final long receiptMs,
+            final String eventId) {
         return new Envelope(
                 new SentenceAssembler.Fragment(
-                        eventIdOf(context),
+                        eventId == null || eventId.isBlank() ? eventIdOf(context) : eventId,
                         result == null ? null : result.text(),
                         context.windowStartedAtMs(),
                         context.windowEndedAtMs(),
@@ -356,6 +358,12 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
             if (release.lateAfterGap()) {
                 standaloneLine(envelope, SentenceAssembler.REASON_LATE_AFTER_GAP)
                         .ifPresent(pending::add);
+                continue;
+            }
+            if (envelope.result().speakerAttribution() != null) {
+                state.assembler.closeSession().ifPresent(u -> pending.add(pendingOf(state, u)));
+                standaloneLine(envelope, "speaker_attribution").ifPresent(pending::add);
+                state.lastFoldedEnvelope = envelope;
                 continue;
             }
             // One offer can close TWO lines: a source-audio gap closes the previous
@@ -459,7 +467,9 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                 source == null ? null : source.model(),
                 source == null ? null : source.computeType(),
                 source == null ? null : source.device(),
-                null);
+                null,
+                source != null && utterance.text().equals(source.text())
+                        ? source.speakerAttribution() : null);
     }
 
     /**

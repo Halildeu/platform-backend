@@ -2,6 +2,7 @@ package com.example.audiogateway.service;
 
 import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.TranscriptResult;
+import com.example.common.meeting.events.SpeakerAttribution;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -40,7 +41,14 @@ public class RedisStreamDirectSttTranscriptResultSink implements DirectSttTransc
     @Override
     public String emit(final TranscriptResult result, final DirectSttTranscriptResultContext context) {
         final Map<String, String> fields = new LinkedHashMap<>();
-        fields.put("schemaVersion", SCHEMA_VERSION);
+        final SpeakerAttribution attribution = result.speakerAttribution();
+        fields.put("schemaVersion", attribution == null ? SCHEMA_VERSION : SpeakerAttribution.SCHEMA_V2);
+        if (attribution != null) {
+            final SpeakerAttribution validated = SpeakerAttribution.parse(attribution.encode(),
+                    SpeakerAttribution.scope(longOrEmpty(context.tenantId()), context.meetingId(),
+                            context.sessionId(), context.transportEpoch()), result.text(), context.audioDurationMs());
+            fields.put("speakerAttribution", validated.encode());
+        }
         fields.put("eventType", EVENT_TYPE_DIRECT_STT_TRANSCRIPT_RESULT);
         fields.put("sessionId", nullSafe(context.sessionId()));
         fields.put("tenantId", longOrEmpty(context.tenantId()));
@@ -75,9 +83,7 @@ public class RedisStreamDirectSttTranscriptResultSink implements DirectSttTransc
         fields.put("model", nullSafe(result.model()));
         fields.put("computeType", nullSafe(result.computeType()));
         fields.put("device", nullSafe(result.device()));
-        // Segment JSON intentionally stays out of the stream for the first #182 handoff:
-        // it carries transcript content plus per-word timing and can be added later under
-        // an explicit schema bump if downstream assembly needs that fidelity.
+        // v2 adds only bounded anonymous attribution and offsets, not raw provider JSON.
         final DirectSttTranscriptResultContext.Assembly assembly = context.assembly();
         // A raw committed chunk stays DRAFT. An assembled line is a distinct status so a
         // client can render the readable line without also rendering the fragments it

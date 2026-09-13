@@ -1,5 +1,9 @@
 package com.example.transcript.model;
 
+import com.example.common.meeting.events.SpeakerAttribution;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -77,6 +81,10 @@ public class TranscriptSegment {
     /** Diarization speaker reference (opaque UUID; no FK). */
     @Column(name = "speaker_id")
     private UUID speakerId;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "speaker_attribution", columnDefinition = "jsonb")
+    private SpeakerAttribution speakerAttribution;
 
     /** Segment start offset, seconds from meeting start. */
     @Column(name = "start_time", nullable = false)
@@ -234,6 +242,14 @@ public class TranscriptSegment {
 
     public void setSpeakerId(UUID speakerId) {
         this.speakerId = speakerId;
+    }
+
+    public SpeakerAttribution getSpeakerAttribution() {
+        return speakerAttribution;
+    }
+
+    public void setSpeakerAttribution(SpeakerAttribution speakerAttribution) {
+        this.speakerAttribution = speakerAttribution;
     }
 
     public Double getStartTime() {

@@ -2,6 +2,7 @@ package com.example.transcript.dto;
 
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
+import com.example.common.meeting.events.SpeakerAttribution;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -26,8 +27,17 @@ public record TranscriptSegmentDto(
         TranscriptSegmentStatus status,
         Long version,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        SpeakerAttribution speakerAttribution
 ) {
+
+    public TranscriptSegmentDto(UUID id, UUID tenantId, UUID meetingId, UUID sessionId,
+            UUID speakerId, Double startTime, Double endTime, String textDraft, String textFinal,
+            Double confidence, TranscriptSegmentStatus status, Long version,
+            Instant createdAt, Instant updatedAt) {
+        this(id, tenantId, meetingId, sessionId, speakerId, startTime, endTime, textDraft,
+                textFinal, confidence, status, version, createdAt, updatedAt, null);
+    }
 
     public static TranscriptSegmentDto from(TranscriptSegment s) {
         return new TranscriptSegmentDto(
@@ -44,7 +54,9 @@ public record TranscriptSegmentDto(
                 s.getStatus(),
                 s.getVersion(),
                 s.getCreatedAt(),
-                s.getUpdatedAt()
+                s.getUpdatedAt(),
+                s.getTextFinal() == null || s.getTextFinal().equals(s.getTextDraft())
+                        ? s.getSpeakerAttribution() : null
         );
     }
 }

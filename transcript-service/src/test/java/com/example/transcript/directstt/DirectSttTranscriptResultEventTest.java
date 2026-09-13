@@ -7,11 +7,31 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.List;
+import com.example.common.meeting.events.SpeakerAttribution;
 import org.junit.jupiter.api.Test;
 
 class DirectSttTranscriptResultEventTest {
 
     private static final UUID MEETING = UUID.fromString("22222222-2222-4222-8222-222222222222");
+
+    @Test
+    void acceptsV2AttributionButRejectsCrossMeetingAndDowngrade() {
+        var fields = validFields();
+        var attribution = new SpeakerAttribution(SpeakerAttribution.scope("42", MEETING.toString(), "SES-abc", 11),
+                List.of(new SpeakerAttribution.Turn("S1", 0, 7, 0, 700),
+                        new SpeakerAttribution.Turn("S2", 8, 13, 600, 1200)));
+        fields.put("schemaVersion", SpeakerAttribution.SCHEMA_V2);
+        fields.put("speakerAttribution", attribution.encode());
+        assertThat(DirectSttTranscriptResultEvent.parse(fields, "1-0").speakerAttribution()).isEqualTo(attribution);
+        fields.put("meetingId", UUID.randomUUID().toString());
+        assertThatThrownBy(() -> DirectSttTranscriptResultEvent.parse(fields, "1-0"))
+                .isInstanceOf(DirectSttTranscriptResultEvent.InvalidDirectSttTranscriptResultException.class);
+        fields.put("meetingId", MEETING.toString());
+        fields.put("schemaVersion", DirectSttTranscriptResultEvent.SCHEMA_VERSION);
+        assertThatThrownBy(() -> DirectSttTranscriptResultEvent.parse(fields, "1-0"))
+                .hasMessageContaining("requires v2");
+    }
 
     @Test
     void parseMapsAudioGatewayFieldsAndCompanyIdTenantFallback() {

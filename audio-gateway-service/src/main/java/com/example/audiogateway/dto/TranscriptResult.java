@@ -2,6 +2,7 @@ package com.example.audiogateway.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.example.common.meeting.events.SpeakerAttribution;
 
 /**
  * live-stt {@code /transcribe} response shape — Faz 24 issue #182 direct-STT path.
@@ -31,7 +32,15 @@ public record TranscriptResult(
         String model,
         @JsonProperty("compute_type") String computeType,
         String device,
-        com.fasterxml.jackson.databind.JsonNode segments) {
+        com.fasterxml.jackson.databind.JsonNode segments,
+        SpeakerAttribution speakerAttribution) {
+
+    public TranscriptResult(String text, String language, Double languageProbability,
+            Double durationSeconds, Double elapsedMs, String model, String computeType,
+            String device, com.fasterxml.jackson.databind.JsonNode segments) {
+        this(text, language, languageProbability, durationSeconds, elapsedMs,
+                model, computeType, device, segments, null);
+    }
 
     /** Character count of the transcript text — PII-safe size signal (NOT the text itself). */
     public int textLength() {

@@ -16,6 +16,38 @@ class SpeechmaticsLiveProtocolAdapterTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
+    void requestsAnonymousDiarizationAndPreservesOverlappingWordAttribution() throws Exception {
+        var adapter = adapter();
+        var config = objectMapper.readTree(adapter.startMessage(16000)).path("transcription_config");
+        assertThat(config.path("diarization").asText()).isEqualTo("speaker");
+        assertThat(config.has("speakers")).isFalse();
+        assertThat(config.has("get_speakers")).isFalse();
+        var event = objectMapper.readTree(adapter.translate("""
+                {"message":"AddTranscript","metadata":{"transcript":"Hello world.","end_time":1},
+                 "results":[
+                  {"type":"word","start_time":0,"end_time":0.7,"alternatives":[{"content":"Hello","speaker":"S1"}]},
+                  {"type":"word","start_time":0.5,"end_time":1,"alternatives":[{"content":"world","speaker":"S2"}]},
+                  {"type":"punctuation","start_time":1,"end_time":1,"alternatives":[{"content":".","speaker":"S2"}]}]}
+                """, 16000).getFirst());
+        assertThat(event.path("text").asText()).isEqualTo("Hello world.");
+        assertThat(event.path("speakerTurns").size()).isEqualTo(3);
+        assertThat(event.path("speakerTurns").path(1).path("speaker").asText()).isEqualTo("S2");
+        assertThat(event.path("speakerTurns").path(1).path("startMs").asLong()).isEqualTo(500);
+        assertThat(event.path("speakerTurns").path(1).path("textStart").asInt()).isEqualTo(6);
+    }
+
+    @Test
+    void unalignableProviderWordsNeverReplaceAuthoritativeTextOrGuessSpeakers() throws Exception {
+        var event = objectMapper.readTree(adapter().translate("""
+                {"message":"AddTranscript","metadata":{"transcript":"Keep this.","end_time":1},
+                 "results":[{"type":"word","start_time":0,"end_time":1,
+                 "alternatives":[{"content":"different","speaker":"S1"}]}]}
+                """, 16000).getFirst());
+        assertThat(event.path("text").asText()).isEqualTo("Keep this.");
+        assertThat(event.has("speakerTurns")).isFalse();
+    }
+
+    @Test
     void enablesPartialsAndUsesTheConfiguredFinalizationPolicy() throws Exception {
         final SpeechmaticsLiveProtocolAdapter adapter = adapter();
 
