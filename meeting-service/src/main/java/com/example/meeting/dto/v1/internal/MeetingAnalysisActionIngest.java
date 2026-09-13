@@ -2,6 +2,7 @@ package com.example.meeting.dto.v1.internal;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -16,7 +17,7 @@ import java.time.Instant;
  *
  * <p>Field mapping into {@code meeting_actions} (see the ingestion service):
  * {@code text → description}, {@code assignee → assignee_subject},
- * {@code due → due_at}. {@code due} is typed as an {@link Instant} (ISO-8601)
+ * {@code due → due_at}, {@code due_text → due_text}. {@code due} is typed as an {@link Instant} (ISO-8601)
  * rather than free text: {@code due_at} is {@code TIMESTAMPTZ}, and the producer
  * is a server-side service we control, so the contract is type-safe end to end
  * with no lossy natural-language date parsing.
@@ -35,6 +36,19 @@ public record MeetingAnalysisActionIngest(
         String assignee,
         @JsonAlias("due_date")
         @JsonProperty("due")
-        Instant due
+        Instant due,
+        @JsonProperty("due_text")
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        @Size(max = 255)
+        String dueText
 ) {
+    public MeetingAnalysisActionIngest {
+        if (dueText != null && dueText.isBlank()) {
+            dueText = null;
+        }
+    }
+
+    public MeetingAnalysisActionIngest(String text, String assignee, Instant due) {
+        this(text, assignee, due, null);
+    }
 }

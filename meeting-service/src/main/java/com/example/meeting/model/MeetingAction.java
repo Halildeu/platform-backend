@@ -57,6 +57,9 @@ public class MeetingAction {
     @Column(name = "due_at")
     private Instant dueAt;
 
+    @Column(name = "due_text", length = 255)
+    private String dueText;
+
     @Column(name = "created_by_subject", nullable = false, length = 255)
     private String createdBySubject;
 
@@ -171,6 +174,14 @@ public class MeetingAction {
 
     public void setDueAt(Instant dueAt) {
         this.dueAt = dueAt;
+    }
+
+    public String getDueText() {
+        return dueText;
+    }
+
+    public void setDueText(String dueText) {
+        this.dueText = dueText;
     }
 
     public String getCreatedBySubject() {

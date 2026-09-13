@@ -45,6 +45,28 @@ class MeetingAnalysisPayloadHasherTest {
     }
 
     @Test
+    void nullDueText_preservesThePreFieldCanonicalHash() {
+        String legacyHash = "5f6fa0a4bf59ee35a01ca65a5c0e1516c565f25e81f3ef2f4200ce6688e8d028";
+        assertThat(hasher.hash(MEETING, TENANT, RUN, base().build())).isEqualTo(legacyHash);
+        assertThat(hasher.hash(MEETING, TENANT, RUN, base().actions(List.of(
+                new MeetingAnalysisActionIngest("aksiyon-1", "assignee", null, null))).build()))
+                .isEqualTo(legacyHash);
+    }
+
+    @Test
+    void dueText_changesHashWithoutNormalizingTheSourcePhrase() {
+        String relative = hasher.hash(MEETING, TENANT, RUN, base().actions(List.of(
+                new MeetingAnalysisActionIngest("aksiyon-1", "assignee", null, "Perşembe günü"))).build());
+        assertThat(relative).isNotEqualTo(hasher.hash(MEETING, TENANT, RUN, base().build()));
+        assertThat(hasher.hash(MEETING, TENANT, RUN, base().actions(List.of(
+                new MeetingAnalysisActionIngest("aksiyon-1", "assignee", null, "Cuma günü"))).build()))
+                .isNotEqualTo(relative);
+        assertThat(hasher.hash(MEETING, TENANT, RUN, base().actions(List.of(
+                new MeetingAnalysisActionIngest("aksiyon-1", "assignee", null, "perşembe günü"))).build()))
+                .isNotEqualTo(relative);
+    }
+
+    @Test
     void changingAnyContentField_changesTheHash() {
         String baseHash = hasher.hash(MEETING, TENANT, RUN, base().build());
         assertThat(hasher.hash(MEETING, TENANT, RUN, base().summary("different").build()))

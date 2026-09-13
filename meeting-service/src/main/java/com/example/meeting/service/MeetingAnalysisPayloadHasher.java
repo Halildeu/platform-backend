@@ -37,7 +37,8 @@ import java.util.UUID;
  *   <li>{@code JavaTimeModule} + {@code WRITE_DATES_AS_TIMESTAMPS=false} — the
  *       nested action {@code due} {@link java.time.Instant} is canonical ISO-8601;</li>
  *   <li>{@code JsonInclude.ALWAYS} — nulls are serialised, so an omitted field
- *       and an explicit JSON {@code null} hash identically;</li>
+ *       and an explicit JSON {@code null} hash identically. The additive action
+ *       {@code due_text} property is omitted when null to preserve existing run hashes;</li>
  *   <li>no default typing;</li>
  *   <li>Jackson writes UTF-8 bytes.</li>
  * </ul>

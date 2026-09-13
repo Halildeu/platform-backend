@@ -93,6 +93,8 @@ class MeetingAnalysisRunPostgresIntegrationTest {
         UUID runId = UUID.randomUUID();
         insertRunForSession(runId, meetingId, org, UUID.randomUUID().toString(), SHA_A, HASH_1);
         insertAiAction(meetingId, org, runId, 0);
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_actions SET due_text = ? WHERE analysis_run_id = ?",
+                "Perşembe günü", runId);
         insertAiDecision(meetingId, org, runId, 0);
         jdbc.update("UPDATE " + SCHEMA + ".meeting_analysis_runs "
                 + "SET generated_at = ?, created_at = ?, updated_at = ? WHERE analysis_run_id = ?",

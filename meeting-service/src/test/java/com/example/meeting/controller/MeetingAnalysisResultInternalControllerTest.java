@@ -1,5 +1,6 @@
 package com.example.meeting.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
@@ -13,11 +14,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.config.SecurityConfig;
 import com.example.meeting.dto.v1.internal.MeetingAnalysisResultIngestResponse;
+import com.example.meeting.dto.v1.internal.MeetingAnalysisResultIngestRequest;
 import com.example.meeting.exception.GlobalExceptionHandler;
 import com.example.meeting.service.MeetingAnalysisResultIngestionService;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -60,7 +63,7 @@ class MeetingAnalysisResultInternalControllerTest {
               "analyzer_contract_version": "5-adr0043",
               "generated_at": "2026-07-11T10:00:00Z",
               "decisions": ["karar"],
-              "action_items": []
+              "actions": []
             }
             """;
 
@@ -75,6 +78,54 @@ class MeetingAnalysisResultInternalControllerTest {
     private OpenFgaAuthzService authzService;
 
     // ── Keycloak USER token (even admin) cannot reach the internal path ──────
+
+    @Test
+    void groundedDueText_bindsWithoutInventingAnInstant() throws Exception {
+        when(ingestionService.ingest(eq(MEETING_ID), eq(RUN_ID), eq(CAPABILITY), any()))
+                .thenReturn(created());
+        String body = VALID_BODY.replace("\"actions\": []", """
+                "actions": [{"text":"Raporu hazirla","due":null,"due_text":"Perşembe günü"}]
+                """);
+        mockMvc.perform(post(PATH, MEETING_ID)
+                        .header("Idempotency-Key", RUN_ID.toString())
+                        .header("X-Analysis-Job-Capability", CAPABILITY)
+                        .with(serviceJwt(SVC_WRITE))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated());
+        var captor = ArgumentCaptor.forClass(MeetingAnalysisResultIngestRequest.class);
+        verify(ingestionService).ingest(eq(MEETING_ID), eq(RUN_ID), eq(CAPABILITY), captor.capture());
+        assertThat(captor.getValue().actions()).singleElement().satisfies(action -> {
+            assertThat(action.dueText()).isEqualTo("Perşembe günü");
+            assertThat(action.due()).isNull();
+        });
+    }
+
+    @Test
+    void oversizedDueText_isRejectedBeforeIngestion() throws Exception {
+        String body = VALID_BODY.replace("\"actions\": []",
+                "\"actions\": [{\"text\":\"Raporu hazirla\",\"due_text\":\"" + "x".repeat(256) + "\"}]");
+        mockMvc.perform(post(PATH, MEETING_ID)
+                        .header("Idempotency-Key", RUN_ID.toString())
+                        .header("X-Analysis-Job-Capability", CAPABILITY)
+                        .with(serviceJwt(SVC_WRITE))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(ingestionService);
+    }
+
+    @Test
+    void userCannotIngestGroundedDueText() throws Exception {
+        String body = VALID_BODY.replace("\"actions\": []", """
+                "actions": [{"text":"Raporu hazirla","due_text":"Perşembe günü"}]
+                """);
+        mockMvc.perform(post(PATH, MEETING_ID)
+                        .header("Idempotency-Key", RUN_ID.toString())
+                        .header("X-Analysis-Job-Capability", CAPABILITY)
+                        .with(adminUserJwt())
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(ingestionService);
+    }
 
     @Test
     void keycloakUserJwt_cannotIngest_403() throws Exception {
