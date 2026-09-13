@@ -242,13 +242,30 @@ final class SpeechmaticsLiveProtocolAdapter {
         result.put("reason", "speechmatics_final");
         result.put("elapsed_ms", elapsedMs(event));
         result.put("rms", 0.0d);
-        result.put("source_start_sample", lastFinalEndSample);
+        final long sourceStart = attributionSourceStart(event.path("results"), lastFinalEndSample);
+        result.put("source_start_sample", sourceStart);
         result.put("source_end_sample", sourceEnd);
-        final ArrayNode turns = speakerTurns(event.path("results"), text, lastFinalEndSample, sourceEnd);
+        final ArrayNode turns = speakerTurns(event.path("results"), text, sourceStart, sourceEnd);
         if (turns != null) result.set("speakerTurns", turns);
         putStageTimings(result, acceptedSamples);
         lastFinalEndSample = sourceEnd;
         return List.of(encode(result));
+    }
+
+    private static long attributionSourceStart(JsonNode results, long fallback) {
+        if (!results.isArray() || results.size() > 512) return fallback;
+        long earliest = fallback;
+        for (JsonNode item : results) {
+            JsonNode start = item.path("start_time");
+            if ("entity".equals(item.path("type").asText())) {
+                earliest = Math.min(earliest, attributionSourceStart(item.path("written_form"), fallback));
+            } else if (start.isNumber() && Double.isFinite(start.doubleValue()) && start.doubleValue() >= 0) {
+                earliest = Math.min(earliest, Math.round(start.doubleValue() * 16000d));
+            }
+        }
+        // Word spans can overlap a previous final (including punctuation-only
+        // finals). The bounded PCM accumulator explicitly supports this overlap.
+        return earliest;
     }
 
     /** Keep provider formatting authoritative. Ambiguous alignment stays unknown,
@@ -279,8 +296,14 @@ final class SpeechmaticsLiveProtocolAdapter {
             JsonNode end = word.path("end_time");
             if (!start.isNumber() || !end.isNumber() || !Double.isFinite(start.doubleValue())
                     || !Double.isFinite(end.doubleValue())) return null;
-            long startMs = Math.round(start.doubleValue() * 1000d) - startSample / 16;
-            long endMs = Math.round(end.doubleValue() * 1000d) - startSample / 16;
+            // Use the same sample clock as the window before quantizing to ms.
+            // Rounding absolute ms while flooring duration can reject valid ends.
+            long wordStartSample = Math.round(start.doubleValue() * 16000d);
+            long wordEndSample = Math.round(end.doubleValue() * 16000d);
+            if (wordStartSample < startSample || wordEndSample > endSample
+                    || wordEndSample < wordStartSample) return null;
+            long startMs = (wordStartSample - startSample) / 16;
+            long endMs = (wordEndSample - startSample) / 16;
             turns.addObject().put("speaker", speaker).put("textStart", from)
                     .put("textEnd", from + content.length()).put("startMs", startMs).put("endMs", endMs);
             offset = from + content.length();
