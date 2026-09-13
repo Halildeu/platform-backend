@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.common.meeting.events.MeetingEventEnvelope;
+import com.example.common.meeting.events.SpeakerAttribution;
 import com.example.common.meeting.events.MeetingEventPayload;
 import com.example.common.meeting.events.MeetingEventType;
 import com.example.common.meeting.events.MeetingEventV1Serializer;
@@ -134,6 +135,37 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_finalizations");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_segments");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_associations");
+    }
+
+    @Test
+    void anonymousAttributionSurvivesCommitAndReopenAndConflictingReplayIsRejected() {
+        insertResolvedAssociation();
+        var attribution = new SpeakerAttribution(SpeakerAttribution.scope(TENANT.toString(),
+                MEETING.toString(), "SES-42", 1), List.of(
+                new SpeakerAttribution.Turn("S1", 0, 5, 0, 700),
+                new SpeakerAttribution.Turn("S2", 6, 11, 500, 1000)));
+        var event = new DirectSttTranscriptResultEvent("speaker-entry", TENANT, TENANT.toString(),
+                "7", MEETING, "SES-42", 1L, 1L, 1L, 1L, 1000L, "speaker-correlation",
+                "b".repeat(64), "hello world", 1d, attribution);
+        var created = directSttIngestion.upsert(event, SESSION);
+        var reopened = segments.findById(created.id()).orElseThrow();
+        assertThat(reopened.getSpeakerAttribution()).isEqualTo(attribution);
+        assertThat(reopened.getSpeakerId()).isNull();
+        assertThat(com.example.transcript.dto.TranscriptSegmentDto.from(reopened).speakerAttribution())
+                .isEqualTo(attribution);
+        assertThat(directSttIngestion.upsert(event, SESSION).id()).isEqualTo(created.id());
+        var altered = new SpeakerAttribution(attribution.scope(), List.of(
+                new SpeakerAttribution.Turn("S2", 0, 5, 0, 700),
+                new SpeakerAttribution.Turn("S1", 6, 11, 500, 1000)));
+        var replay = new DirectSttTranscriptResultEvent("speaker-replay", TENANT, TENANT.toString(),
+                "7", MEETING, "SES-42", 1L, 1L, 1L, 1L, 1000L, "speaker-correlation",
+                "b".repeat(64), "hello world", 1d, altered);
+        assertThatThrownBy(() -> directSttIngestion.upsert(replay, SESSION))
+                .isInstanceOf(DirectSttTranscriptIngestionService.SourceWindowReplayConflictException.class);
+        reopened.setTextFinal("changed text");
+        assertThat(com.example.transcript.dto.TranscriptSegmentDto.from(reopened).speakerAttribution()).isNull();
+        erasureService.erase(TENANT, MEETING, SESSION, "SES-42");
+        assertThat(segments.findById(created.id())).isEmpty();
     }
 
     @Test

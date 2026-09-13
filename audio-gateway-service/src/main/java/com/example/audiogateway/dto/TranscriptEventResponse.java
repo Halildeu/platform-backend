@@ -1,5 +1,7 @@
 package com.example.audiogateway.dto;
 
+import com.example.common.meeting.events.SpeakerAttribution;
+
 import java.util.List;
 
 /**
@@ -41,11 +43,24 @@ public record TranscriptEventResponse(
         String correlationId,
         String assemblyReason,
         List<String> sourceEventIds,
-        long transportEpoch
+        long transportEpoch,
+        SpeakerAttribution speakerAttribution
 ) {
 
     public TranscriptEventResponse {
         sourceEventIds = sourceEventIds == null ? List.of() : List.copyOf(sourceEventIds);
+    }
+
+    public TranscriptEventResponse(String eventId, String sessionId, String meetingId,
+            long chunkSeq, long chunkStartedAtMs, long windowSeq, long firstChunkSeq,
+            long lastChunkSeq, long windowStartedAtMs, long windowEndedAtMs, int audioDurationMs,
+            String flushReason, String text, int textLength, String status, Long receivedAtMs,
+            String sttLanguage, Double durationSeconds, String correlationId, String assemblyReason,
+            List<String> sourceEventIds, long transportEpoch) {
+        this(eventId, sessionId, meetingId, chunkSeq, chunkStartedAtMs, windowSeq, firstChunkSeq,
+                lastChunkSeq, windowStartedAtMs, windowEndedAtMs, audioDurationMs, flushReason,
+                text, textLength, status, receivedAtMs, sttLanguage, durationSeconds, correlationId,
+                assemblyReason, sourceEventIds, transportEpoch, null);
     }
 
     /** A raw committed chunk — carries no assembly provenance. */

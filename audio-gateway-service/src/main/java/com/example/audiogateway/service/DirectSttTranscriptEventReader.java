@@ -3,6 +3,7 @@ package com.example.audiogateway.service;
 import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.TranscriptEventResponse;
 import com.example.audiogateway.dto.TranscriptEventsResponse;
+import com.example.common.meeting.events.SpeakerAttribution;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -81,7 +82,8 @@ public class DirectSttTranscriptEventReader {
             final MapRecord<String, Object, Object> record,
             final SessionRecord session) {
         final Map<String, String> fields = toStringFields(record);
-        if (!SCHEMA_VERSION.equals(fields.get("schemaVersion"))
+        if ((!SCHEMA_VERSION.equals(fields.get("schemaVersion"))
+                && !SpeakerAttribution.SCHEMA_V2.equals(fields.get("schemaVersion")))
                 || !EVENT_TYPE.equals(fields.get("eventType"))
                 || !session.sessionId().equals(fields.get("sessionId"))
                 || !Long.toString(session.tenantId()).equals(fields.get("tenantId"))
@@ -112,6 +114,16 @@ public class DirectSttTranscriptEventReader {
         final long windowEndedAtMs = defaultLong(
                 parseLong(fields.get("windowEndedAtMs")),
                 windowStartedAtMs + audioDurationMs);
+        final long epoch = defaultLong(parseLong(fields.get("transportEpoch")), 0L);
+        final SpeakerAttribution attribution;
+        try {
+            attribution = SpeakerAttribution.SCHEMA_V2.equals(fields.get("schemaVersion"))
+                    ? SpeakerAttribution.parse(fields.get("speakerAttribution"),
+                            SpeakerAttribution.scope(Long.toString(session.tenantId()), session.meetingId(),
+                                    session.sessionId(), epoch), text, audioDurationMs) : null;
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
         return new TranscriptEventResponse(
                 recordId,
                 session.sessionId(),
@@ -134,7 +146,7 @@ public class DirectSttTranscriptEventReader {
                 blankToNull(fields.get("correlationId")),
                 blankToNull(fields.get("assemblyReason")),
                 splitIds(fields.get("sourceEventIds")),
-                defaultLong(parseLong(fields.get("transportEpoch")), 0L));
+                epoch, attribution);
     }
 
     /** Comma-joined source ids of an assembled line; empty for a raw chunk. */

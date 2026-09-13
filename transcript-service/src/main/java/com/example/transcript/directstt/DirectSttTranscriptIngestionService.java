@@ -49,6 +49,12 @@ public class DirectSttTranscriptIngestionService {
     @Transactional
     public TranscriptSegmentDto upsert(
             DirectSttTranscriptResultEvent event, UUID canonicalSessionId) {
+        if (event.speakerAttribution() != null) {
+            com.example.common.meeting.events.SpeakerAttribution.parse(event.speakerAttribution().encode(),
+                    com.example.common.meeting.events.SpeakerAttribution.scope(event.tenantId().toString(),
+                            event.meetingId().toString(), event.sourceSessionId(), event.transportEpoch()),
+                    event.textDraft(), Math.round(durationSeconds(event) * 1000d));
+        }
         UUIDScope scope = new UUIDScope(event.tenantId(), event.meetingId(), canonicalSessionId);
         erasureFence.lock(
                 SessionErasureFence.canonicalKey(scope),
@@ -115,6 +121,14 @@ public class DirectSttTranscriptIngestionService {
         segment.setStartTime(startSeconds);
         segment.setEndTime(startSeconds + durationSeconds);
         segment.setTextDraft(event.textDraft());
+        segment.setSpeakerAttribution(event.speakerAttribution());
+        if (event.speakerAttribution() != null) {
+            var speakers = event.speakerAttribution().turns().stream()
+                    .map(turn -> turn.speaker()).distinct().toList();
+            // The legacy scalar is valid only when the entire window has one known speaker.
+            segment.setSpeakerId(speakers.size() == 1
+                    ? event.speakerAttribution().speakerId(speakers.getFirst()) : null);
+        }
         segment.setTextFinal(null);
         segment.setConfidence(null);
         segment.setStatus(TranscriptSegmentStatus.DRAFT);
@@ -145,6 +159,7 @@ public class DirectSttTranscriptIngestionService {
                 && Objects.equals(segment.getStartTime(), startSeconds)
                 && Objects.equals(segment.getEndTime(), endSeconds)
                 && Objects.equals(segment.getTextDraft(), event.textDraft())
+                && Objects.equals(segment.getSpeakerAttribution(), event.speakerAttribution())
                 && Objects.equals(
                         normalizeSha256(segment.getSourceSha256()), normalizeSha256(event.sha256()));
     }

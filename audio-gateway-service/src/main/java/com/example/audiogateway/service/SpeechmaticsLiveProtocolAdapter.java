@@ -1,6 +1,7 @@
 package com.example.audiogateway.service;
 
 import com.example.audiogateway.config.AudioGatewayProperties;
+import com.example.common.meeting.events.SpeakerAttribution;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -74,6 +75,7 @@ final class SpeechmaticsLiveProtocolAdapter {
         final ObjectNode transcription = root.putObject("transcription_config");
         transcription.put("language", config.getLanguage());
         transcription.put("enable_partials", true);
+        transcription.put("diarization", "speaker");
         transcription.put("max_delay", config.getMaxDelaySeconds());
         transcription.put("max_delay_mode", config.getMaxDelayMode());
         if (additionalVocab != null && !additionalVocab.isEmpty()) {
@@ -242,9 +244,53 @@ final class SpeechmaticsLiveProtocolAdapter {
         result.put("rms", 0.0d);
         result.put("source_start_sample", lastFinalEndSample);
         result.put("source_end_sample", sourceEnd);
+        final ArrayNode turns = speakerTurns(event.path("results"), text, lastFinalEndSample, sourceEnd);
+        if (turns != null) result.set("speakerTurns", turns);
         putStageTimings(result, acceptedSamples);
         lastFinalEndSample = sourceEnd;
         return List.of(encode(result));
+    }
+
+    /** Keep provider formatting authoritative. Ambiguous alignment stays unknown,
+     * never a guessed attribution; word timing remains independent for overlap. */
+    private ArrayNode speakerTurns(JsonNode results, String text, long startSample, long endSample) {
+        if (!results.isArray() || results.isEmpty() || results.size() > 512) return null;
+        ArrayNode words = objectMapper.createArrayNode();
+        for (JsonNode item : results) {
+            if ("entity".equals(item.path("type").asText())) {
+                if (!item.path("written_form").isArray()) return null;
+                item.path("written_form").forEach(words::add);
+            } else {
+                words.add(item);
+            }
+        }
+        ArrayNode turns = objectMapper.createArrayNode();
+        int offset = 0;
+        for (JsonNode word : words) {
+            String type = word.path("type").asText();
+            if (!"word".equals(type) && !"punctuation".equals(type)) return null;
+            JsonNode alternative = word.path("alternatives").path(0);
+            String content = alternative.path("content").asText("");
+            String speaker = alternative.path("speaker").asText("UU");
+            if (content.isEmpty() || !speaker.matches("S[1-9][0-9]{0,2}|UU")) return null;
+            int from = text.indexOf(content, offset);
+            if (from < 0 || !text.substring(offset, from).isBlank()) return null;
+            JsonNode start = word.path("start_time");
+            JsonNode end = word.path("end_time");
+            if (!start.isNumber() || !end.isNumber() || !Double.isFinite(start.doubleValue())
+                    || !Double.isFinite(end.doubleValue())) return null;
+            long startMs = Math.round(start.doubleValue() * 1000d) - startSample / 16;
+            long endMs = Math.round(end.doubleValue() * 1000d) - startSample / 16;
+            turns.addObject().put("speaker", speaker).put("textStart", from)
+                    .put("textEnd", from + content.length()).put("startMs", startMs).put("endMs", endMs);
+            offset = from + content.length();
+        }
+        try {
+            SpeakerAttribution.parseTurns(turns, text, (endSample - startSample) / 16);
+            return turns;
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
     }
 
     private static long elapsedMs(final JsonNode event) {

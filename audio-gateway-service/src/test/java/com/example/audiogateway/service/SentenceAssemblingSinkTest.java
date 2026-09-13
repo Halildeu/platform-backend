@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 import com.example.audiogateway.dto.TranscriptResult;
+import com.example.common.meeting.events.SpeakerAttribution;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.ArrayList;
 import java.util.List;
@@ -19,6 +20,25 @@ import org.junit.jupiter.api.Test;
  * already-delivered transcript into a failed one.
  */
 class SentenceAssemblingSinkTest {
+
+    @Test
+    void attributedWindowsStayIntactAndCarryDurableIdsForViewerDeduplication() {
+        var sink = sink((result, context) -> {
+            emissions.add(new Emission(result, context));
+            return "1000-" + emissions.size();
+        });
+        var attribution = new SpeakerAttribution(java.util.UUID.randomUUID(), List.of(
+                new SpeakerAttribution.Turn("S1", 0, 5, 0, 700),
+                new SpeakerAttribution.Turn("S2", 6, 11, 500, 1000)));
+        var result = new TranscriptResult("hello world", "tr", null, 1d, 1d,
+                null, null, null, null, attribution);
+        sink.emit(result, context(0, 0, 1000));
+        sink.closeSession(SESSION);
+        assertThat(emissions).hasSize(2);
+        assertThat(emissions.get(1).result().speakerAttribution()).isEqualTo(attribution);
+        assertThat(emissions.get(1).context().assembly().sourceEventIds()).containsExactly("1000-1");
+        assertThat(emissions.get(1).result().text()).isEqualTo("hello world");
+    }
 
     private static final String SESSION = "sess-1";
 
