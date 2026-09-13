@@ -607,6 +607,8 @@ public class MeetingService {
                 resolveAssigneeSubject(request.assigneeSubject(), request.assigneeUserId()));
         action.setStatus(request.status());
         action.setDueAt(request.dueAt());
+        // A manual replacement supersedes the AI's original relative deadline.
+        action.setDueText(null);
         action.setLastUpdatedBySubject(tenant.subject());
         // saveAndFlush: the flushed @Version is the event key's occurrence counter.
         MeetingAction saved = actionRepository.saveAndFlush(action);

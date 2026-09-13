@@ -201,6 +201,7 @@ public class MeetingAnalysisResultWriter {
             action.setAssigneeSubject(actionIn.assignee());
             action.setStatus(MeetingActionStatus.OPEN);
             action.setDueAt(actionIn.due());
+            action.setDueText(actionIn.dueText());
             action.setSource(MeetingItemSource.AI_ANALYSIS);
             action.setAnalysisRunId(analysisRunId);
             action.setOrdinal(actionOrdinal++);

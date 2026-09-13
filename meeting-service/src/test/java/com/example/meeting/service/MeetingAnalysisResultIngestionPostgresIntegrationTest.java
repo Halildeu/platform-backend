@@ -11,6 +11,7 @@ import com.example.meeting.model.Meeting;
 import com.example.meeting.repository.MeetingRepository;
 import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.security.AnalysisJobCapabilityVerifier;
+import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.support.AnalysisJobCapabilityTestTokens;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -121,6 +122,8 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
             MeetingAnalysisResultIngestionService.class,
             MeetingAnalysisResultWriter.class,
             MeetingAnalysisPayloadHasher.class,
+            MeetingIntelligenceResultService.class,
+            MeetingIntelligenceResultAccessAuditService.class,
             AnalysisGeneratedAtPolicy.class,
             AnalysisJobCapabilityVerifier.class
     })
@@ -132,6 +135,8 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     @Autowired
     private MeetingAnalysisPayloadHasher hasher;
     @Autowired
+    private MeetingIntelligenceResultService resultService;
+    @Autowired
     private MeetingAnalysisRunRepository runRepository;
     @Autowired
     private JdbcTemplate jdbc;
@@ -142,6 +147,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     void cleanUp() {
         // Real commits accumulate; wipe the tables between tests (meeting delete
         // cascades to runs/actions/decisions, but delete children first to be explicit).
+        jdbc.update("DELETE FROM " + SCHEMA + ".meeting_intelligence_result_access_audit");
         jdbc.update("DELETE FROM " + SCHEMA + ".meeting_actions");
         jdbc.update("DELETE FROM " + SCHEMA + ".meeting_decisions");
         jdbc.update("DELETE FROM " + SCHEMA + ".meeting_analysis_job_capability_uses");
@@ -151,6 +157,52 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     }
 
     // ────────────────────────── Happy path + mapping ──────────────────────────
+
+    @Test
+    void relativeDueText_persistsReopensRetriesAndRetainsTenantIsolation() {
+        UUID tenantId = UUID.randomUUID();
+        UUID meetingId = insertMeeting(tenantId);
+        UUID runId = UUID.randomUUID();
+        String phrase = "Perşembe günü";
+        Instant legacyDue = Instant.parse("2026-07-20T09:00:00Z");
+        var request = request(SHA_A, "özet", List.of(), List.of(
+                new MeetingAnalysisActionIngest("Raporu gönder", "owner", null, phrase),
+                new MeetingAnalysisActionIngest("Kontrol et", null, legacyDue),
+                new MeetingAnalysisActionIngest("Takip et", null, null)), null);
+
+        assertThat(ingest(meetingId, runId, request).idempotentReplay()).isFalse();
+        assertThat(jdbc.queryForObject("SELECT due_text FROM " + SCHEMA
+                + ".meeting_actions WHERE analysis_run_id = ? AND ordinal = 0", String.class, runId))
+                .isEqualTo(phrase);
+        var context = new AdminTenantContext(tenantId, "reader", "reader");
+        for (int reopen = 0; reopen < 2; reopen++) {
+            var result = resultService.getForSession(context, meetingId, SESSION_ID.toString());
+            assertThat(result.actionItems()).extracting(item -> item.dueDate())
+                    .containsExactly(phrase, legacyDue.toString(), null);
+        }
+        assertThat(ingest(meetingId, runId, request).idempotentReplay()).isTrue();
+        var changed = request(SHA_A, "özet", List.of(), List.of(
+                new MeetingAnalysisActionIngest("Raporu gönder", "owner", null, "Cuma günü"),
+                new MeetingAnalysisActionIngest("Kontrol et", null, legacyDue),
+                new MeetingAnalysisActionIngest("Takip et", null, null)), null);
+        assertThatThrownBy(() -> ingest(meetingId, runId, changed))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        ex -> assertThat(ex.getStatusCode().value()).isEqualTo(409));
+        UUID otherTenant = UUID.randomUUID();
+        assertThatThrownBy(() -> resultService.getLatest(
+                new AdminTenantContext(otherTenant, "other", "other"), meetingId))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        ex -> assertThat(ex.getStatusCode().value()).isEqualTo(404));
+        UUID otherRun = UUID.randomUUID();
+        assertThatThrownBy(() -> service.ingest(meetingId, otherRun,
+                AnalysisJobCapabilityTestTokens.issue(otherTenant, meetingId, otherRun, request), request))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        ex -> assertThat(ex.getStatusCode().value()).isEqualTo(403));
+        assertThat(runCount(meetingId)).isEqualTo(1);
+        jdbc.update("DELETE FROM " + SCHEMA + ".meetings WHERE id = ?", meetingId);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA
+                + ".meeting_actions WHERE analysis_run_id = ?", Integer.class, runId)).isZero();
+    }
 
     @Test
     void generatedAtMustFollowFinalizationAndStayWithinServerSkew() {

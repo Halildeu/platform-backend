@@ -140,7 +140,8 @@ public class MeetingIntelligenceResultService {
         return new MeetingIntelligenceActionItem(
                 action.getDescription(),
                 action.getAssigneeSubject(),
-                action.getDueAt() == null ? null : action.getDueAt().toString());
+                action.getDueText() != null ? action.getDueText()
+                        : action.getDueAt() == null ? null : action.getDueAt().toString());
     }
 
     private <T> List<T> readEvidence(

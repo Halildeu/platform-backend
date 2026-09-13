@@ -228,9 +228,36 @@ class MeetingIntelligenceResultServiceTest {
     }
 
     @Test
+    void groundedDueText_takesPrecedenceWithoutInferringAnInstant() {
+        MeetingAction relative = new MeetingAction();
+        relative.setDescription("Raporu hazirla.");
+        relative.setDueText("Perşembe günü");
+        MeetingAction both = new MeetingAction();
+        both.setDescription("Kontrol et.");
+        both.setDueText("2026-07-14");
+        both.setDueAt(Instant.parse("2026-07-14T09:00:00Z"));
+        when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID))
+                .thenReturn(Optional.of(new Meeting()));
+        when(runRepository.findLatestByMeetingIdVisibleToOrg(MEETING_ID, ORG_ID))
+                .thenReturn(Optional.of(analysisRun()));
+        when(decisionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(
+                RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of());
+        when(actionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(
+                RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of(relative, both));
+
+        assertThat(service.getLatest(tenant, MEETING_ID).actionItems())
+                .extracting(item -> item.dueDate()).containsExactly("Perşembe günü", "2026-07-14");
+        assertThat(relative.getDueAt()).isNull();
+        verify(accessAuditService).recordCanonicalRead(tenant, MEETING_ID, RUN_ID);
+    }
+
+    @Test
     void getLatest_malformedEvidence_failsClosedWithoutReturningPartialResult() {
         MeetingAnalysisRun run = analysisRun();
         run.setSummaryCitations("{not-json");
+        MeetingAction action = new MeetingAction();
+        action.setDescription("Raporu hazirla.");
+        action.setDueText("Perşembe günü");
         when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID))
                 .thenReturn(Optional.of(new Meeting()));
         when(runRepository.findLatestByMeetingIdVisibleToOrg(MEETING_ID, ORG_ID))
@@ -238,7 +265,7 @@ class MeetingIntelligenceResultServiceTest {
         when(decisionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(
                 RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of());
         when(actionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(
-                RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of());
+                RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of(action));
 
         assertThatThrownBy(() -> service.getLatest(tenant, MEETING_ID))
                 .isInstanceOfSatisfying(ResponseStatusException.class, exception -> {
