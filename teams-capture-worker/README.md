@@ -25,9 +25,17 @@ istemez. HTTP yönlendirmeleri kapalıdır; token diske veya loga yazılmaz.
 Eksik/kapalı ayarlarla istek göndermez. Microsoft protokolü:
 https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow
 
-Bu bileşen tek başına bot katılımını sağlamaz. Program halen yalnız sağlık
-uç noktası açar. Authenticated join endpoint, izinli takvim çözümleyici ve
-doğrulanmış callback işleyicisi tamamlanmadan servis hazır kabul edilmez.
+Bu bileşen tek başına bot katılımını sağlamaz. Program sağlık ve kimlik
+doğrulamalı `/api/teams/callback` uç noktalarını açar. Callback Microsoft'un
+Skype OpenID anahtarları, botframework issuer, uygulama audience, süre ve
+tenant kontrolünden geçer. Bilinmeyen çağrı ve desteklenmeyen bildirim 503
+döner; sessizce kabul edilmez. Çağrı durumları en fazla1000 kayıtla süreç
+belleğinde tutulur; restart sonrası devamlılık veya çok replika desteği yoktur.
+Bu sınırda test worker'ı hazır kabul edilmemelidir. Production öncesi kalıcı
+çağrı eşleştirme ve geri alma yolu gereklidir.
+Authenticated join endpoint ve izinli takvim çözümleyici tamamlanmadan servis hazır kabul edilmez.
 Mevcut tenant onayı Calendars izni içermediğinden otomatik takvim sorgusu
 eklenmemiştir. Gerçek secret sağlama, callback alan adı ve Teams manifest
 aktivasyonu GitOps3716 üzerinden yürütülür.
+
+Callback sözleşmesi: https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/articles/calls/calling-notifications.html

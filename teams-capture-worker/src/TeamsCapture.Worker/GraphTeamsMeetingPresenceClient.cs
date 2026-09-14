@@ -14,17 +14,20 @@ public sealed class GraphTeamsMeetingPresenceClient : ITeamsMeetingPresenceClien
     private readonly ITeamsCalendarMeetingResolver calendarResolver;
     private readonly ITeamsAccessTokenProvider tokenProvider;
     private readonly HttpClient httpClient;
+    private readonly TeamsCallbackState callbackState;
 
     public GraphTeamsMeetingPresenceClient(
         TeamsCaptureOptions options,
         ITeamsCalendarMeetingResolver calendarResolver,
         ITeamsAccessTokenProvider tokenProvider,
-        HttpClient httpClient)
+        HttpClient httpClient,
+        TeamsCallbackState callbackState)
     {
         this.options = options;
         this.calendarResolver = calendarResolver;
         this.tokenProvider = tokenProvider;
         this.httpClient = httpClient;
+        this.callbackState = callbackState;
     }
 
     public async Task<TeamsJoinReceipt?> JoinAsync(
@@ -68,7 +71,7 @@ public sealed class GraphTeamsMeetingPresenceClient : ITeamsMeetingPresenceClien
         using var body = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
         return body.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
                && !string.IsNullOrWhiteSpace(id.GetString())
-            ? new TeamsJoinReceipt(id.GetString()!)
+            && callbackState.Register(id.GetString()!) ? new TeamsJoinReceipt(id.GetString()!)
             : null;
     }
 

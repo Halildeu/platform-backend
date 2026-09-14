@@ -42,7 +42,7 @@ public sealed class GraphTeamsMeetingPresenceClientTests
             options,
             new CalendarResolver(),
             new AccessTokenProvider(),
-            new HttpClient(handler));
+            new HttpClient(handler), new TeamsCallbackState());
 
     private static TeamsCaptureOptions ReadyOptions() => new()
     {
