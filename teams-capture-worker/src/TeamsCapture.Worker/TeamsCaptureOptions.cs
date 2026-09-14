@@ -14,6 +14,9 @@ public sealed class TeamsCaptureOptions
 
     public string? ApplicationId { get; init; }
 
+    // Supply through the institution's secret store, never a tracked settings file.
+    public string? ClientSecret { get; init; }
+
     public string? PublicCallbackBaseUrl { get; init; }
 
     public bool IsReadyForRegistration() => Enabled
