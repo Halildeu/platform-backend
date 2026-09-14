@@ -25,17 +25,31 @@ istemez. HTTP yönlendirmeleri kapalıdır; token diske veya loga yazılmaz.
 Eksik/kapalı ayarlarla istek göndermez. Microsoft protokolü:
 https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow
 
-Bu bileşen tek başına bot katılımını sağlamaz. Program sağlık ve kimlik
-doğrulamalı `/api/teams/callback` uç noktalarını açar. Callback Microsoft'un
+Program sağlık, kurum içi katılım komutu ve kimlik doğrulamalı
+`/api/teams/callback` uç noktalarını açar. Callback Microsoft'un
 Skype OpenID anahtarları, botframework issuer, uygulama audience, süre ve
 tenant kontrolünden geçer. Bilinmeyen çağrı ve desteklenmeyen bildirim 503
-döner; sessizce kabul edilmez. Çağrı durumları en fazla1000 kayıtla süreç
-belleğinde tutulur; restart sonrası devamlılık veya çok replika desteği yoktur.
-Bu sınırda test worker'ı hazır kabul edilmemelidir. Production öncesi kalıcı
-çağrı eşleştirme ve geri alma yolu gereklidir.
-Authenticated join endpoint ve izinli takvim çözümleyici tamamlanmadan servis hazır kabul edilmez.
-Mevcut tenant onayı Calendars izni içermediğinden otomatik takvim sorgusu
-eklenmemiştir. Gerçek secret sağlama, callback alan adı ve Teams manifest
-aktivasyonu GitOps3716 üzerinden yürütülür.
+döner; sessizce kabul edilmez.
+
+`POST /api/teams/meetings/{meetingId}/join`, ayrı bir
+`X-Teams-Control-Key` ile korunur. İstek kanonik toplantı UUID'sini, opak takvim
+olayı referansını ve Teams katılım kimliklerini birlikte verir. Aynı takvim
+referansı başka bir toplantıya veya başka katılım kimliklerine yeniden
+bağlanamaz. Worker bu eşleştirmeyi Graph çağrısından önce kalıcı yazar.
+`GET /api/teams/calls/{callId}` aynı anahtarla güncel çağrı durumunu ve kanonik
+toplantı UUID'sini döndürür.
+
+Çağrı ve takvim eşleştirmeleri en fazla1000 kayıtla sınırlandırılır ve
+`TeamsCapture__CallStateFilePath` ile `TeamsCapture__CalendarStateFilePath`
+yollarına atomik olarak yazılır. Dağıtımda bu yollar kalıcı bir volume üzerinde
+olmalı ve worker tek replika çalışmalıdır. Böylece süreç veya pod yeniden
+başladığında çağrı takibi devam eder. Çok replika için sonraki aşamada ortak
+veritabanı adaptörü gerekir.
+
+Mevcut tenant onayı Calendars izni içermediğinden worker tenant takvimlerini
+Graph üzerinden taramaz. Takvim bilgisi, toplantıyı zaten bilen yetkili platform
+servisinden gelir; böylece yeni ve geniş bir Microsoft izni gerekmez. Gerçek
+secret sağlama, kalıcı volume, callback alan adı ve Teams manifest aktivasyonu
+GitOps3716 üzerinden yürütülür.
 
 Callback sözleşmesi: https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/articles/calls/calling-notifications.html

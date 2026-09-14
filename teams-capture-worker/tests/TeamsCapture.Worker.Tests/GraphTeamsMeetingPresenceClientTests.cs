@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using TeamsCapture.Worker;
 using Xunit;
 
@@ -39,7 +40,7 @@ public sealed class GraphTeamsMeetingPresenceClientTests
     private static GraphTeamsMeetingPresenceClient CreateClient(
         TeamsCaptureOptions options,
         CapturingHandler handler) => new(
-            options,
+            Options.Create(options),
             new CalendarResolver(),
             new AccessTokenProvider(),
             new HttpClient(handler), new TeamsCallbackState());
@@ -49,7 +50,10 @@ public sealed class GraphTeamsMeetingPresenceClientTests
         Enabled = true,
         TenantId = Guid.NewGuid().ToString(),
         ApplicationId = Guid.NewGuid().ToString(),
-        PublicCallbackBaseUrl = "https://bot.test.example"
+        PublicCallbackBaseUrl = "https://bot.test.example",
+        ControlApiKey = new string('k', 32),
+        CallStateFilePath = Path.GetFullPath("call-state-test.json"),
+        CalendarStateFilePath = Path.GetFullPath("calendar-state-test.json")
     };
 
     private static MeetingPresenceCommand Command() => new(Guid.NewGuid(), "calendar-event-1", "corr-1");

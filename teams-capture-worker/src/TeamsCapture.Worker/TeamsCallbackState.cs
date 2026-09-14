@@ -1,24 +1,42 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 
 namespace TeamsCapture.Worker;
 
-/// <summary>Bounded, process-local call status; not durable meeting/analysis storage.</summary>
+/// <summary>Bounded call status persisted without audio, transcript or tokens.</summary>
 public sealed class TeamsCallbackState
 {
     private readonly object gate = new();
-    private readonly Dictionary<string, string> calls = new(StringComparer.Ordinal);
-    public bool Register(string id)
+    private readonly Dictionary<string, CallState> calls = new(StringComparer.Ordinal);
+    private readonly string? stateFilePath;
+
+    public TeamsCallbackState() { }
+
+    public TeamsCallbackState(IOptions<TeamsCaptureOptions> options)
+    {
+        stateFilePath = options.Value.CallStateFilePath;
+        if (!string.IsNullOrWhiteSpace(stateFilePath)) Load();
+    }
+
+    public bool Register(string id, Guid meetingId = default)
     {
         lock (gate)
         {
             if (calls.ContainsKey(id)) return true;
             if (calls.Count >= 1000) return false;
-            calls.Add(id, "establishing");
+            calls.Add(id, new CallState(meetingId, "establishing", DateTimeOffset.UtcNow));
+            Persist();
             return true;
         }
     }
 
-    public string? Read(string id) { lock (gate) return calls.GetValueOrDefault(id); }
+    public string? Read(string id) { lock (gate) return calls.GetValueOrDefault(id)?.State; }
+
+    public Guid? ReadMeetingId(string id)
+    {
+        lock (gate) return calls.TryGetValue(id, out var value) && value.MeetingId != Guid.Empty
+            ? value.MeetingId : null;
+    }
 
     public bool Apply(JsonElement payload)
     {
@@ -46,9 +64,33 @@ public sealed class TeamsCallbackState
             // A callback racing join registration must be retried, never silently discarded.
             if (updates.Any(update => !calls.ContainsKey(update.Id))) return false;
             foreach (var update in updates)
-                if (Rank(update.State) >= Rank(calls[update.Id])) calls[update.Id] = update.State;
+                if (Rank(update.State) >= Rank(calls[update.Id].State))
+                    calls[update.Id] = calls[update.Id] with { State = update.State, UpdatedAt = DateTimeOffset.UtcNow };
+            Persist();
             return true;
         }
     }
     private static int Rank(string state) => state switch { "establishing" => 0, "established" => 1, "terminating" => 2, _ => 3 };
+
+    private void Load()
+    {
+        if (!File.Exists(stateFilePath)) return;
+        var restored = JsonSerializer.Deserialize<Dictionary<string, CallState>>(File.ReadAllText(stateFilePath));
+        if (restored is null || restored.Count > 1000) throw new InvalidDataException("Invalid Teams call state file.");
+        foreach (var item in restored)
+            if (item.Key.Length is > 0 and <= 128 && item.Value.State is "establishing" or "established" or "terminating" or "terminated")
+                calls[item.Key] = item.Value;
+    }
+
+    private void Persist()
+    {
+        if (string.IsNullOrWhiteSpace(stateFilePath)) return;
+        var directory = Path.GetDirectoryName(stateFilePath)!;
+        Directory.CreateDirectory(directory);
+        var temporary = stateFilePath + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(calls));
+        File.Move(temporary, stateFilePath, true);
+    }
+
+    private sealed record CallState(Guid MeetingId, string State, DateTimeOffset UpdatedAt);
 }

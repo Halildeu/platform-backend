@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using TeamsCapture.Worker;
 using Xunit;
 
@@ -30,6 +31,29 @@ public class TeamsCallbackStateTests
     public void Invalid_envelopes_are_rejected(string json)
     {
         Assert.False(new TeamsCallbackState().Apply(JsonDocument.Parse(json).RootElement));
+    }
+
+    [Fact]
+    public void Call_and_meeting_link_survive_restart()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "calls.json");
+        var meetingId = Guid.NewGuid();
+        try
+        {
+            var options = Options.Create(new TeamsCaptureOptions { CallStateFilePath = path });
+            var first = new TeamsCallbackState(options);
+            Assert.True(first.Register("call-1", meetingId));
+            Assert.True(first.Apply(Event("established")));
+
+            var restored = new TeamsCallbackState(options);
+            Assert.Equal("established", restored.Read("call-1"));
+            Assert.Equal(meetingId, restored.ReadMeetingId("call-1"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+        }
     }
     private static JsonElement Event(string state) => JsonSerializer.SerializeToElement(new {
         value = new[] { new { resourceUrl = "/communications/calls/call-1", resourceData = new { state } } }
