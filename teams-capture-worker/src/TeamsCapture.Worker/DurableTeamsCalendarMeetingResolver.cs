@@ -10,7 +10,7 @@ namespace TeamsCapture.Worker;
 public sealed class DurableTeamsCalendarMeetingResolver : ITeamsCalendarMeetingResolver
 {
     private readonly object gate = new();
-    private readonly Dictionary<string, CalendarReference> meetings = new(StringComparer.Ordinal);
+    private Dictionary<string, CalendarReference> meetings = new(StringComparer.Ordinal);
     private readonly string? stateFilePath;
 
     public DurableTeamsCalendarMeetingResolver(IOptions<TeamsCaptureOptions> options)
@@ -41,8 +41,10 @@ public sealed class DurableTeamsCalendarMeetingResolver : ITeamsCalendarMeetingR
         {
             if (meetings.TryGetValue(calendarEventId, out var existing)) return existing == proposed;
             if (meetings.Count >= 1000) return false;
-            meetings.Add(calendarEventId, proposed);
-            Persist();
+            var snapshot = new Dictionary<string, CalendarReference>(meetings, StringComparer.Ordinal);
+            snapshot.Add(calendarEventId, proposed);
+            Persist(snapshot);
+            meetings = snapshot;
             return true;
         }
     }
@@ -50,13 +52,13 @@ public sealed class DurableTeamsCalendarMeetingResolver : ITeamsCalendarMeetingR
     private static bool ValidReference(string value) => value is { Length: > 0 and <= 256 }
         && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or ':' or '.');
 
-    private void Persist()
+    private void Persist(Dictionary<string, CalendarReference> snapshot)
     {
         if (string.IsNullOrWhiteSpace(stateFilePath)) return;
         var directory = Path.GetDirectoryName(stateFilePath)!;
         Directory.CreateDirectory(directory);
         var temporary = stateFilePath + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(meetings));
+        File.WriteAllText(temporary, JsonSerializer.Serialize(snapshot));
         File.Move(temporary, stateFilePath, true);
     }
 

@@ -7,7 +7,7 @@ namespace TeamsCapture.Worker;
 public sealed class TeamsCallbackState
 {
     private readonly object gate = new();
-    private readonly Dictionary<string, CallState> calls = new(StringComparer.Ordinal);
+    private Dictionary<string, CallState> calls = new(StringComparer.Ordinal);
     private readonly string? stateFilePath;
 
     public TeamsCallbackState() { }
@@ -24,8 +24,10 @@ public sealed class TeamsCallbackState
         {
             if (calls.ContainsKey(id)) return true;
             if (calls.Count >= 1000) return false;
-            calls.Add(id, new CallState(meetingId, "establishing", DateTimeOffset.UtcNow));
-            Persist();
+            var snapshot = new Dictionary<string, CallState>(calls, StringComparer.Ordinal);
+            snapshot.Add(id, new CallState(meetingId, "establishing", DateTimeOffset.UtcNow));
+            Persist(snapshot);
+            calls = snapshot;
             return true;
         }
     }
@@ -63,10 +65,12 @@ public sealed class TeamsCallbackState
         {
             // A callback racing join registration must be retried, never silently discarded.
             if (updates.Any(update => !calls.ContainsKey(update.Id))) return false;
+            var snapshot = new Dictionary<string, CallState>(calls, StringComparer.Ordinal);
             foreach (var update in updates)
-                if (Rank(update.State) >= Rank(calls[update.Id].State))
-                    calls[update.Id] = calls[update.Id] with { State = update.State, UpdatedAt = DateTimeOffset.UtcNow };
-            Persist();
+                if (Rank(update.State) >= Rank(snapshot[update.Id].State))
+                    snapshot[update.Id] = snapshot[update.Id] with { State = update.State, UpdatedAt = DateTimeOffset.UtcNow };
+            Persist(snapshot);
+            calls = snapshot;
             return true;
         }
     }
@@ -82,13 +86,13 @@ public sealed class TeamsCallbackState
                 calls[item.Key] = item.Value;
     }
 
-    private void Persist()
+    private void Persist(Dictionary<string, CallState> snapshot)
     {
         if (string.IsNullOrWhiteSpace(stateFilePath)) return;
         var directory = Path.GetDirectoryName(stateFilePath)!;
         Directory.CreateDirectory(directory);
         var temporary = stateFilePath + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(calls));
+        File.WriteAllText(temporary, JsonSerializer.Serialize(snapshot));
         File.Move(temporary, stateFilePath, true);
     }
 
