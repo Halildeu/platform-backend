@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 
 namespace TeamsCapture.Worker;
 
@@ -14,17 +15,20 @@ public sealed class GraphTeamsMeetingPresenceClient : ITeamsMeetingPresenceClien
     private readonly ITeamsCalendarMeetingResolver calendarResolver;
     private readonly ITeamsAccessTokenProvider tokenProvider;
     private readonly HttpClient httpClient;
+    private readonly TeamsCallbackState callbackState;
 
     public GraphTeamsMeetingPresenceClient(
-        TeamsCaptureOptions options,
+        IOptions<TeamsCaptureOptions> options,
         ITeamsCalendarMeetingResolver calendarResolver,
         ITeamsAccessTokenProvider tokenProvider,
-        HttpClient httpClient)
+        HttpClient httpClient,
+        TeamsCallbackState callbackState)
     {
-        this.options = options;
+        this.options = options.Value;
         this.calendarResolver = calendarResolver;
         this.tokenProvider = tokenProvider;
         this.httpClient = httpClient;
+        this.callbackState = callbackState;
     }
 
     public async Task<TeamsJoinReceipt?> JoinAsync(
@@ -68,7 +72,7 @@ public sealed class GraphTeamsMeetingPresenceClient : ITeamsMeetingPresenceClien
         using var body = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
         return body.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
                && !string.IsNullOrWhiteSpace(id.GetString())
-            ? new TeamsJoinReceipt(id.GetString()!)
+            && callbackState.Register(id.GetString()!, command.MeetingId) ? new TeamsJoinReceipt(id.GetString()!)
             : null;
     }
 
@@ -108,8 +112,8 @@ public sealed class GraphTeamsMeetingPresenceClient : ITeamsMeetingPresenceClien
 
 public sealed record ScheduledTeamsMeeting(string ThreadId, string MessageId, string OrganizerUserId)
 {
-    public bool IsValid() => !string.IsNullOrWhiteSpace(ThreadId)
-        && !string.IsNullOrWhiteSpace(MessageId)
+    public bool IsValid() => ThreadId is { Length: > 0 and <= 2048 }
+        && MessageId is { Length: > 0 and <= 256 }
         && Guid.TryParse(OrganizerUserId, out _);
 }
 

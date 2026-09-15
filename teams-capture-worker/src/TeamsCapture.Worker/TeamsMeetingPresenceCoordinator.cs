@@ -12,7 +12,8 @@ public sealed class TeamsMeetingPresenceCoordinator
         ITeamsMeetingPresenceClient teamsClient,
         CancellationToken cancellationToken)
     {
-        if (command.MeetingId == Guid.Empty || string.IsNullOrWhiteSpace(command.CalendarEventId))
+        if (command.MeetingId == Guid.Empty || string.IsNullOrWhiteSpace(command.CalendarEventId)
+            || string.IsNullOrWhiteSpace(command.CorrelationId))
         {
             return MeetingPresenceResult.Rejected("invalid_meeting_reference");
         }
