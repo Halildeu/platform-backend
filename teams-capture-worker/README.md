@@ -53,3 +53,20 @@ secret sağlama, kalıcı volume, callback alan adı ve Teams manifest aktivasyo
 GitOps3716 üzerinden yürütülür.
 
 Callback sözleşmesi: https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/articles/calls/calling-notifications.html
+
+## Teams manifest şablonu
+
+`teams-app-manifest/manifest.template.json` sürüm 1.19 şemasını kullanır.
+Paket kökünde manifest.json, color.png (192×192) ve outline.png (32×32,
+beyaz/şeffaf) bulunmalıdır. İkonlar özgün mikrofon işaretidir; yeniden üretim:
+`node teams-capture-worker/teams-app-manifest/generate-icons.mjs`.
+Yerel/CI biçim kontrolü:
+`node --test teams-capture-worker/teams-app-manifest/manifest.test.mjs`.
+Bu kontrol tüm Microsoft şemasının veya tenant yüklemesinin kabulü değildir.
+
+Şablonun app/bot ID, callback domain, website, privacy ve terms alanları
+onaylı değerlerle doldurulmadan yüklenebilir paket olarak kullanılmaz.
+Şablon bilinçli olarak gerçek secret içermez. Son manifest ayrıca Microsoft
+1.19 şeması ve Teams yükleme doğrulamasından geçirilmelidir.
+Kaynak: https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json
+Takip: GitOps #3716. Bu değişiklik tenant, DNS, izin veya runtime değiştirmez.
