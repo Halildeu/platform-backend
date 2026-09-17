@@ -1,53 +1,43 @@
-# Native push registry (source preparation)
+# Native push implementation — review and activation gates
 
-Tracked by platform-mobile#9 and platform-backend#412.
+Tracks platform-mobile#9; meeting-event production is separately tracked in platform-backend#412.
 
-Disabled by default. `notify.native-push.registry-enabled=true` exposes authenticated
-POST `/api/v1/notify/native-push/registrations` and DELETE `/{registrationId}`.
-Both use the existing org/subscriber authorization guards, plus an explicit JWT requirement.
-`notify.native-push.encryption-key` must contain a base64 encoded 32-byte key from
-institutional secret storage. No key is committed. Key rotation/migration is not implemented;
-do not change the key while registered tokens remain encrypted with the previous key.
-`notify.native-push.allowed-scopes` is a comma-separated list of exact
-`applicationId/FCM/TEST` or `applicationId/APNS/PRODUCTION` scopes (both providers
-support either business environment). Empty configuration rejects all registrations.
+## Implemented, disabled by default
 
-POST: installationId (UUID), applicationId, provider (FCM/APNS), environment
-(TEST/PRODUCTION), token. Response: registrationId and status only.
-Repeated registration for the same application/provider/environment/installation retains its
-ID and updates the encrypted token. Another owner cannot overwrite the registration.
-Logout must DELETE using the old authenticated account before account replacement.
-Deletion physically removes token material, and is idempotent and scoped to its owner.
-An orphaned registration requires a separate verified recovery/expiry design; no takeover
-based solely on caller-supplied installation UUID is permitted.
+- Authenticated owner/organization scoped registration, rotation, removal by registration ID or installation ID (lost-response recovery).
+- AES-256-GCM device token storage; exact application/provider/environment allowlist. Concurrent registration/removal uses the same installation lock.
+- FCM HTTP v1 and APNs HTTP/2, service-account access-token refresh and cached ES256 APNs authentication. Secret files are read only when sender-enabled is true.
+- Existing push planner fans out to native devices as well as browser subscriptions. Browser adapter remains unchanged. Native routing is applied to initial dispatch and retry.
+- Only meeting.summary.ready, meeting.action.assigned and meeting.transcript.ready with a valid payload.meetingId produce native targets. Producer must select authorized recipients; this transport does not infer meeting membership.
+- Existing intent/outbox deduplication, eligibility, retry attempt limits and backoff are reused. Retry-After may extend backoff, bounded to seven days; 429 has a minimum 60 seconds.
+- Explicit unregistered responses remove only the attempted token hash, preserving newer rotations. Erasure removes owner-scoped native registrations.
+- Provider acceptance uses the existing push transport-terminal DELIVERED state, not proof of phone receipt. It does not enter the SMS delivery-receipt workflow.
+- Full response deadline and bounded response size prevent stalled provider bodies from occupying a worker indefinitely.
 
-Token values are AES-256-GCM encrypted with random nonces and registration ID as
-authenticated associated data. Unique token fingerprints prevent two active installations
-from registering the same provider token in the same application/environment.
+## Configuration
 
-`NativePushHttpSender` implements FCM HTTP v1 and APNs HTTP/2 transport with injected
-short-lived authorization suppliers. It sends generic notification text and only the
-event/meeting identifiers, never transcript or summary text. It is not a Spring bean
-and is not connected to the queue. APNs sandbox selection must match the signing
-entitlement; a TEST business environment does not imply APNs sandbox.
-Provider acceptance is distinct from phone delivery. Explicit UNREGISTERED responses
-are distinguished from generic 404, configuration errors and retryable failures.
-There is no internal automatic retry. Retry-After handling, bounded scheduling,
-outbox deduplication and conditional invalid-token cleanup must be provided by integration.
+Both notify.native-push.registry-enabled and notify.native-push.sender-enabled default off.
+Encryption-key is a base64 32-byte institution-managed secret. Do not rotate it without migrating existing ciphertext.
+Allowed-scopes is a comma-separated exact applicationId/provider/environment list.
+Providers is a list under notify.native-push with application-id, provider, environment, credentials-file and:
+- FCM: project-id, matching the service account's project.
+- APNS: key-id, team-id, sandbox. Sandbox must match signing entitlement; business TEST does not imply sandbox.
+Never commit credentials or put them in the APK. No configuration was activated by this change.
 
-Remaining: credential refresh/injection, delivery planner integration without replacing
-webpush, native client registration/logout wiring, erasure/orphan recovery, complete
-PostgreSQL verification and real-device acceptance. Keep registry disabled until these
-gates are met. A failed offline logout must not silently attach an old registration to
-a new account; generic notification text alone does not establish account isolation.
-Do not return delivery success based on registration success.
+## Mobile contract
 
-Validation: 19 focused local tests passed on 2026-09-16 (cipher, authorization guards,
-scope policy and HTTP transport with mocked responses). Five real PostgreSQL tests
-cover rotation, cross-owner rejection, deletion, conflict, rollback and concurrency;
-their runtime result is tracked separately. No actual provider request was sent.
+POST /api/v1/notify/native-push/registrations: installationId, applicationId, provider, environment, token.
+DELETE /api/v1/notify/native-push/registrations/installations/{installationId}: applicationId, provider, environment.
+Both require bearer JWT and matching X-Org-Id/X-Subscriber-Id. DELETE is owner scoped and idempotent.
+Mobile stores a token-free cancellation receipt before enrollment and serializes rotation/logout.
+An offline logout leaves cleanup pending and blocks another account from taking over that receipt. The previous account must reauthenticate to finish cleanup. This is not server-side revocation while offline.
 
-Protocol references:
-- https://firebase.google.com/docs/cloud-messaging/send/v1-api
-- https://firebase.google.com/docs/cloud-messaging/error-codes
-- https://developer.apple.com/library/archive/documentation/NetworkingInternet/Conceptual/RemoteNotificationsPG/CommunicatingwithAPNs.html
+## Still required before activation/closure
+
+- Review of the combined change and exact-head PostgreSQL CI; local Docker is unavailable.
+- Verify actual meeting-event producers submit authorized recipients/topic/template/push intent to this service (#412); do not claim event-to-phone acceptance from adapter tests.
+- Register TEST FCM/APNs credentials, Android Firebase package config and iOS signing entitlements; mobile extra.nativePush requires enabled, environment TEST and orgId.
+- Real Android/iOS permission, token rotation, account-switch/offline-cleanup, tap routing and delivery tests. No provider call or phone delivery has been performed.
+- Operational orphan-registration recovery/expiry and encryption-key migration procedure.
+
+Local validation on 2026-09-17: 55 focused unit/planner tests passed (27 original/fanout tests plus provider/adapter/cipher/auth cases; see Surefire reports for exact per-class counts). PostgreSQL tests remain a separate CI gate. No main merge or deployment.

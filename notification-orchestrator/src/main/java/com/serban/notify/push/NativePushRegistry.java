@@ -33,6 +33,7 @@ public class NativePushRegistry {
     public UUID register(String org, String subscriber, UUID installation, String app,
                          String provider, String environment, String token) {
         scopePolicy.requireAllowed(app, provider, environment);
+        lockOwner(org, subscriber);
         // Stable ID survives token rotation; ownership is never reassigned by an upsert.
         String scope = app + "/" + provider + "/" + environment + "/" + installation;
         jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", Object.class, scope);
@@ -66,8 +67,21 @@ public class NativePushRegistry {
 
     @Transactional
     public void remove(String org, String subscriber, UUID id) {
+        var scopes = jdbc.query("SELECT application_id, provider, environment, installation_id FROM notify.native_push_registration WHERE registration_id=? AND org_id=? AND subscriber_id=?",
+            (rs, row) -> rs.getString(1) + "/" + rs.getString(2) + "/" + rs.getString(3) + "/" + rs.getObject(4, UUID.class), id, org, subscriber);
+        if (scopes.isEmpty()) return;
+        jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", Object.class, scopes.getFirst());
         jdbc.update("DELETE FROM notify.native_push_registration WHERE registration_id=? AND org_id=? AND subscriber_id=?",
             id, org, subscriber);
+    }
+
+    /** Also works after an enrollment response was lost; registration ID is not required. */
+    @Transactional
+    public void removeInstallation(String org, String subscriber, UUID installation, String app, String provider, String environment) {
+        String scope = app + "/" + provider + "/" + environment + "/" + installation;
+        jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", Object.class, scope);
+        jdbc.update("DELETE FROM notify.native_push_registration WHERE org_id=? AND subscriber_id=? AND installation_id=? AND application_id=? AND provider=? AND environment=?",
+            org, subscriber, installation, app, provider, environment);
     }
 
     private static ResponseStatusException conflict() {
@@ -80,4 +94,32 @@ public class NativePushRegistry {
     }
 
     private record Owner(UUID id, String org, String subscriber) {}
+
+    public record Target(UUID id, String app, String provider, String environment) {}
+    public java.util.List<Target> targets(String org, String subscriber) {
+        return jdbc.query("SELECT registration_id, application_id, provider, environment FROM notify.native_push_registration WHERE org_id=? AND subscriber_id=?",
+            (rs, row) -> new Target(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4)), org, subscriber);
+    }
+    public record SecretTarget(Target target, String token, String tokenHash) {
+        @Override public String toString() { return "NativePushTarget[redacted]"; }
+    }
+    public java.util.Optional<SecretTarget> forDelivery(UUID id, String org, String subscriber) {
+        return jdbc.query("SELECT application_id, provider, environment, token_ciphertext, token_hash FROM notify.native_push_registration WHERE registration_id=? AND org_id=? AND subscriber_id=?",
+            (rs, row) -> new SecretTarget(new Target(id, rs.getString(1), rs.getString(2), rs.getString(3)),
+                cipher.decrypt(rs.getString(4), id.toString()), rs.getString(5)), id, org, subscriber).stream().findFirst();
+    }
+    public void invalidate(UUID id, String tokenHash) {
+        // A delayed response about the previous token cannot delete a rotated token.
+        jdbc.update("DELETE FROM notify.native_push_registration WHERE registration_id=? AND token_hash=?", id, tokenHash);
+    }
+
+    @Transactional
+    public void eraseOwner(String org, String subscriber) {
+        lockOwner(org, subscriber);
+        jdbc.update("DELETE FROM notify.native_push_registration WHERE org_id=? AND subscriber_id=?", org, subscriber);
+    }
+    private void lockOwner(String org, String subscriber) {
+        jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", Object.class,
+            "native-owner/" + org.length() + ":" + org + "/" + subscriber);
+    }
 }

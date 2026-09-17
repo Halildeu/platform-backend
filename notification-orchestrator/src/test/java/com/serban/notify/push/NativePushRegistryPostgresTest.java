@@ -93,4 +93,50 @@ class NativePushRegistryPostgresTest {
         }
         assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM notify.native_push_registration", Integer.class));
     }
+
+    @Test void deliveryIsOwnerScopedAndStaleInvalidationPreservesRotatedToken() {
+        UUID installation = UUID.randomUUID();
+        UUID id = register("org", "alice", installation, "synthetic-token");
+        assertTrue(registry.forDelivery(id, "org", "bob").isEmpty());
+        var old = registry.forDelivery(id, "org", "alice").orElseThrow();
+        register("org", "alice", installation, "rotated-token");
+        registry.invalidate(id, old.tokenHash());
+        assertEquals("rotated-token", registry.forDelivery(id, "org", "alice").orElseThrow().token());
+        tx.executeWithoutResult(status -> registry.eraseOwner("org", "bob"));
+        assertEquals(1, registry.targets("org", "alice").size());
+        tx.executeWithoutResult(status -> registry.eraseOwner("org", "alice"));
+        assertTrue(registry.targets("org", "alice").isEmpty());
+    }
+
+    @Test void cancellationWithoutResponseIdIsOwnerScoped() {
+        UUID installation = UUID.randomUUID();
+        register("org", "alice", installation, "synthetic-token");
+        tx.executeWithoutResult(status -> registry.removeInstallation("org", "bob", installation, APP, "FCM", "TEST"));
+        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM notify.native_push_registration", Integer.class));
+        tx.executeWithoutResult(status -> registry.removeInstallation("org", "alice", installation, APP, "FCM", "TEST"));
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM notify.native_push_registration", Integer.class));
+    }
+
+    @Test void logoutWaitsForRegistrationAndCannotBeUndoneByThatRegistration() throws Exception {
+        UUID installation = UUID.randomUUID();
+        UUID id = register("org", "alice", installation, "synthetic-token");
+        var acquired = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var updating = executor.submit(() -> tx.execute(status -> {
+                jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", Object.class, APP + "/FCM/TEST/" + installation);
+                acquired.countDown();
+                try { if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("test timeout"); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }
+                return registry.register("org", "alice", installation, APP, "FCM", "TEST", "rotated-token");
+            }));
+            assertTrue(acquired.await(5, TimeUnit.SECONDS));
+            var deleting = executor.submit(() -> tx.executeWithoutResult(status -> registry.remove("org", "alice", id)));
+            try { assertThrows(java.util.concurrent.TimeoutException.class, () -> deleting.get(200, TimeUnit.MILLISECONDS)); }
+            finally { release.countDown(); }
+            updating.get(5, TimeUnit.SECONDS);
+            deleting.get(5, TimeUnit.SECONDS);
+        }
+        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM notify.native_push_registration", Integer.class));
+    }
 }

@@ -54,6 +54,19 @@ public class NativePushRegistrationController {
         subscriberGuard.requireMatchOrThrow(subscriber);
     }
 
+    @DeleteMapping("/installations/{installation}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void removeInstallation(@AuthenticationPrincipal Jwt jwt, @RequestHeader("X-Org-Id") String org,
+        @RequestHeader("X-Subscriber-Id") String subscriber, @PathVariable UUID installation,
+        @Valid @RequestBody Removal request) {
+        authorize(jwt, org, subscriber);
+        registry.removeInstallation(org, subscriber, installation, request.applicationId(), request.provider(), request.environment());
+    }
+
+    public record Removal(@NotNull @Pattern(regexp = "[A-Za-z0-9_.-]{1,255}") String applicationId,
+        @NotNull @Pattern(regexp = "FCM|APNS") String provider,
+        @NotNull @Pattern(regexp = "TEST|PRODUCTION") String environment) {}
+
     public record Registration(@NotNull UUID installationId,
         @NotNull @Pattern(regexp = "[A-Za-z0-9_.-]{1,255}") String applicationId,
         @NotNull @Pattern(regexp = "FCM|APNS") String provider,

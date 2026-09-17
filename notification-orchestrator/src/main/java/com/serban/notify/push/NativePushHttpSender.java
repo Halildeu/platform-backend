@@ -12,11 +12,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /** Transport only. No Spring bean until credential refresh and delivery routing are wired. */
 public final class NativePushHttpSender {
     public enum Outcome { PROVIDER_ACCEPTED, INVALID_TOKEN, RETRY, REJECTED, CONFIGURATION_ERROR }
-    public record Result(Outcome outcome, Integer httpStatus) {}
+    public record Result(Outcome outcome, Integer httpStatus, long retryAfterSeconds) {
+        public Result(Outcome outcome, Integer httpStatus) { this(outcome, httpStatus, 0); }
+    }
     public record MeetingEvent(UUID eventId, UUID meetingId, String eventType) {
         public MeetingEvent {
             if (eventId == null || meetingId == null || eventType == null || !Set.of("meeting.summary.ready",
@@ -31,6 +36,7 @@ public final class NativePushHttpSender {
     private final String provider;
     private final String application;
     private final URI endpoint;
+    private final Duration deadline;
 
     // Authorization supplier must refresh short-lived credentials; never a device token.
     public static NativePushHttpSender fcm(String projectId, Supplier<String> accessToken) {
@@ -46,6 +52,10 @@ public final class NativePushHttpSender {
     }
     NativePushHttpSender(HttpClient http, ObjectMapper mapper, String provider, String application,
                          boolean sandbox, Supplier<String> authorization) {
+        this(http, mapper, provider, application, sandbox, authorization, Duration.ofSeconds(15));
+    }
+    NativePushHttpSender(HttpClient http, ObjectMapper mapper, String provider, String application,
+                         boolean sandbox, Supplier<String> authorization, Duration deadline) {
         if (!Set.of("FCM", "APNS").contains(provider) || application == null
             || !application.matches("[A-Za-z0-9_.-]{1,255}"))
             throw new IllegalArgumentException("Invalid native provider configuration");
@@ -54,6 +64,7 @@ public final class NativePushHttpSender {
         this.provider = provider;
         this.application = application;
         this.authorization = authorization;
+        this.deadline = deadline;
         this.endpoint = URI.create(provider.equals("FCM")
             ? "https://fcm.googleapis.com/v1/projects/" + application + "/messages:send"
             : (sandbox ? "https://api.sandbox.push.apple.com/3/device/" : "https://api.push.apple.com/3/device/"));
@@ -72,7 +83,8 @@ public final class NativePushHttpSender {
                 "meetingId", event.meetingId().toString(), "eventType", event.eventType());
             Map<String, String> alert = Map.of("title", "Toplantı güncellemesi", "body", "Toplantı sonucunu uygulamada görüntüleyebilirsiniz.");
             Object payload = provider.equals("FCM")
-                ? Map.of("message", Map.of("token", token, "notification", alert, "data", data))
+                ? Map.of("message", Map.of("token", token, "notification", alert, "data", data,
+                    "android", Map.of("notification", Map.of("channel_id", "meeting-updates"))))
                 : Map.of("aps", Map.of("alert", alert), "eventId", data.get("eventId"),
                     "meetingId", data.get("meetingId"), "eventType", data.get("eventType"));
             byte[] body = mapper.writeValueAsBytes(payload);
@@ -83,17 +95,28 @@ public final class NativePushHttpSender {
             if (provider.equals("APNS")) request.header("apns-topic", application)
                 .header("apns-push-type", "alert").header("apns-priority", "10")
                 .header("apns-id", event.eventId().toString());
-            // Bounded read also limits malformed provider responses. Never return/log raw bodies.
-            var response = http.send(request.POST(HttpRequest.BodyPublishers.ofByteArray(body)).build(),
-                HttpResponse.BodyHandlers.ofInputStream());
-            byte[] responseBody;
-            try (var stream = response.body()) { responseBody = stream.readNBytes(16385); }
-            if (responseBody.length > 16384) return new Result(Outcome.RETRY, response.statusCode());
-            return classify(response.statusCode(), responseBody);
+            var pending = http.sendAsync(request.POST(HttpRequest.BodyPublishers.ofByteArray(body)).build(),
+                info -> new BoundedPushResponse());
+            try {
+                var response = pending.get(deadline.toMillis(), TimeUnit.MILLISECONDS);
+                var result = classify(response.statusCode(), response.body());
+                if (result.outcome() != Outcome.RETRY) return result;
+                long seconds = response.statusCode() == 429 ? 60 : 0;
+                String retryAfter = response.headers().firstValue("Retry-After").orElse("");
+                try { seconds = Math.max(seconds, Long.parseLong(retryAfter)); }
+                catch (NumberFormatException ignored) {
+                    try { seconds = Math.max(seconds, java.time.Duration.between(java.time.Instant.now(),
+                        java.time.ZonedDateTime.parse(retryAfter, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()).getSeconds()); }
+                    catch (java.time.format.DateTimeParseException invalid) { /* Keep default backoff. */ }
+                }
+                return new Result(result.outcome(), result.httpStatus(), Math.min(604800, Math.max(0, seconds)));
+            } finally { if (!pending.isDone()) pending.cancel(true); }
         } catch (InterruptedException failure) {
             Thread.currentThread().interrupt();
             return new Result(Outcome.RETRY, null);
         } catch (IOException failure) {
+            return new Result(Outcome.RETRY, null);
+        } catch (ExecutionException | TimeoutException failure) {
             return new Result(Outcome.RETRY, null);
         }
     }

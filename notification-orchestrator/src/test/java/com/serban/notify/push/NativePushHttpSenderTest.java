@@ -25,12 +25,13 @@ class NativePushHttpSenderTest {
 
     @SuppressWarnings("unchecked")
     private void response(int code, String body) throws Exception {
-        HttpResponse<InputStream> response = mock(HttpResponse.class);
+        HttpResponse<byte[]> response = mock(HttpResponse.class);
         when(response.statusCode()).thenReturn(code);
-        when(response.body()).thenReturn(new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));
-        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenAnswer(call -> {
+        when(response.headers()).thenReturn(java.net.http.HttpHeaders.of(java.util.Map.of("Retry-After", java.util.List.of("120")), (a,b) -> true));
+        when(response.body()).thenReturn(body.getBytes(StandardCharsets.UTF_8));
+        when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenAnswer(call -> {
             sent = call.getArgument(0);
-            return response;
+            return java.util.concurrent.CompletableFuture.completedFuture(response);
         });
     }
     private NativePushHttpSender sender(String provider, boolean sandbox) {
@@ -101,8 +102,8 @@ class NativePushHttpSenderTest {
     }
 
     @Test void transportFailureDoesNotExposeTokenOrCredential() throws Exception {
-        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
-            .thenThrow(new IOException("synthetic-token synthetic-auth"));
+        when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+            .thenReturn(java.util.concurrent.CompletableFuture.failedFuture(new IOException("synthetic-token synthetic-auth")));
         var result = sender("FCM", false).send("synthetic-token", event);
         assertEquals(RETRY, result.outcome());
         assertFalse(result.toString().contains("synthetic"));
@@ -117,5 +118,24 @@ class NativePushHttpSenderTest {
             public void onComplete() {}
         });
         return bytes.toByteArray();
+    }
+
+    @Test void stalledResponseBodyHasDeadlineAndCancelsExchange() {
+        var pending = new java.util.concurrent.CompletableFuture<HttpResponse<byte[]>>();
+        when(http.sendAsync(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(pending);
+        var bounded = new NativePushHttpSender(http, new ObjectMapper(), "FCM", "example-app", false,
+            () -> "synthetic-auth", java.time.Duration.ofMillis(25));
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(2), () ->
+            assertEquals(RETRY, bounded.send("synthetic-token", event).outcome()));
+        assertTrue(pending.isCancelled());
+    }
+
+    @Test void oversizedResponseCancelsSubscriptionBeforeAccumulatingIt() {
+        var subscriber = new BoundedPushResponse();
+        var subscription = mock(Flow.Subscription.class);
+        subscriber.onSubscribe(subscription);
+        subscriber.onNext(java.util.List.of(ByteBuffer.allocate(16385)));
+        verify(subscription).cancel();
+        assertTrue(subscriber.getBody().toCompletableFuture().isCompletedExceptionally());
     }
 }
