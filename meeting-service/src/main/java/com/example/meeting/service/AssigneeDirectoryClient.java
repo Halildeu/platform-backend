@@ -29,6 +29,12 @@ public interface AssigneeDirectoryClient {
         return Optional.empty();
     }
 
+    record NotificationIdentity(long userId, boolean enabled, boolean deleted, Long companyId) {}
+
+    default Optional<NotificationIdentity> resolveNotificationIdentity(String issuer, String principal) {
+        throw new ResolutionUnavailableException("notification identity resolution unavailable");
+    }
+
     class ResolutionUnavailableException extends RuntimeException {
         public ResolutionUnavailableException(String message) {
             super(message);

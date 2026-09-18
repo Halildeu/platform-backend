@@ -59,6 +59,10 @@ public class MeetingEventOutboxPoller {
     private final String owner;
 
     private MeetingEventOutboxPoller self; // self-injection for a real @Transactional proxy boundary
+    private com.example.meeting.notify.NotificationDeliveryQueue deliveryQueue;
+
+    @Autowired
+    void setDeliveryQueue(ObjectProvider<com.example.meeting.notify.NotificationDeliveryQueue> provider) { deliveryQueue = provider.getIfAvailable(); }
 
     @Autowired
     void setSelf(@Lazy final MeetingEventOutboxPoller self) {
@@ -145,13 +149,6 @@ public class MeetingEventOutboxPoller {
         try {
             final MeetingEventMessage message = MeetingEventMessage.from(row);
             publisher.publish(message);
-            // Faz 24 Görevler dilim-4b: assignment events also reach the assignee's
-            // inbox. The sink is idempotent per event key, so a failure here leaves the
-            // row PENDING and the retry republishes to Redis (consumers de-duplicate)
-            // and re-submits the intent (orchestrator replays by idempotency key).
-            if (notificationSink.handles(row.getEventType())) {
-                notificationSink.deliver(message);
-            }
             self.markPublished(row.getId(), row.getClaimToken());
         } catch (RuntimeException e) {
             // Safe telemetry only — the exception class, never the payload.
@@ -181,7 +178,9 @@ public class MeetingEventOutboxPoller {
         if (fenced == 0) {
             log.warn("meeting-event publish outcome discarded — lease lost id={} (row re-claimed)",
                     id);
+            return;
         }
+        if (deliveryQueue != null) deliveryQueue.enqueue(id);
     }
 
     /** Failure: attempts++, PENDING (retry) or DEAD, token-fenced (same rationale). */

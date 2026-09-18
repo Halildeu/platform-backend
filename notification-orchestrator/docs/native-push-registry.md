@@ -16,6 +16,48 @@ Tracks platform-mobile#9; meeting-event production is separately tracked in plat
 
 ## Configuration
 
+Assignment producer: `meeting.notify.native-push-enabled=true` adds native PUSH
+to the existing assignee inbox intent for `meeting.action.assigned` only. It
+requires the existing meeting notification sink to be enabled and authenticated.
+The default is false. `payload.pushAudience=native` prevents browser fan-out while
+preserving native planning, eligibility and retries; absent markers preserve the
+existing combined push behavior. The payload contains the canonical meeting ID,
+not action text. Occurrence-scoped intent/idempotency keys remain unchanged.
+Enabling this flag does not replay already published events.
+
+Ready-event producers are connected as follows:
+- Summary: meeting-service's committed outbox invokes SummaryReadyNotificationSink
+  when both meeting.notify.enabled and meeting.notify.native-push-enabled are true.
+- Transcript: transcript-service's committed outbox invokes its local sink when
+  transcript.notify.enabled is true. It resolves recipients through meeting-service
+  (default port 8097), then submits directly to notification-orchestrator.
+- MeetingReadyRecipients reads the scoped meeting, enumerates effective owners,
+  participants and blocked identities, normalizes aliases through user-service,
+  filters disabled/deleted/foreign-company accounts, and subtracts canonical denied
+  IDs. Unavailable authorization/directory results fail for retry. Explicit viewers
+  are not this audience. The company-derived UUID contract is enforced, with no
+  default company substitution.
+- A separate occurrence + subscriber idempotency key is used for each ready intent.
+  This targets eligible membership at delivery/retry time, not a frozen event-time
+  membership snapshot. Partial retries replay unchanged recipients independently.
+- Notification failure prevents the producer row from being marked published;
+  existing bounded retry/dead-letter behavior still applies. Events already marked
+  published while disabled are not replayed by activation.
+
+Approved source configuration: transcript-service client-credentials permissions
+meeting:notification:read (audience meeting-service) and notify:intents:system
+(audience notification-orchestrator), explicitly pinned by audience. Existing
+meeting:session:resolve remains. Both auth-service profiles now contain these narrow
+grants, with explicit audience binding; no other client receives the new permission.
+No client secret, tenant permission or runtime configuration was changed. Deployed
+environment overrides must include the new mint ceiling before activation; source
+defaults do not override an existing SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS value.
+The recipient endpoint requires SVC_meeting:notification:read; ordinary/admin user
+tokens and other service permissions cannot enumerate recipients.
+
+V31 seeds fixed-copy ready templates in tr-TR/en-US. PostgreSQL migration acceptance
+and real provider/device delivery remain deployment gates.
+
 Both notify.native-push.registry-enabled and notify.native-push.sender-enabled default off.
 Encryption-key is a base64 32-byte institution-managed secret. Do not rotate it without migrating existing ciphertext.
 Allowed-scopes is a comma-separated exact applicationId/provider/environment list.

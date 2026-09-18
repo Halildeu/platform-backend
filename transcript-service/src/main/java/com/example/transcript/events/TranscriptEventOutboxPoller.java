@@ -31,6 +31,10 @@ public class TranscriptEventOutboxPoller {
     private final boolean schedulingEnabled;
     private final String owner;
     private TranscriptEventOutboxPoller self;
+    private com.example.transcript.notify.NotificationDeliveryQueue deliveryQueue;
+
+    @Autowired
+    void setDeliveryQueue(org.springframework.beans.factory.ObjectProvider<com.example.transcript.notify.NotificationDeliveryQueue> provider) { deliveryQueue = provider.getIfAvailable(); }
 
     @Autowired
     void setSelf(@Lazy TranscriptEventOutboxPoller self) {
@@ -96,6 +100,7 @@ public class TranscriptEventOutboxPoller {
     private void publishOne(TranscriptEventOutbox row) {
         try {
             publisher.publish(TranscriptMeetingEventMessage.from(row));
+
             self.markPublished(row.getId(), row.getClaimToken());
         } catch (RuntimeException ex) {
             log.warn("Transcript meeting-event publish failed eventKey={} cause={}",
@@ -106,9 +111,12 @@ public class TranscriptEventOutboxPoller {
 
     @Transactional
     public void markPublished(UUID id, UUID token) {
-        if (token != null && repository.markPublishedFenced(id, token, Instant.now()) == 0) {
+        if (token == null) return;
+        if (repository.markPublishedFenced(id, token, Instant.now()) == 0) {
             log.warn("Transcript event publish outcome discarded after lease loss id={}", id);
+            return;
         }
+        if (deliveryQueue != null) deliveryQueue.enqueue(id);
     }
 
     @Transactional

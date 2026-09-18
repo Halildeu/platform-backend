@@ -149,4 +149,43 @@ public interface MeetingEventOutboxRepository extends JpaRepository<MeetingEvent
     Optional<MeetingEventOutbox> findByEventKey(String eventKey);
 
     long countByStatus(com.example.meeting.model.MeetingEventOutboxStatus status);
+
+    // Enqueued in the SAME transaction as the fenced domain PUBLISHED transition.
+    @Modifying
+    @Query(value = """
+        INSERT INTO {h-schema}notification_delivery_outbox (source_id)
+        SELECT id FROM {h-schema}meeting_event_outbox
+        WHERE id = :id AND status = 'PUBLISHED' AND (event_type IN ('meeting.action.assigned', 'meeting.action.reassigned') OR (:includeSummary AND event_type = 'meeting.summary.ready'))
+        ON CONFLICT (source_id) DO NOTHING
+        """, nativeQuery = true)
+    int enqueueNotification(@Param("id") UUID id, @Param("includeSummary") boolean includeSummary);
+
+    // One locked job, no expiring batch lease. Lock survives until HTTP outcome commits.
+    @Query(value = """
+        SELECT o.* FROM {h-schema}notification_delivery_outbox n
+        JOIN {h-schema}meeting_event_outbox o ON o.id = n.source_id
+        WHERE n.status = 'PENDING' AND n.next_attempt_at <= CURRENT_TIMESTAMP
+          AND (:includeSummary OR o.event_type <> 'meeting.summary.ready')
+        ORDER BY n.next_attempt_at, n.source_id
+        LIMIT 1 FOR UPDATE OF n SKIP LOCKED
+        """, nativeQuery = true)
+    Optional<MeetingEventOutbox> lockNextNotification(@Param("includeSummary") boolean includeSummary);
+
+    @Modifying
+    @Query(value = """
+        UPDATE {h-schema}notification_delivery_outbox
+        SET status = 'DELIVERED', last_error = NULL WHERE source_id = :id
+        """, nativeQuery = true)
+    int notificationDelivered(@Param("id") UUID id);
+
+    @Modifying
+    @Query(value = """
+        UPDATE {h-schema}notification_delivery_outbox
+        SET attempts = attempts + 1,
+            status = CASE WHEN attempts + 1 >= :maxAttempts THEN 'DEAD' ELSE 'PENDING' END,
+            next_attempt_at = :retryAt, last_error = :errorClass
+        WHERE source_id = :id
+        """, nativeQuery = true)
+    int notificationFailed(@Param("id") UUID id, @Param("maxAttempts") int maxAttempts,
+                           @Param("retryAt") Instant retryAt, @Param("errorClass") String errorClass);
 }

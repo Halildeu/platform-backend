@@ -676,4 +676,17 @@ class DeliveryPlanServiceTest {
         i.setChannelRouting(routing);
         return i;
     }
+    @Test
+    void nativeAudienceDoesNotFanOutToBrowserEndpoints() {
+        NotificationIntent intent = intent(new String[] { "push" }, null);
+        intent.setPayload(Map.of("pushAudience", "native"));
+        var nativePlanner = mock(com.serban.notify.push.NativePushPlanner.class);
+        ReflectionTestUtils.setField(service, "nativePushPlanner", nativePlanner);
+        var nativeTarget = new DeliveryTarget("push", "subscriber", "1", "hash", "device", "native-fcm");
+        when(nativePlanner.plan(intent, "1")).thenReturn(List.of(nativeTarget));
+        var recipients = List.of(new SubmitIntentRequest.RecipientRef(
+            SubmitIntentRequest.RecipientRef.Type.subscriber, "1", null, null, null, "tr-TR"));
+        assertThat(service.plan(intent, recipients)).containsExactly(nativeTarget);
+        org.mockito.Mockito.verifyNoInteractions(pushEndpointRepo);
+    }
 }
