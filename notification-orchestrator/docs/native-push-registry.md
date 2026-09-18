@@ -44,11 +44,14 @@ Ready-event producers are connected as follows:
   existing bounded retry/dead-letter behavior still applies. Events already marked
   published while disabled are not replayed by activation.
 
-Required, NOT YET GRANTED: transcript-service client-credentials permissions
+Approved source configuration: transcript-service client-credentials permissions
 meeting:notification:read (audience meeting-service) and notify:intents:system
 (audience notification-orchestrator), explicitly pinned by audience. Existing
-meeting:session:resolve remains. Auth-service configuration is unchanged pending
-approval. No client secret, tenant permission or runtime configuration was changed.
+meeting:session:resolve remains. Both auth-service profiles now contain these narrow
+grants, with explicit audience binding; no other client receives the new permission.
+No client secret, tenant permission or runtime configuration was changed. Deployed
+environment overrides must include the new mint ceiling before activation; source
+defaults do not override an existing SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS value.
 The recipient endpoint requires SVC_meeting:notification:read; ordinary/admin user
 tokens and other service permissions cannot enumerate recipients.
 
