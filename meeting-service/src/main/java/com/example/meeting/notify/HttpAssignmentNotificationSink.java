@@ -35,8 +35,8 @@ import org.springframework.web.client.RestClientResponseException;
  *       not a retry storm;</li>
  *   <li>idempotency key = the outbox {@code event_key} (occurrence-scoped), so an
  *       outbox retry after a Redis failure replays instead of duplicating;</li>
- *   <li>payload is empty — the template carries fixed copy; no action text, meeting
- *       title or identities leave meeting-service through this channel;</li>
+ *   <li>payload is empty by default; native opt-in adds only meetingId and the
+ *       native audience marker. Templates carry fixed copy, never action text;</li>
  *   <li>any transport / 5xx failure throws so the poller retries the row.</li>
  * </ul>
  */
@@ -149,8 +149,13 @@ public class HttpAssignmentNotificationSink implements AssignmentNotificationSin
         body.put("dataClassification", "transactional");
         body.put("recipients", List.of(recipient));
         body.put("template", template);
-        body.put("channels", List.of(properties.getChannel()));
-        body.put("payload", Map.of());
+        // Opt-in only: preserve existing inbox delivery and its payload by default.
+        // Native routing needs the canonical meeting id, never the event's free text.
+        boolean nativePush = properties.isNativePushEnabled() && ASSIGNED.equals(message.eventType());
+        body.put("channels", nativePush
+                ? java.util.stream.Stream.of(properties.getChannel(), "push").distinct().toList()
+                : List.of(properties.getChannel()));
+        body.put("payload", nativePush ? Map.of("meetingId", message.meetingId().toString(), "pushAudience", "native") : Map.of());
         return body;
     }
 

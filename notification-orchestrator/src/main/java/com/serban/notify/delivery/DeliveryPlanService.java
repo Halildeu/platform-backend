@@ -339,6 +339,7 @@ public class DeliveryPlanService {
                 );
             }
             List<SubscriberPushEndpoint> endpoints =
+                (intent.getPayload() != null && "native".equals(intent.getPayload().get("pushAudience"))) ? List.of() :
                 pushEndpointRepo.findActiveBySubscriber(intent.getOrgId(), ref.subscriberId());
             List<DeliveryTarget> nativeTargets = nativePushPlanner == null ? List.of()
                 : nativePushPlanner.plan(intent, ref.subscriberId());

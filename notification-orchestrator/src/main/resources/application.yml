@@ -179,7 +179,7 @@ notify:
       - topicKey: meeting.action.assigned
         label: "Toplantı Görevi Atandı"
         category: meeting
-        supportedChannels: [IN_APP, EMAIL]
+        supportedChannels: [IN_APP, EMAIL, PUSH]
         criticalEligible: false
         description: "Bir toplantı aksiyonu size görev olarak atandığında bildirim."
         defaultFrequencyHint: null

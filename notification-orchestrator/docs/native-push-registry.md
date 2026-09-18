@@ -16,6 +16,20 @@ Tracks platform-mobile#9; meeting-event production is separately tracked in plat
 
 ## Configuration
 
+Assignment producer: `meeting.notify.native-push-enabled=true` adds native PUSH
+to the existing assignee inbox intent for `meeting.action.assigned` only. It
+requires the existing meeting notification sink to be enabled and authenticated.
+The default is false. `payload.pushAudience=native` prevents browser fan-out while
+preserving native planning, eligibility and retries; absent markers preserve the
+existing combined push behavior. The payload contains the canonical meeting ID,
+not action text. Occurrence-scoped intent/idempotency keys remain unchanged.
+Enabling this flag does not replay already published events.
+
+This producer connection does not implement summary/transcript participant
+resolution. Those events must resolve authorized recipients before creating
+native intents; do not broadcast to organization members or infer recipients
+from spoken names.
+
 Both notify.native-push.registry-enabled and notify.native-push.sender-enabled default off.
 Encryption-key is a base64 32-byte institution-managed secret. Do not rotate it without migrating existing ciphertext.
 Allowed-scopes is a comma-separated exact applicationId/provider/environment list.
