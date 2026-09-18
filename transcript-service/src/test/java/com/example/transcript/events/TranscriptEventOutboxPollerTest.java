@@ -56,6 +56,20 @@ class TranscriptEventOutboxPollerTest {
     }
 
     @Test
+    void notificationFailureKeepsCommittedEventRetryable() {
+        var sink = mock(com.example.transcript.notify.TranscriptReadyNotificationSink.class);
+        org.springframework.beans.factory.ObjectProvider<com.example.transcript.notify.TranscriptReadyNotificationSink> provider =
+                mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(sink);
+        poller.setReadySink(provider);
+        org.mockito.Mockito.doThrow(new IllegalStateException("notify unavailable")).when(sink).deliver(any());
+        poller.runCycle();
+        verify(publisher).publish(any());
+        verify(repository, never()).markPublishedFenced(any(), any(), any());
+        verify(repository).markFailedFenced(eq(rowId), eq(claimToken), eq("IllegalStateException"), eq(3), any(), any());
+    }
+
+    @Test
     void publishFailureReturnsRowToBoundedFailurePath() {
         RuntimeException failure = new IllegalStateException("redis unavailable");
         org.mockito.Mockito.doThrow(failure).when(publisher).publish(any());

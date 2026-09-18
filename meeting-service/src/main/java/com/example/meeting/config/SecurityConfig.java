@@ -104,7 +104,7 @@ public class SecurityConfig {
                         // gate. The chain admits only the two meeting-service service
                         // permissions; unrelated authenticated service tokens stay out.
                         .anyRequest().hasAnyAuthority(
-                                SVC_ANALYSIS_RESULT_WRITE, SVC_SESSION_RESOLVE))
+                                SVC_ANALYSIS_RESULT_WRITE, SVC_SESSION_RESOLVE, "SVC_meeting:notification:read"))
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
                         .decoder(jwtDecoder)
                         .jwtAuthenticationConverter(jwtAuthenticationConverter)))

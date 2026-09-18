@@ -31,6 +31,12 @@ public class TranscriptEventOutboxPoller {
     private final boolean schedulingEnabled;
     private final String owner;
     private TranscriptEventOutboxPoller self;
+    private com.example.transcript.notify.TranscriptReadyNotificationSink readySink;
+
+    @Autowired
+    void setReadySink(org.springframework.beans.factory.ObjectProvider<com.example.transcript.notify.TranscriptReadyNotificationSink> provider) {
+        readySink = provider.getIfAvailable();
+    }
 
     @Autowired
     void setSelf(@Lazy TranscriptEventOutboxPoller self) {
@@ -96,6 +102,7 @@ public class TranscriptEventOutboxPoller {
     private void publishOne(TranscriptEventOutbox row) {
         try {
             publisher.publish(TranscriptMeetingEventMessage.from(row));
+            if (readySink != null) readySink.deliver(TranscriptMeetingEventMessage.from(row));
             self.markPublished(row.getId(), row.getClaimToken());
         } catch (RuntimeException ex) {
             log.warn("Transcript meeting-event publish failed eventKey={} cause={}",

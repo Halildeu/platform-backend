@@ -106,6 +106,10 @@ public class HttpAssignmentNotificationSink implements AssignmentNotificationSin
             return;
         }
         Map<String, Object> body = intent(message, subscriber.get());
+        submit(body);
+    }
+
+    void submit(Map<String, Object> body) {
         try {
             post(body);
         } catch (RestClientResponseException ex) {

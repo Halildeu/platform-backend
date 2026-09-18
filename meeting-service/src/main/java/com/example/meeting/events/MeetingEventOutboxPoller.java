@@ -59,6 +59,12 @@ public class MeetingEventOutboxPoller {
     private final String owner;
 
     private MeetingEventOutboxPoller self; // self-injection for a real @Transactional proxy boundary
+    private com.example.meeting.notify.SummaryReadyNotificationSink readySink;
+
+    @Autowired
+    void setReadySink(ObjectProvider<com.example.meeting.notify.SummaryReadyNotificationSink> provider) {
+        readySink = provider.getIfAvailable();
+    }
 
     @Autowired
     void setSelf(@Lazy final MeetingEventOutboxPoller self) {
@@ -145,6 +151,7 @@ public class MeetingEventOutboxPoller {
         try {
             final MeetingEventMessage message = MeetingEventMessage.from(row);
             publisher.publish(message);
+            if (readySink != null) readySink.deliver(message);
             // Faz 24 Görevler dilim-4b: assignment events also reach the assignee's
             // inbox. The sink is idempotent per event key, so a failure here leaves the
             // row PENDING and the retry republishes to Redis (consumers de-duplicate)
