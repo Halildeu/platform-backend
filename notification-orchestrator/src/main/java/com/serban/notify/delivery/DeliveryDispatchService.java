@@ -304,7 +304,7 @@ public class DeliveryDispatchService {
     public DispatchOutcome dispatchSingleTarget(
         NotificationIntent intent, DeliveryTarget target, RenderedMessage message
     ) {
-        ChannelAdapter adapter = adapterRegistry.get(target.channel())
+        ChannelAdapter adapter = adapterRegistry.get(ChannelAdapterRegistry.dispatchKey(target.channel(), target.providerKey()))
             .orElseThrow(() -> new IllegalStateException(
                 "adapter missing for channel '" + target.channel() + "'"
             ));
@@ -479,6 +479,7 @@ public class DeliveryDispatchService {
             // PR4 absorb: BackoffCalculator schedules next_retry_at for RETRY
             if (result.status() == ChannelAdapter.DeliveryAttemptResult.Status.RETRY) {
                 java.time.Duration delay = backoffCalculator.computeDelay(delivery.getAttemptCount());
+                delay = com.serban.notify.push.NativePushRetry.delay(delay, result);
                 delivery.setNextRetryAt(now.plus(delay));
             } else {
                 // FAILED / BOUNCED — terminal failure
