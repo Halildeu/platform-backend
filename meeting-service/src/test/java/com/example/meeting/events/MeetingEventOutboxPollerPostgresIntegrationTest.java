@@ -552,4 +552,54 @@ class MeetingEventOutboxPollerPostgresIntegrationTest {
             failure = null;
         }
     }
+
+    @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
+
+    @Test
+    void notificationHandoffIsAtomicAndRetriesDoNotChangeDomainState() throws Exception {
+        Seed seed = seed();
+        UUID id = seedPending(seed, "meeting.summary.ready", seed.runId + "|meeting.summary.ready");
+        var tx = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        UUID token = UUID.randomUUID();
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_event_outbox SET status='CLAIMED', claim_token=? WHERE id=?", token, id);
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+            assertThat(outboxRepo.markPublishedFenced(id, token, Instant.now())).isEqualTo(1);
+            assertThat(outboxRepo.enqueueNotification(id, true)).isEqualTo(1);
+            throw new IllegalStateException("crash before commit");
+        })).isInstanceOf(IllegalStateException.class);
+        assertThat(jdbc.queryForObject("SELECT status FROM " + SCHEMA + ".meeting_event_outbox WHERE id=?", String.class, id)).isEqualTo("CLAIMED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA + ".notification_delivery_outbox WHERE source_id=?", Integer.class, id)).isZero();
+        tx.executeWithoutResult(status -> {
+            assertThat(outboxRepo.markPublishedFenced(id, token, Instant.now())).isEqualTo(1);
+            assertThat(outboxRepo.enqueueNotification(id, true)).isEqualTo(1);
+            assertThat(outboxRepo.enqueueNotification(id, true)).isZero();
+        });
+        tx.executeWithoutResult(status -> assertThat(outboxRepo.lockNextNotification(false)).isEmpty()); // native flag pause preserves summary job
+        var locked = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        try (var workers = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var holding = workers.submit(() -> tx.executeWithoutResult(status -> {
+                assertThat(outboxRepo.lockNextNotification(true)).isPresent();
+                locked.countDown();
+                try { if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("timeout"); }
+                catch (InterruptedException ex) { Thread.currentThread().interrupt(); throw new IllegalStateException(ex); }
+                status.setRollbackOnly(); // process loss leaves the durable job pending
+            }));
+            try {
+                assertThat(locked.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                tx.executeWithoutResult(status -> assertThat(outboxRepo.lockNextNotification(true)).isEmpty());
+            } finally { release.countDown(); }
+            holding.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        tx.executeWithoutResult(status -> {
+            assertThat(outboxRepo.lockNextNotification(true)).isPresent();
+            outboxRepo.notificationFailed(id, 20, Instant.now().plusSeconds(30), "Offline");
+        });
+        assertThat(jdbc.queryForObject("SELECT status FROM " + SCHEMA + ".meeting_event_outbox WHERE id=?", String.class, id)).isEqualTo("PUBLISHED");
+        assertThat(jdbc.queryForObject("SELECT attempts FROM " + SCHEMA + ".meeting_event_outbox WHERE id=?", Integer.class, id)).isZero();
+        assertThat(jdbc.queryForObject("SELECT attempts FROM " + SCHEMA + ".notification_delivery_outbox WHERE source_id=?", Integer.class, id)).isEqualTo(1);
+        tx.executeWithoutResult(status -> assertThat(outboxRepo.lockNextNotification(true)).isEmpty());
+        jdbc.update("DELETE FROM " + SCHEMA + ".meeting_event_outbox WHERE id=?", id);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA + ".notification_delivery_outbox WHERE source_id=?", Integer.class, id)).isZero();
+    }
 }

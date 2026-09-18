@@ -97,4 +97,42 @@ public interface TranscriptEventOutboxRepository extends JpaRepository<Transcrip
     Optional<TranscriptEventOutbox> findByEventKey(String eventKey);
 
     long countByStatus(TranscriptEventOutboxStatus status);
+
+    // Enqueued in the SAME transaction as the fenced domain PUBLISHED transition.
+    @Modifying
+    @Query(value = """
+        INSERT INTO {h-schema}notification_delivery_outbox (source_id)
+        SELECT id FROM {h-schema}transcript_event_outbox
+        WHERE id = :id AND status = 'PUBLISHED' AND event_type = 'meeting.transcript.ready'
+        ON CONFLICT (source_id) DO NOTHING
+        """, nativeQuery = true)
+    int enqueueNotification(@Param("id") UUID id);
+
+    // One locked job, no expiring batch lease. Lock survives until HTTP outcome commits.
+    @Query(value = """
+        SELECT o.* FROM {h-schema}notification_delivery_outbox n
+        JOIN {h-schema}transcript_event_outbox o ON o.id = n.source_id
+        WHERE n.status = 'PENDING' AND n.next_attempt_at <= CURRENT_TIMESTAMP
+        ORDER BY n.next_attempt_at, n.source_id
+        LIMIT 1 FOR UPDATE OF n SKIP LOCKED
+        """, nativeQuery = true)
+    Optional<TranscriptEventOutbox> lockNextNotification();
+
+    @Modifying
+    @Query(value = """
+        UPDATE {h-schema}notification_delivery_outbox
+        SET status = 'DELIVERED', last_error = NULL WHERE source_id = :id
+        """, nativeQuery = true)
+    int notificationDelivered(@Param("id") UUID id);
+
+    @Modifying
+    @Query(value = """
+        UPDATE {h-schema}notification_delivery_outbox
+        SET attempts = attempts + 1,
+            status = CASE WHEN attempts + 1 >= :maxAttempts THEN 'DEAD' ELSE 'PENDING' END,
+            next_attempt_at = :retryAt, last_error = :errorClass
+        WHERE source_id = :id
+        """, nativeQuery = true)
+    int notificationFailed(@Param("id") UUID id, @Param("maxAttempts") int maxAttempts,
+                           @Param("retryAt") Instant retryAt, @Param("errorClass") String errorClass);
 }

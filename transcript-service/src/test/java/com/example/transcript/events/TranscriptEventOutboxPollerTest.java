@@ -56,17 +56,17 @@ class TranscriptEventOutboxPollerTest {
     }
 
     @Test
-    void notificationFailureKeepsCommittedEventRetryable() {
-        var sink = mock(com.example.transcript.notify.TranscriptReadyNotificationSink.class);
-        org.springframework.beans.factory.ObjectProvider<com.example.transcript.notify.TranscriptReadyNotificationSink> provider =
+    void successfulDomainDeliveryEnqueuesWithoutHttp() {
+        var sink = mock(com.example.transcript.notify.NotificationDeliveryQueue.class);
+        org.springframework.beans.factory.ObjectProvider<com.example.transcript.notify.NotificationDeliveryQueue> provider =
                 mock(org.springframework.beans.factory.ObjectProvider.class);
         when(provider.getIfAvailable()).thenReturn(sink);
-        poller.setReadySink(provider);
-        org.mockito.Mockito.doThrow(new IllegalStateException("notify unavailable")).when(sink).deliver(any());
+        poller.setDeliveryQueue(provider);
+        when(repository.markPublishedFenced(eq(rowId),eq(claimToken),any())).thenReturn(1);
         poller.runCycle();
         verify(publisher).publish(any());
-        verify(repository, never()).markPublishedFenced(any(), any(), any());
-        verify(repository).markFailedFenced(eq(rowId), eq(claimToken), eq("IllegalStateException"), eq(3), any(), any());
+        verify(sink).enqueue(rowId); verify(sink,never()).runOne();
+        verify(repository, never()).markFailedFenced(any(), any(), any(), any(Integer.class), any(), any());
     }
 
     @Test
@@ -104,5 +104,14 @@ class TranscriptEventOutboxPollerTest {
 
         verify(repository, never()).findByClaimToken(any());
         verify(publisher, never()).publish(any());
+    }
+    @Test
+    void lostFenceNeverEnqueuesNotification() {
+        var queue = mock(com.example.transcript.notify.NotificationDeliveryQueue.class);
+        org.springframework.beans.factory.ObjectProvider<com.example.transcript.notify.NotificationDeliveryQueue> provider = mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(queue);
+        poller.setDeliveryQueue(provider);
+        poller.markPublished(rowId, claimToken);
+        verify(queue, never()).enqueue(any());
     }
 }
