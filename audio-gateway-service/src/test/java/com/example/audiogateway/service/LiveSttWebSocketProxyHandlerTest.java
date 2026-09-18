@@ -124,6 +124,69 @@ class LiveSttWebSocketProxyHandlerTest {
     }
 
     @Test
+    void ownerReconnectSupersedesStaleConnectionInsteadOfBeingRejected() {
+        when(sessions.get("session-1")).thenReturn(Optional.of(session(1L, 4L, SessionState.STARTED)));
+        final Sinks.Empty<Void> staleBridge = Sinks.empty();
+        final Sinks.Empty<Void> freshBridge = Sinks.empty();
+        when(upstreamClient.execute(any(URI.class), any(WebSocketHandler.class)))
+                .thenReturn(staleBridge.asMono(), freshBridge.asMono());
+        final WebSocketSession stale = clientSession(jwt(true, true));
+        final WebSocketSession fresh = clientSession(jwt(true, true));
+
+        // The stale socket's network is gone: its bridge never completes by itself.
+        handler.handle(stale).subscribe();
+        handler.handle(fresh).subscribe();
+
+        verify(stale).close(LiveSttWebSocketProxyHandler.SUPERSEDED);
+        verify(fresh, never()).close(CloseStatus.POLICY_VIOLATION);
+        verify(upstreamClient, org.mockito.Mockito.times(2))
+                .execute(any(URI.class), any(WebSocketHandler.class));
+        freshBridge.tryEmitEmpty();
+    }
+
+    @Test
+    void supersededBridgeFinishingLateKeepsReplacementRegistered() {
+        final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        handler = new LiveSttWebSocketProxyHandler(
+                sessions,
+                configuredProperties(),
+                auditSink,
+                DirectSttTranscriptResultSink.noop(),
+                upstreamClient,
+                new ObjectMapper(),
+                meters);
+        when(sessions.get("session-1")).thenReturn(Optional.of(session(1L, 4L, SessionState.STARTED)));
+        final Sinks.Empty<Void> staleBridge = Sinks.empty();
+        final Sinks.Empty<Void> freshBridge = Sinks.empty();
+        final Sinks.Empty<Void> laterBridge = Sinks.empty();
+        when(upstreamClient.execute(any(URI.class), any(WebSocketHandler.class)))
+                .thenReturn(staleBridge.asMono(), freshBridge.asMono(), laterBridge.asMono());
+        final WebSocketSession stale = clientSession(jwt(true, true));
+        final WebSocketSession fresh = clientSession(jwt(true, true));
+        final WebSocketSession later = clientSession(jwt(true, true));
+
+        handler.handle(stale).subscribe();
+        handler.handle(fresh).subscribe();
+        staleBridge.tryEmitEmpty();
+
+        org.assertj.core.api.Assertions.assertThat(
+                        meters.get("audio_gateway_live_stream_connections").gauge().value())
+                .isEqualTo(1.0d);
+        // Had the late stale finish unregistered `fresh`, this reconnect would not
+        // see it and `fresh` would never be closed.
+        handler.handle(later).subscribe();
+        verify(fresh).close(LiveSttWebSocketProxyHandler.SUPERSEDED);
+        org.assertj.core.api.Assertions.assertThat(
+                        meters.counter("audio_gateway_live_stream_superseded_total").count())
+                .isEqualTo(2.0d);
+        freshBridge.tryEmitEmpty();
+        laterBridge.tryEmitEmpty();
+        org.assertj.core.api.Assertions.assertThat(
+                        meters.get("audio_gateway_live_stream_connections").gauge().value())
+                .isZero();
+    }
+
+    @Test
     void opensSpeechmaticsRealtimeWithServerSideAuthorization() {
         final AudioGatewayProperties properties = configuredProperties();
         properties.getDirectStt().getSpeechmatics()

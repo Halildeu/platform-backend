@@ -358,7 +358,11 @@ data: {"eventId":"1782820000123-0","sessionId":"SES-...","meetingId":"22222222-2
 - Configured tenant/user claims must match the active session.
 - Unknown, foreign, or finished sessions close with WebSocket policy violation.
 - The session must be PCM16, 16000 Hz, mono.
-- Only one active WebSocket connection is allowed per session.
+- Only one active WebSocket connection is allowed per session. A new connection
+  that passes the same ownership checks supersedes the previous one, which is
+  closed with `4000 superseded` (a client whose network dropped cannot close its
+  old socket, and the server would otherwise hold it until TCP times out).
+  Live relay sequence state is registry-owned and survives the swap.
 
 **Client binary frame, network byte order header**:
 
