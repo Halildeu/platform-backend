@@ -18,6 +18,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -69,7 +70,16 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
     private final URI upstreamUri;
     private final ObjectMapper objectMapper;
     private final Scheduler transcriptSinkScheduler;
-    private final Set<String> activeSessions = ConcurrentHashMap.newKeySet();
+    /**
+     * Close code sent to a connection replaced by a newer authenticated one of the
+     * same session owner. Application range (4000-4999), so clients can tell it
+     * apart from a policy rejection.
+     */
+    static final CloseStatus SUPERSEDED = new CloseStatus(4000, "superseded");
+
+    private final ConcurrentHashMap<String, WebSocketSession> activeSessions =
+            new ConcurrentHashMap<>();
+    private final Counter supersededConnections;
     private final Counter acceptedFrames;
     private final Counter duplicateFrames;
     private final Counter rejectedFrames;
@@ -111,7 +121,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 "audio_gateway_live_stream_transcript_results_total", "outcome", "persisted");
         this.transcriptResultFailures = meters.counter(
                 "audio_gateway_live_stream_transcript_results_total", "outcome", "failed");
-        Gauge.builder("audio_gateway_live_stream_connections", activeSessions, Set::size)
+        this.supersededConnections = meters.counter("audio_gateway_live_stream_superseded_total");
+        Gauge.builder("audio_gateway_live_stream_connections", activeSessions, Map::size)
                 .register(meters);
     }
 
@@ -172,10 +183,26 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             || record.channels() != 1) {
                         return clientSession.close(CloseStatus.NOT_ACCEPTABLE);
                     }
-                    if (!activeSessions.add(sessionId)) {
-                        return clientSession.close(CloseStatus.POLICY_VIOLATION);
-                    }
                     final String correlationId = correlationId(clientSession);
+                    // Latest connection of the verified owner wins. A client whose
+                    // network dropped cannot send a close frame, so its old socket
+                    // lingers here until TCP gives up (minutes). Rejecting the
+                    // reconnect in that window left the realtime lane — the only STT
+                    // input for Speechmatics — dead for the rest of the meeting
+                    // (platform-desktop#138). Live relay sequence state lives in the
+                    // registry and survives the swap, so the replay stays
+                    // duplicate-suppressed and contiguous.
+                    final WebSocketSession previous = activeSessions.put(sessionId, clientSession);
+                    if (previous != null && previous != clientSession) {
+                        supersededConnections.increment();
+                        log.info(
+                                "Live STT WebSocket superseded by owner reconnect sessionId={} correlationId={}",
+                                sessionId,
+                                correlationId);
+                        previous.close(SUPERSEDED)
+                                .onErrorResume(error -> Mono.empty())
+                                .subscribe();
+                    }
                     safeAudit(new AuditEvent.TranscriptEventsAccessed(
                             record.sessionId(),
                             record.tenantId(),
@@ -222,7 +249,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                     error -> clientSession.close(CloseStatus.BAD_DATA))
                             .onErrorResume(error -> clientSession.close(CloseStatus.SERVER_ERROR))
                             .doFinally(signal -> {
-                                activeSessions.remove(sessionId);
+                                // Only this connection's own entry: a superseded bridge
+                                // finishing late must not unregister its replacement.
+                                activeSessions.remove(sessionId, clientSession);
                             });
                 });
     }
