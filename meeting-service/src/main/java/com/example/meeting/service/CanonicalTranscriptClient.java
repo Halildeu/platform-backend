@@ -1,6 +1,7 @@
 package com.example.meeting.service;
 
 import com.example.common.meeting.events.SpeakerAttribution;
+import com.example.common.meeting.speakers.SpeakerLabels;
 
 import java.time.Instant;
 import java.util.List;
@@ -11,6 +12,15 @@ public interface CanonicalTranscriptClient {
 
     Snapshot read(UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion,
             UUID analysisRunId, String analysisSpecVersion);
+
+    SpeakerLabels.Snapshot speakerLabels(UUID tenant, UUID meeting, UUID session, long version,
+            UUID run, String spec, String actor, SpeakerLabels.Edit edit);
+
+    class SpeakerLabelFailure extends IllegalStateException {
+        private final int status;
+        public SpeakerLabelFailure(int status) { super("SPEAKER_LABEL_REQUEST_FAILED"); this.status = status; }
+        public int status() { return status; }
+    }
 
     record Snapshot(
             UUID tenantId,

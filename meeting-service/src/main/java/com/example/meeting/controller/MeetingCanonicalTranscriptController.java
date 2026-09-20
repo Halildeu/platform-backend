@@ -13,6 +13,9 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import com.example.common.meeting.speakers.SpeakerLabels;
 
 /** User-token owner read of the transcript bound to one persisted analysis result. */
 @RestController
@@ -38,5 +41,20 @@ public class MeetingCanonicalTranscriptController {
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
                 .body(service.read(tenant, meetingId, analysisRunId));
+    }
+
+    @GetMapping("/speaker-labels")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.VIEWER)
+    public ResponseEntity<SpeakerLabels.Snapshot> labels(@PathVariable UUID meetingId, @PathVariable UUID analysisRunId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.speakerLabels(tenantContextResolver.resolveRequired(), meetingId, analysisRunId, null));
+    }
+
+    @PutMapping("/speaker-labels")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
+    public ResponseEntity<SpeakerLabels.Snapshot> editLabel(@PathVariable UUID meetingId, @PathVariable UUID analysisRunId,
+            @RequestBody SpeakerLabels.Edit edit) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.speakerLabels(tenantContextResolver.resolveRequired(), meetingId, analysisRunId, edit));
     }
 }

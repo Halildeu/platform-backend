@@ -11,6 +11,7 @@ import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.BindingResult;
 import org.springframework.context.MessageSourceResolvable;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -126,6 +127,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, "version_conflict",
                 "This transcript segment was modified by another writer. "
                         + "Refresh and retry.");
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAccessDenied(AccessDeniedException ex) {
+        return build(HttpStatus.FORBIDDEN, "ACCESS_DENIED", "Access denied.");
     }
 
     @ExceptionHandler(Exception.class)

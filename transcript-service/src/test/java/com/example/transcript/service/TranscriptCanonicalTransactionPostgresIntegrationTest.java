@@ -76,16 +76,158 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         TranscriptFinalizationStateMachine.class,
         FinalizedTranscriptSnapshotCodec.class,
         TranscriptSnapshotHasher.class,
+        CanonicalSpeakerLabelService.class,
+        TranscriptAccessAuditService.class,
+        com.example.transcript.security.AnalysisSpecVersionPolicy.class,
         com.fasterxml.jackson.databind.ObjectMapper.class,
         com.example.transcript.config.TranscriptFinalizationConfig.class
 })
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class TranscriptCanonicalTransactionPostgresIntegrationTest {
 
+    private com.example.transcript.model.TranscriptFinalization seedLabels() {
+        var segment = new TranscriptSegment();
+        segment.setId(UUID.randomUUID()); segment.setTenantId(TENANT); segment.setMeetingId(MEETING);
+        segment.setTextDraft("hello world"); segment.setStartTime(0d); segment.setEndTime(1d);
+        segment.setStatus(TranscriptSegmentStatus.DRAFT); segment.setSourceSessionId("SES-label"); segment.setSourceTransportEpoch(1L);
+        segment.setSpeakerAttribution(new SpeakerAttribution(LABEL_SCOPE, List.of(
+                new SpeakerAttribution.Turn("S1", 0, 5, 0, 500), new SpeakerAttribution.Turn("S2", 6, 11, 500, 1000))));
+        var snapshot = snapshotCodec.captureMachine(List.of(segment));
+        var f = new com.example.transcript.model.TranscriptFinalization();
+        f.setId(UUID.randomUUID()); f.setTenantId(TENANT); f.setOrgId(TENANT); f.setMeetingId(MEETING); f.setSessionId(SESSION);
+        f.setFinalizationVersion(1); f.setAnalysisRunId(UUID.randomUUID()); f.setFinalizedAt(Instant.now()); f.setCreatedAt(Instant.now());
+        f.setSegmentCount(1); f.setSnapshotSha256(snapshot.sourceSnapshotSha256()); f.setCanonicalTranscript(snapshot.transcript());
+        f.setCanonicalTranscriptSha256(snapshot.transcriptSha256()); f.setCanonicalSegments(snapshot.canonicalSegments());
+        f.setCanonicalProjectionSha256(snapshot.canonicalProjectionSha256());
+        return finalizations.saveAndFlush(f);
+    }
+    private com.example.common.meeting.speakers.SpeakerLabels.Snapshot labelRead(UUID run) {
+        return speakerLabels.read(TENANT, MEETING, SESSION, 1, TENANT, run, "meeting-intelligence-v1", "owner");
+    }
+    private com.example.common.meeting.speakers.SpeakerLabels.Snapshot labelEdit(UUID run, String speaker, String name, long revision) {
+        return speakerLabels.edit(TENANT, MEETING, SESSION, 1, TENANT, run, "meeting-intelligence-v1", "owner",
+                new com.example.common.meeting.speakers.SpeakerLabels.Edit(LABEL_SCOPE, speaker, name, revision));
+    }
+    @Test void speakerLabelsPersistWithoutChangingHashesAndAreErasedWithOccurrence() throws Exception {
+        var f = seedLabels();
+        var saved = labelEdit(f.getAnalysisRunId(), "S1", "Zeynep", 0);
+        assertThat(saved.revision()).isEqualTo(1);
+        assertThat(labelRead(f.getAnalysisRunId()).labels().getFirst().name()).isEqualTo("Zeynep");
+        var after = finalizations.findById(f.getId()).orElseThrow();
+        assertThat(after.getCanonicalProjectionSha256()).isEqualTo(f.getCanonicalProjectionSha256());
+        assertThat(after.getCanonicalTranscript()).isEqualTo(f.getCanonicalTranscript());
+        // JSONB canonicalizes object key order/spacing without changing projection content.
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        assertThat(json.readTree(after.getCanonicalSegments())).isEqualTo(json.readTree(f.getCanonicalSegments()));
+        // Stale JPA saves from independent legal-hold operations cannot clobber the new metadata.
+        f.setLegalHold(true); finalizations.saveAndFlush(f);
+        assertThat(labelRead(f.getAnalysisRunId()).labels()).hasSize(1);
+        assertThatThrownBy(() -> labelEdit(f.getAnalysisRunId(), "S2", "Mehmet", 1))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> assertThat(ex.getStatusCode().value()).isEqualTo(423));
+        f.setLegalHold(false); finalizations.saveAndFlush(f);
+        var removed = labelEdit(f.getAnalysisRunId(), "S1", null, 1);
+        assertThat(removed.labels()).isEmpty();
+        labelEdit(f.getAnalysisRunId(), "S2", "Mehmet", 2);
+        assertThat(jdbc.queryForObject("select count(*) from " + SCHEMA + ".transcript_access_audit where access_type = 'LABEL_EDIT'", Integer.class)).isEqualTo(3);
+        erasureService.erase(TENANT, MEETING, SESSION, "SES-label");
+        assertThat(finalizations.findById(f.getId())).isEmpty();
+        assertThatThrownBy(() -> labelRead(f.getAnalysisRunId())).isInstanceOf(ResponseStatusException.class);
+    }
+    @Test void speakerLabelsHaveOneConcurrentWinnerAndAuditFailureRollsBack() throws Exception {
+        var f = seedLabels();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            java.util.concurrent.Callable<Integer> a = () -> {
+                start.await(10, TimeUnit.SECONDS);
+                try { labelEdit(f.getAnalysisRunId(), "S1", "A", 0); return 200; }
+                catch (ResponseStatusException conflict) { return conflict.getStatusCode().value(); }
+            };
+            Future<Integer> first = executor.submit(a), second = executor.submit(a);
+            start.countDown();
+            assertThat(List.of(first.get(20, TimeUnit.SECONDS), second.get(20, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder(200, 409);
+            assertThat(labelRead(f.getAnalysisRunId()).revision()).isEqualTo(1);
+        } finally { executor.shutdownNow(); }
+        jdbc.execute("ALTER TABLE " + SCHEMA + ".transcript_access_audit ADD CONSTRAINT label_audit_failure CHECK (access_type <> 'LABEL_EDIT') NOT VALID");
+        try {
+            assertThatThrownBy(() -> labelEdit(f.getAnalysisRunId(), "S2", "Mehmet", 1)).isInstanceOf(RuntimeException.class);
+            var read = labelRead(f.getAnalysisRunId());
+            assertThat(read.revision()).isEqualTo(1);
+            assertThat(read.labels()).extracting("speaker").containsExactly("S1");
+        } finally { jdbc.execute("ALTER TABLE " + SCHEMA + ".transcript_access_audit DROP CONSTRAINT label_audit_failure"); }
+    }
+    @Test void speakerLabelScopeTupleErasureAndRetentionCannotBeBypassed() {
+        var f = seedLabels();
+        assertThatThrownBy(() -> speakerLabels.edit(TENANT, MEETING, SESSION, 1, TENANT, f.getAnalysisRunId(),
+                "meeting-intelligence-v1", "owner", new com.example.common.meeting.speakers.SpeakerLabels.Edit(UUID.randomUUID(), "S1", "A", 0)))
+                .isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> labelRead(UUID.randomUUID())).isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> speakerLabels.read(TENANT, MEETING, SESSION, 1, UUID.randomUUID(), f.getAnalysisRunId(),
+                "meeting-intelligence-v1", "owner")).isInstanceOf(ResponseStatusException.class);
+        labelEdit(f.getAnalysisRunId(), "S1", "A", 0);
+        new TransactionTemplate(transactionManager).execute(status -> { finalizations.deleteByIdIn(List.of(f.getId())); return null; });
+        assertThatThrownBy(() -> labelEdit(f.getAnalysisRunId(), "S1", "B", 1)).isInstanceOf(ResponseStatusException.class);
+        assertThat(finalizations.findById(f.getId())).isEmpty();
+    }
+    @Test void speakerEditRacingErasureCannotResurrectDeletedNames() throws Exception {
+        var f = seedLabels();
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<?> edit = executor.submit(() -> { start.await(10, TimeUnit.SECONDS);
+                try { labelEdit(f.getAnalysisRunId(), "S1", "A", 0); } catch (ResponseStatusException expected) {
+                    assertThat(expected.getStatusCode().value()).isIn(404, 410, 423);
+                } return null;
+            });
+            Future<?> erase = executor.submit(() -> { start.await(10, TimeUnit.SECONDS); erasureService.erase(TENANT, MEETING, SESSION, "SES-label"); return null; });
+            start.countDown(); edit.get(20, TimeUnit.SECONDS); erase.get(20, TimeUnit.SECONDS);
+            assertThat(finalizations.findById(f.getId())).isEmpty();
+            assertThatThrownBy(() -> labelEdit(f.getAnalysisRunId(), "S1", "A", 0)).isInstanceOf(ResponseStatusException.class);
+        } finally { executor.shutdownNow(); }
+    }
+
     private static final String SCHEMA = "transcript_service";
+    @Test void pendingErasureWithholdsNamesAndEdits() {
+        var f = seedLabels(); labelEdit(f.getAnalysisRunId(), "S1", "A", 0);
+        erasureService.prepare(TENANT, MEETING, SESSION, "SES-label");
+        assertThatThrownBy(() -> labelRead(f.getAnalysisRunId())).isInstanceOfSatisfying(ResponseStatusException.class,
+                ex -> assertThat(ex.getStatusCode().value()).isEqualTo(423));
+        assertThatThrownBy(() -> labelEdit(f.getAnalysisRunId(), "S1", "B", 1)).isInstanceOfSatisfying(ResponseStatusException.class,
+                ex -> assertThat(ex.getStatusCode().value()).isEqualTo(423));
+    }
+    @Test void waitingEditorObservesCommittedLegalHold() throws Exception {
+        var f = seedLabels(); var executor = Executors.newFixedThreadPool(2);
+        var held = new CountDownLatch(1); var release = new CountDownLatch(1); var attempting = new CountDownLatch(1);
+        try {
+            Future<?> holder = executor.submit(() -> new TransactionTemplate(transactionManager).execute(status -> {
+                var row = finalizations.findVisibleAnalysisOccurrenceForUpdate(TENANT, MEETING, SESSION, 1, f.getAnalysisRunId()).orElseThrow();
+                row.setLegalHold(true); finalizations.saveAndFlush(row); held.countDown();
+                try { assertThat(release.await(20, TimeUnit.SECONDS)).isTrue(); }
+                catch (InterruptedException ex) { throw new IllegalStateException(ex); }
+                return null;
+            }));
+            assertThat(held.await(15, TimeUnit.SECONDS)).isTrue();
+            Future<Integer> edit = executor.submit(() -> { attempting.countDown();
+                try { labelEdit(f.getAnalysisRunId(), "S1", "A", 0); return 200; }
+                catch (ResponseStatusException ex) { return ex.getStatusCode().value(); }
+            });
+            assertThat(attempting.await(5, TimeUnit.SECONDS)).isTrue(); release.countDown();
+            holder.get(20, TimeUnit.SECONDS); assertThat(edit.get(20, TimeUnit.SECONDS)).isEqualTo(423);
+            assertThat(labelRead(f.getAnalysisRunId()).labels()).isEmpty();
+        } finally { release.countDown(); executor.shutdownNow(); }
+    }
+    @Test void corruptFrozenProjectionCannotAuthorizeLabels() {
+        var f = seedLabels();
+        jdbc.update("update " + SCHEMA + ".transcript_finalizations set canonical_projection_sha256 = ? where id = ?", "b".repeat(64), f.getId());
+        assertThatThrownBy(() -> labelEdit(f.getAnalysisRunId(), "S1", "A", 0)).isInstanceOfSatisfying(ResponseStatusException.class,
+                ex -> assertThat(ex.getStatusCode().value()).isEqualTo(409));
+        assertThat(finalizations.findById(f.getId()).orElseThrow().getSpeakerLabelsRevision()).isZero();
+    }
     private static final UUID TENANT = UUID.fromString("11111111-1111-4111-8111-111111111111");
     private static final UUID MEETING = UUID.fromString("22222222-2222-4222-8222-222222222222");
     private static final UUID SESSION = UUID.fromString("33333333-3333-4333-8333-333333333333");
+    private static final UUID LABEL_SCOPE = SpeakerAttribution.scope(TENANT.toString(), MEETING.toString(), "SES-label", 1);
 
     @Container
     @SuppressWarnings("resource")
@@ -126,9 +268,11 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private FinalizedTranscriptSnapshotCodec snapshotCodec;
+    @Autowired private CanonicalSpeakerLabelService speakerLabels;
 
     @BeforeEach
     void clean() {
+        jdbc.update("DELETE FROM " + SCHEMA + ".transcript_access_audit");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_erasure_audit");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_erasure_tombstones");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_source_retention_fences");

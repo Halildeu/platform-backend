@@ -207,18 +207,15 @@ security:
           - transcript-service
           - user-service
           - notification-orchestrator
-        allowed-permissions:
-          - transcript:session:erase
-          - transcript:canonical:read
-          - users:internal
-          - notify:intents:system
+        # Speaker-label grants are opt-in; retain the pre-existing default credential authority.
+        allowed-permissions: ${SERVICE_CLIENT_MEETING_SERVICE_ALLOWED_PERMISSIONS:transcript:session:erase,transcript:canonical:read,users:internal,notify:intents:system}
         # gitops#3507 Görevler assignee resolution: the user-service audience
         # may only mint the narrow internal-directory permission, and the
         # transcript permissions stay pinned to the transcript audience.
         # gitops#3537 Görevler dilim-4b: the notification-orchestrator audience
         # may only mint the system-intent permission (assignment notifications).
         allowed-permissions-by-audience:
-          transcript-service: transcript:session:erase,transcript:canonical:read
+          transcript-service: ${SERVICE_CLIENT_MEETING_SERVICE_TRANSCRIPT_ALLOWED_PERMISSIONS:transcript:session:erase,transcript:canonical:read}
           user-service: users:internal
           notification-orchestrator: notify:intents:system
         require-explicit-permissions: true

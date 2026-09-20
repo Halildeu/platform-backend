@@ -18,5 +18,7 @@ public enum TranscriptAccessType {
     READ,
     LIST,
     SEARCH,
-    EXPORT
+    EXPORT,
+    LABEL_READ,
+    LABEL_EDIT
 }

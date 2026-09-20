@@ -37,6 +37,13 @@ public class TranscriptAccessAuditService {
         this.repository = repository;
     }
 
+    /** Actor is forwarded only by the authorized meeting service; never include label text. */
+    public TranscriptAccessAudit recordSpeakerLabels(AdminTenantContext context,
+            UUID meetingId, UUID sessionId, int count, boolean edited) {
+        return write(context, edited ? TranscriptAccessType.LABEL_EDIT : TranscriptAccessType.LABEL_READ,
+                null, meetingId, sessionId, count);
+    }
+
     /** Single-segment READ. */
     public TranscriptAccessAudit recordRead(AdminTenantContext context,
                                             UUID segmentId,

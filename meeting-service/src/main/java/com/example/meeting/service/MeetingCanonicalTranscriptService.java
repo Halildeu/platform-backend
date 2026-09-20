@@ -3,6 +3,7 @@ package com.example.meeting.service;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.dto.v1.admin.CanonicalMeetingTranscriptResponse;
 import com.example.meeting.dto.v1.admin.CanonicalMeetingTranscriptSegment;
+import com.example.common.meeting.speakers.SpeakerLabels;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAnalysisRun;
 import com.example.meeting.model.MeetingAnalysisRunDestructionReason;
@@ -111,6 +112,55 @@ public class MeetingCanonicalTranscriptService {
                 segments);
         auditService.recordCanonicalTranscriptRead(tenant, meetingId, analysisRunId);
         return response;
+    }
+
+    public SpeakerLabels.Snapshot speakerLabels(AdminTenantContext tenant, UUID meetingId, UUID analysisRunId,
+            SpeakerLabels.Edit edit) {
+        // Reuse owner/module, exact occurrence, erasure, integrity and fail-closed read audit.
+        var transcript = read(tenant, meetingId, analysisRunId);
+        boolean canManage = canManageLabels(tenant);
+        if (edit != null && !canManage) throw status(HttpStatus.FORBIDDEN, "SPEAKER_LABEL_EDIT_FORBIDDEN");
+        var run = analysisRuns.findVisibleExactRun(analysisRunId, meetingId, tenant.tenantId())
+                .orElseThrow(() -> destroyedStatus(tenant, meetingId, analysisRunId));
+        if (edit != null && ("LEGAL_HOLD".equals(transcript.state())
+                || sessionErasures.findById(transcript.sessionId()).isPresent()))
+            throw status(HttpStatus.LOCKED, "SPEAKER_LABEL_EDIT_LOCKED");
+        java.util.Set<String> known = new java.util.HashSet<>();
+        for (var segment : transcript.segments()) if (segment.speakerAttribution() != null) {
+            var attribution = segment.speakerAttribution();
+            attribution.turns().stream().filter(turn -> !"UU".equals(turn.speaker()))
+                    .forEach(turn -> known.add(attribution.scope() + ":" + turn.speaker()));
+        }
+        if (edit != null && !known.contains(edit.key())) throw status(HttpStatus.BAD_REQUEST, "LABEL_SPEAKER_UNAVAILABLE");
+        try {
+            var response = transcriptClient.speakerLabels(tenant.tenantId(), meetingId, transcript.sessionId(),
+                    transcript.finalizationVersion(), run.getAnalysisRunId(), run.getAnalysisSpecVersion(), tenant.subject(), edit);
+            String acknowledgedName = response == null || edit == null ? null : response.labels().stream()
+                    .filter(label -> label.key().equals(edit.key())).map(SpeakerLabels.Label::name).findFirst().orElse(null);
+            if (response == null || !tenant.tenantId().equals(response.tenantId())
+                    || !meetingId.equals(response.meetingId()) || !transcript.sessionId().equals(response.sessionId())
+                    || transcript.finalizationVersion() != response.finalizationVersion()
+                    || !run.getAnalysisRunId().equals(response.analysisRunId())
+                    || !transcript.transcriptSha256().equals(response.transcriptSha256())
+                    || response.labels().stream().anyMatch(label -> !known.contains(label.key()))
+                    || (edit != null && (response.revision() != edit.expectedRevision() + 1
+                        || !java.util.Objects.equals(edit.name(), acknowledgedName))))
+                throw status(HttpStatus.BAD_GATEWAY, "SPEAKER_LABEL_RESPONSE_MISMATCH");
+            // Public run identity can differ from the producer-owned internal occurrence ID.
+            return new SpeakerLabels.Snapshot(response.tenantId(), meetingId, response.sessionId(),
+                    response.finalizationVersion(), analysisRunId, response.transcriptSha256(),
+                    response.revision(), response.editable() && canManage && !"LEGAL_HOLD".equals(transcript.state()), response.labels());
+        } catch (CanonicalTranscriptClient.SpeakerLabelFailure failure) {
+            throw status(HttpStatus.valueOf(failure.status()), "SPEAKER_LABEL_REQUEST_FAILED");
+        }
+    }
+
+    private boolean canManageLabels(AdminTenantContext tenant) {
+        OpenFgaAuthzService authz = authzProvider.getIfAvailable();
+        try {
+            return authz != null && authz.isEnabled()
+                    && authz.check(tenant.authzPrincipal(), MeetingAuthz.MANAGER, "module", MeetingAuthz.MODULE);
+        } catch (RuntimeException unavailable) { return false; }
     }
 
     private void requireOwner(AdminTenantContext tenant, Meeting meeting) {
