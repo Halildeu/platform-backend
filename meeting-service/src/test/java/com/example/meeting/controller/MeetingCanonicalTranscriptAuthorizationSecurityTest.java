@@ -71,4 +71,13 @@ class MeetingCanonicalTranscriptAuthorizationSecurityTest {
         return "/api/v1/admin/meetings/{meetingId}/intelligence/results/"
                 + "{analysisRunId}/transcript";
     }
+
+    @Test void viewerCannotMutateSpeakerLabels() throws Exception {
+        when(authzService.check(SUBJECT, MeetingAuthz.MANAGER, "module", MeetingAuthz.MODULE)).thenReturn(false);
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(path() + "/speaker-labels", MEETING, RUN)
+                .with(jwt().jwt(token -> token.subject(SUBJECT)).authorities(new SimpleGrantedAuthority("SCOPE_meeting")))
+                .contentType("application/json").content("{\"scope\":\"" + TENANT + "\",\"speaker\":\"S1\",\"name\":\"A\",\"expectedRevision\":0}"))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(service);
+    }
 }

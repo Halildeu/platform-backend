@@ -58,7 +58,8 @@ public class SecurityConfig {
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth.anyRequest().hasAnyAuthority(
                         SVC_CANONICAL_READ, SVC_SESSION_ERASE,
-                        SVC_ANALYSIS_CAPABILITY_ISSUE))
+                        SVC_ANALYSIS_CAPABILITY_ISSUE,
+                        "SVC_transcript:speaker-label:read", "SVC_transcript:speaker-label:write"))
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
                         .decoder(jwtDecoder)
                         .jwtAuthenticationConverter(jwtAuthenticationConverter)));

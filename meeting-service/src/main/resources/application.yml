@@ -97,6 +97,7 @@ meeting:
     # Separate activation gate from the deletion worker. The token requests
     # only transcript:canonical:read and never the capability-issue permission.
     enabled: ${MEETING_TRANSCRIPT_READ_ENABLED:false}
+    speaker-labels-enabled: ${MEETING_SPEAKER_LABELS_ENABLED:false}
     transcript-service-base-url: ${MEETING_TRANSCRIPT_READ_SERVICE_URL:http://transcript-service:8098}
     token-url: ${MEETING_TRANSCRIPT_READ_TOKEN_URL:http://auth-service:8088/oauth2/token}
     client-id: ${MEETING_TRANSCRIPT_READ_CLIENT_ID:meeting-service}

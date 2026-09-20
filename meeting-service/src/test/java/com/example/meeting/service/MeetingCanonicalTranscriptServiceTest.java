@@ -198,6 +198,56 @@ class MeetingCanonicalTranscriptServiceTest {
                 });
     }
 
+    private static final UUID SPEAKER_SCOPE = UUID.fromString("55555555-5555-4555-8555-555555555555");
+    private void labelSetup() {
+        when(analysisRuns.findVisibleExactRun(RUN, MEETING, TENANT)).thenReturn(Optional.of(run));
+        var attribution = new SpeakerAttribution(SPEAKER_SCOPE,
+                List.of(new SpeakerAttribution.Turn("S1", 0, 14, 0, 1000)));
+        when(transcriptClient.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC)).thenReturn(
+                new CanonicalTranscriptClient.Snapshot(TENANT, MEETING, SESSION, 7, FINALIZED_AT,
+                        "FINALIZED", "canonical text", HASH, 1,
+                        List.of(new CanonicalTranscriptClient.Segment("canonical text", 0, 1.0, attribution))));
+    }
+    private com.example.common.meeting.speakers.SpeakerLabels.Snapshot names(long revision, String name) {
+        return new com.example.common.meeting.speakers.SpeakerLabels.Snapshot(TENANT, MEETING, SESSION, 7,
+                RUN, HASH, revision, true, name == null ? List.of() : List.of(
+                        new com.example.common.meeting.speakers.SpeakerLabels.Label(SPEAKER_SCOPE, "S1", name)));
+    }
+    @Test void viewerOwnerCanReadNamesButCannotSeeOrUseEdit() {
+        labelSetup();
+        when(transcriptClient.speakerLabels(TENANT, MEETING, SESSION, 7, RUN, SPEC, "stable-sub", null))
+                .thenReturn(names(0, null));
+        assertThat(service.speakerLabels(TENANT_CONTEXT, MEETING, RUN, null).editable()).isFalse();
+        var edit = new com.example.common.meeting.speakers.SpeakerLabels.Edit(SPEAKER_SCOPE, "S1", "Zeynep", 0);
+        assertStatus(() -> service.speakerLabels(TENANT_CONTEXT, MEETING, RUN, edit), 403, "SPEAKER_LABEL_EDIT_FORBIDDEN");
+        verify(transcriptClient, never()).speakerLabels(TENANT, MEETING, SESSION, 7, RUN, SPEC, "stable-sub", edit);
+    }
+    @Test void managerOwnerEditsWithResolvedActorAndRejectsUnacknowledgedNameAndRevision() {
+        labelSetup();
+        when(authz.check("legacy-user", MeetingAuthz.MANAGER, "module", MeetingAuthz.MODULE)).thenReturn(true);
+        var edit = new com.example.common.meeting.speakers.SpeakerLabels.Edit(SPEAKER_SCOPE, "S1", "Zeynep", 0);
+        when(transcriptClient.speakerLabels(TENANT, MEETING, SESSION, 7, RUN, SPEC, "stable-sub", edit))
+                .thenReturn(names(1, "Zeynep"), names(1, null), names(0, "Zeynep"));
+        assertThat(service.speakerLabels(TENANT_CONTEXT, MEETING, RUN, edit).editable()).isTrue();
+        assertStatus(() -> service.speakerLabels(TENANT_CONTEXT, MEETING, RUN, edit), 502, "SPEAKER_LABEL_RESPONSE_MISMATCH");
+        assertStatus(() -> service.speakerLabels(TENANT_CONTEXT, MEETING, RUN, edit), 502, "SPEAKER_LABEL_RESPONSE_MISMATCH");
+    }
+    @Test void labelEditCannotBypassOwnership() {
+        when(authz.checkPrincipal("user:stable-sub", MeetingAuthz.OWNER, MeetingAuthz.OBJECT_TYPE, MEETING.toString())).thenReturn(false);
+        assertStatus(() -> service.speakerLabels(TENANT_CONTEXT, MEETING, RUN,
+                new com.example.common.meeting.speakers.SpeakerLabels.Edit(SPEAKER_SCOPE, "S1", "Zeynep", 0)),
+                403, "TRANSCRIPT_FORBIDDEN");
+        verifyNoInteractions(transcriptClient);
+    }
+    @Test void heldOccurrenceAndWrongScopeCannotBeEdited() {
+        labelSetup();
+        when(authz.check("legacy-user", MeetingAuthz.MANAGER, "module", MeetingAuthz.MODULE)).thenReturn(true);
+        var edit = new com.example.common.meeting.speakers.SpeakerLabels.Edit(UUID.randomUUID(), "S1", "Zeynep", 0);
+        assertStatus(() -> service.speakerLabels(TENANT_CONTEXT, MEETING, RUN, edit), 400, "LABEL_SPEAKER_UNAVAILABLE");
+        run.setLegalHold(true);
+        assertStatus(() -> service.speakerLabels(TENANT_CONTEXT, MEETING, RUN, edit), 423, "SPEAKER_LABEL_EDIT_LOCKED");
+    }
+
     private static Meeting meeting() {
         Meeting meeting = new Meeting();
         ReflectionTestUtils.setField(meeting, "id", MEETING);

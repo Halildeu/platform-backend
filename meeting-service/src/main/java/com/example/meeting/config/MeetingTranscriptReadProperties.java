@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 public class MeetingTranscriptReadProperties {
 
     private boolean enabled;
+    private boolean speakerLabelsEnabled;
     private String transcriptServiceBaseUrl = "http://transcript-service:8098";
     private String tokenUrl = "http://auth-service:8088/oauth2/token";
     private String clientId = "meeting-service";
@@ -32,6 +33,8 @@ public class MeetingTranscriptReadProperties {
     private static boolean isBlank(String value) { return value == null || value.isBlank(); }
 
     public boolean isEnabled() { return enabled; }
+    public boolean isSpeakerLabelsEnabled() { return speakerLabelsEnabled; }
+    public void setSpeakerLabelsEnabled(boolean value) { speakerLabelsEnabled = value; }
     public void setEnabled(boolean value) { this.enabled = value; }
     public String getTranscriptServiceBaseUrl() { return transcriptServiceBaseUrl; }
     public void setTranscriptServiceBaseUrl(String value) { this.transcriptServiceBaseUrl = value; }

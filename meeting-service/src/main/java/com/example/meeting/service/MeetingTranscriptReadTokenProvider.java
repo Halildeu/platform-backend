@@ -17,14 +17,14 @@ class MeetingTranscriptReadTokenProvider {
     private final MeetingTranscriptReadProperties properties;
     private final RestClient restClient;
     private final Clock clock;
-    private String cachedToken;
-    private Instant expiresAt = Instant.EPOCH;
+    private final java.util.Map<String, CachedToken> cache = new java.util.HashMap<>();
+    private record CachedToken(String value, Instant expiresAt) { }
 
     @Autowired
     MeetingTranscriptReadTokenProvider(
             MeetingTranscriptReadProperties properties,
             RestClient.Builder builder) {
-        this(properties, builder.clone().build(), Clock.systemUTC());
+        this(properties, boundedClient(properties, builder), Clock.systemUTC());
     }
 
     MeetingTranscriptReadTokenProvider(
@@ -37,9 +37,27 @@ class MeetingTranscriptReadTokenProvider {
     }
 
     synchronized String token() {
+        return tokenFor("transcript:canonical:read");
+    }
+
+    private static RestClient boundedClient(MeetingTranscriptReadProperties properties, RestClient.Builder builder) {
+        var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(properties.getConnectTimeoutMillis());
+        factory.setReadTimeout(properties.getResponseTimeoutMillis());
+        return builder.clone().requestFactory(factory).build();
+    }
+
+    synchronized String speakerLabelToken(boolean write) {
+        if (!properties.isSpeakerLabelsEnabled())
+            throw new IllegalStateException("SPEAKER_LABELS_DISABLED");
+        return tokenFor(write ? "transcript:speaker-label:write" : "transcript:speaker-label:read");
+    }
+
+    private String tokenFor(String permission) {
         Instant now = clock.instant();
-        if (cachedToken != null && expiresAt.isAfter(now.plusSeconds(5))) {
-            return cachedToken;
+        CachedToken cached = cache.get(permission);
+        if (cached != null && cached.expiresAt().isAfter(now.plusSeconds(5))) {
+            return cached.value();
         }
         if (!properties.isEnabled() || properties.getClientSecret() == null
                 || properties.getClientSecret().isBlank()) {
@@ -49,7 +67,7 @@ class MeetingTranscriptReadTokenProvider {
         LinkedMultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "client_credentials");
         form.add("audience", "transcript-service");
-        form.add("permissions", "transcript:canonical:read");
+        form.add("permissions", permission);
         TokenResponse response = restClient.post()
                 .uri(properties.getTokenUrl())
                 .headers(headers -> headers.setBasicAuth(
@@ -62,14 +80,13 @@ class MeetingTranscriptReadTokenProvider {
             throw new CanonicalTranscriptClient.ReadFailure(
                     CanonicalTranscriptClient.Failure.UNAVAILABLE);
         }
-        cachedToken = response.accessToken();
-        expiresAt = now.plusSeconds(Math.max(10L, response.expiresIn()));
-        return cachedToken;
+        cache.put(permission, new CachedToken(response.accessToken(),
+                now.plusSeconds(Math.max(10L, response.expiresIn()))));
+        return response.accessToken();
     }
 
     synchronized void invalidate() {
-        cachedToken = null;
-        expiresAt = Instant.EPOCH;
+        cache.clear();
     }
 
     private record TokenResponse(

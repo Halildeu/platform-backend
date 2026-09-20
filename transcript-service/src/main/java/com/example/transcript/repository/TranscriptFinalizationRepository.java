@@ -15,6 +15,27 @@ import org.springframework.data.domain.Pageable;
 import jakarta.persistence.LockModeType;
 
 public interface TranscriptFinalizationRepository extends JpaRepository<TranscriptFinalization, UUID> {
+    /** Narrow CAS prevents unrelated/stale legal-hold entity saves from replacing labels. */
+    @Modifying(flushAutomatically = true)
+    @Query(value = """
+            update {h-schema}transcript_finalizations
+            set speaker_labels = cast(:labels as jsonb), speaker_labels_revision = speaker_labels_revision + 1
+            where id = :id and tenant_id = :tenantId and speaker_labels_revision = :revision and legal_hold = false
+            """, nativeQuery = true)
+    int updateSpeakerLabels(@Param("id") UUID id, @Param("tenantId") UUID tenantId,
+            @Param("revision") long revision, @Param("labels") String labels);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select f from TranscriptFinalization f
+            where f.tenantId = :tenantId and (f.orgId = :tenantId or f.orgId is null)
+              and f.meetingId = :meetingId and f.sessionId = :sessionId
+              and f.finalizationVersion = :version and f.analysisRunId = :run
+            """)
+    Optional<TranscriptFinalization> findVisibleAnalysisOccurrenceForUpdate(
+            @Param("tenantId") UUID tenantId, @Param("meetingId") UUID meetingId,
+            @Param("sessionId") UUID sessionId, @Param("version") long version, @Param("run") UUID run);
+
     Optional<TranscriptFinalization> findByTenantIdAndMeetingIdAndSessionIdAndFinalizationVersion(
             UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion);
 

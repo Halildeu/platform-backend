@@ -67,6 +67,19 @@ public class TranscriptFinalization {
     @Column(name = "legal_hold", nullable = false)
     private boolean legalHold;
 
+    /** Mutable display metadata; erased with this occurrence, excluded from immutable hashes. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "speaker_labels", nullable = false, updatable = false)
+    private String speakerLabels = "[]";
+
+    @Column(name = "speaker_labels_revision", nullable = false, updatable = false)
+    private long speakerLabelsRevision;
+
+    public String getSpeakerLabels() { return speakerLabels; }
+    public void setSpeakerLabels(String value) { this.speakerLabels = value; }
+    public long getSpeakerLabelsRevision() { return speakerLabelsRevision; }
+    public void setSpeakerLabelsRevision(long value) { this.speakerLabelsRevision = value; }
+
     public UUID getId() { return id; }
     public void setId(UUID id) { this.id = id; }
     public UUID getTenantId() { return tenantId; }

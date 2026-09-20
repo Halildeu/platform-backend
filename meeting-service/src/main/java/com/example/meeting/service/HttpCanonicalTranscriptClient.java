@@ -1,6 +1,7 @@
 package com.example.meeting.service;
 
 import com.example.meeting.config.MeetingTranscriptReadProperties;
+import com.example.common.meeting.speakers.SpeakerLabels;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
@@ -118,5 +119,36 @@ public class HttpCanonicalTranscriptClient implements CanonicalTranscriptClient 
             return new ReadFailure(Failure.INTEGRITY_CONFLICT);
         }
         return new ReadFailure(Failure.UNAVAILABLE);
+    }
+
+    @Override
+    public SpeakerLabels.Snapshot speakerLabels(UUID tenant, UUID meeting, UUID session, long version,
+            UUID run, String spec, String actor, SpeakerLabels.Edit edit) {
+        if (!properties.isEnabled() || !properties.isSpeakerLabelsEnabled()) throw new SpeakerLabelFailure(503);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                String url = properties.getTranscriptServiceBaseUrl()
+                        + "/api/v1/internal/tenants/{tenant}/meetings/{meeting}/sessions/{session}"
+                        + "/finalizations/{version}/speaker-labels";
+                var request = restClient.method(edit == null ? org.springframework.http.HttpMethod.GET : org.springframework.http.HttpMethod.PUT)
+                        .uri(url, tenant, meeting, session, version)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.speakerLabelToken(edit != null))
+                        .header("X-Tenant-Id", tenant.toString()).header("X-Analysis-Run-Id", run.toString())
+                        .header("X-Analysis-Spec-Version", spec).header("X-Actor-Subject", actor);
+                if (edit != null) request.contentType(org.springframework.http.MediaType.APPLICATION_JSON).body(edit);
+                var response = request.retrieve().toEntity(SpeakerLabels.Snapshot.class);
+                if (response.getBody() == null || response.getHeaders().getFirst(CAPABILITY_HEADER) != null
+                        || response.getHeaders().getFirst(CAPABILITY_EXPIRY_HEADER) != null)
+                    throw new SpeakerLabelFailure(502);
+                return response.getBody();
+            } catch (RestClientResponseException ex) {
+                int code = ex.getStatusCode().value();
+                if (code == 401 && attempt == 0) { tokens.invalidate(); continue; }
+                throw new SpeakerLabelFailure(java.util.Set.of(400, 404, 409, 410, 413, 423).contains(code) ? code : 503);
+            } catch (SpeakerLabelFailure failure) { throw failure; }
+            catch (ReadFailure unavailable) { throw new SpeakerLabelFailure(503); }
+            catch (RestClientException | IllegalStateException failure) { throw new SpeakerLabelFailure(503); }
+        }
+        throw new SpeakerLabelFailure(503);
     }
 }
