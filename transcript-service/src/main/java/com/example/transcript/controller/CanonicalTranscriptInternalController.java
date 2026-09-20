@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** Least-privilege internal read of one exact finalized transcript snapshot. */
@@ -38,6 +39,7 @@ public class CanonicalTranscriptInternalController {
             @RequestHeader("X-Tenant-Id") UUID requestedTenantId,
             @RequestHeader("X-Analysis-Run-Id") UUID analysisRunId,
             @RequestHeader("X-Analysis-Spec-Version") String analysisSpecVersion,
+            @RequestParam(defaultValue = "false") boolean includeSpeakerAttribution,
             Authentication authentication) {
         CanonicalTranscriptSnapshotDto snapshot = service.read(
                 tenantId,
@@ -47,7 +49,7 @@ public class CanonicalTranscriptInternalController {
                 requestedTenantId,
                 analysisRunId,
                 analysisSpecVersion,
-                authentication.getName());
+                authentication.getName(), includeSpeakerAttribution);
         HttpHeaders headers = new HttpHeaders();
         headers.setCacheControl("no-store");
         headers.setPragma("no-cache");

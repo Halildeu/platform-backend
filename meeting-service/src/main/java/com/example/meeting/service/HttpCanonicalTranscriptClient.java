@@ -84,7 +84,8 @@ public class HttpCanonicalTranscriptClient implements CanonicalTranscriptClient 
         ResponseEntity<Snapshot> response = restClient.get()
                 .uri(properties.getTranscriptServiceBaseUrl()
                                 + "/api/v1/internal/tenants/{tenantId}/meetings/{meetingId}"
-                                + "/sessions/{sessionId}/finalizations/{finalizationVersion}",
+                                + "/sessions/{sessionId}/finalizations/{finalizationVersion}"
+                                + "?includeSpeakerAttribution=true",
                         tenantId, meetingId, sessionId, finalizationVersion)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.token())
                 .header("X-Tenant-Id", tenantId.toString())

@@ -2,6 +2,9 @@ package com.example.transcript.finalization;
 
 import com.example.transcript.model.TranscriptFinalization;
 import com.example.transcript.model.TranscriptSegment;
+import com.example.common.meeting.events.SpeakerAttribution;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -12,6 +15,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 
 /** Captures and verifies the immutable text projection selected by one finalization occurrence. */
 @Component
@@ -21,21 +26,39 @@ public class FinalizedTranscriptSnapshotCodec {
 
     private final TranscriptSnapshotHasher snapshotHasher;
     private final ObjectMapper objectMapper;
+    private final boolean persistSpeakerAttribution;
 
     public FinalizedTranscriptSnapshotCodec(
             TranscriptSnapshotHasher snapshotHasher, ObjectMapper objectMapper) {
+        this(snapshotHasher, objectMapper, false);
+    }
+
+    @Autowired
+    public FinalizedTranscriptSnapshotCodec(
+            TranscriptSnapshotHasher snapshotHasher, ObjectMapper objectMapper,
+            @Value("${transcript.finalization.persist-speaker-attribution:false}") boolean persistSpeakerAttribution) {
         this.snapshotHasher = snapshotHasher;
         this.objectMapper = objectMapper;
+        this.persistSpeakerAttribution = persistSpeakerAttribution;
     }
 
     public StoredSnapshot captureMachine(List<TranscriptSegment> segments) {
         TranscriptSnapshotHasher.Snapshot sourceSnapshot = snapshotHasher.machineSnapshot(segments);
-        return capture(segments, sourceSnapshot, SnapshotMode.MACHINE);
+        return capture(segments, sourceSnapshot, SnapshotMode.MACHINE, persistSpeakerAttribution);
     }
 
     public StoredSnapshot captureEditorial(List<TranscriptSegment> segments) {
         TranscriptSnapshotHasher.Snapshot sourceSnapshot = snapshotHasher.editorialSnapshot(segments);
-        return capture(segments, sourceSnapshot, SnapshotMode.EDITORIAL);
+        return capture(segments, sourceSnapshot, SnapshotMode.EDITORIAL, persistSpeakerAttribution);
+    }
+
+    /** Old source hashes never bound turns. Do not attach current mutable attribution. */
+    public StoredSnapshot captureLegacyMachine(List<TranscriptSegment> segments) {
+        return capture(segments, snapshotHasher.machineSnapshot(segments), SnapshotMode.MACHINE, false);
+    }
+
+    public StoredSnapshot captureLegacyEditorial(List<TranscriptSegment> segments) {
+        return capture(segments, snapshotHasher.editorialSnapshot(segments), SnapshotMode.EDITORIAL, false);
     }
 
     public boolean hasPersistedProjection(TranscriptFinalization finalization) {
@@ -94,9 +117,9 @@ public class FinalizedTranscriptSnapshotCodec {
     private StoredSnapshot capture(
             List<TranscriptSegment> sourceSegments,
             TranscriptSnapshotHasher.Snapshot sourceSnapshot,
-            SnapshotMode mode) {
+            SnapshotMode mode, boolean includeAttribution) {
         List<StoredSegment> storedSegments = sourceSegments.stream()
-                .map(segment -> storedSegment(segment, mode))
+                .map(segment -> storedSegment(segment, mode, includeAttribution))
                 .toList();
         validateSegments(storedSegments);
         try {
@@ -115,13 +138,27 @@ public class FinalizedTranscriptSnapshotCodec {
         }
     }
 
-    private StoredSegment storedSegment(TranscriptSegment segment, SnapshotMode mode) {
+    private StoredSegment storedSegment(TranscriptSegment segment, SnapshotMode mode, boolean includeAttribution) {
         String text = switch (segment.getStatus()) {
             case DRAFT -> mode == SnapshotMode.MACHINE ? segment.getTextDraft() : null;
             case FINALIZED -> segment.getTextFinal();
             case REDACTED -> null;
         };
-        return new StoredSegment(text, segment.getStartTime(), segment.getEndTime());
+        SpeakerAttribution attribution = null;
+        // Offsets refer to the machine text. An editorial correction/redaction invalidates them.
+        if (includeAttribution && text != null && text.equals(segment.getTextDraft())
+                && segment.getSpeakerAttribution() != null) {
+            try {
+                var expectedScope = SpeakerAttribution.scope(segment.getTenantId().toString(),
+                        segment.getMeetingId().toString(), segment.getSourceSessionId(),
+                        segment.getSourceTransportEpoch() == null ? 0 : segment.getSourceTransportEpoch());
+                attribution = SpeakerAttribution.parse(segment.getSpeakerAttribution().encode(),
+                        expectedScope, text, durationMs(segment.getStartTime(), segment.getEndTime()));
+            } catch (IllegalArgumentException | NullPointerException invalid) {
+                throw new InvalidStoredSnapshotException("CANONICAL_ATTRIBUTION_INVALID");
+            }
+        }
+        return new StoredSegment(text, segment.getStartTime(), segment.getEndTime(), attribution);
     }
 
     private void validateSegments(List<StoredSegment> segments) {
@@ -137,7 +174,25 @@ public class FinalizedTranscriptSnapshotCodec {
                         && (!Double.isFinite(segment.end()) || segment.end() < segment.start()))) {
                 throw new InvalidStoredSnapshotException("CANONICAL_SEGMENT_TIMING_INVALID");
             }
+            if (segment.speakerAttribution() != null) {
+                try {
+                    SpeakerAttribution.parse(segment.speakerAttribution().encode(),
+                            segment.speakerAttribution().scope(), segment.text(),
+                            durationMs(segment.start(), segment.end()));
+                } catch (IllegalArgumentException invalid) {
+                    throw new InvalidStoredSnapshotException("CANONICAL_ATTRIBUTION_INVALID");
+                }
+            }
         }
+    }
+
+    private static long durationMs(Double start, Double end) {
+        if (start == null || end == null || !Double.isFinite(start) || !Double.isFinite(end)
+                || start < 0 || end <= start) throw new IllegalArgumentException();
+        // Sample-derived seconds can differ by a floating point ulp at an integer ms boundary.
+        double duration = Math.floor((end - start) * 1000 + 0.000001);
+        if (duration < 0 || duration > 9007199254740991L) throw new IllegalArgumentException();
+        return (long) duration;
     }
 
     private String transcript(List<StoredSegment> segments) {
@@ -169,7 +224,13 @@ public class FinalizedTranscriptSnapshotCodec {
 
     private enum SnapshotMode { MACHINE, EDITORIAL }
 
-    public record StoredSegment(String text, Double start, Double end) { }
+    @JsonPropertyOrder({"text", "start", "end", "speakerAttribution"})
+    public record StoredSegment(String text, Double start, Double end,
+            @JsonInclude(JsonInclude.Include.NON_NULL) SpeakerAttribution speakerAttribution) {
+        public StoredSegment(String text, Double start, Double end) {
+            this(text, start, end, null);
+        }
+    }
 
     public record StoredSnapshot(
             int segmentCount,

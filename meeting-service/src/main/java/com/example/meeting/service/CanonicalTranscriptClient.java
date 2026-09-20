@@ -1,5 +1,7 @@
 package com.example.meeting.service;
 
+import com.example.common.meeting.events.SpeakerAttribution;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -22,7 +24,11 @@ public interface CanonicalTranscriptClient {
             int segmentCount,
             List<Segment> segments) { }
 
-    record Segment(String text, double start, Double end) { }
+    record Segment(String text, double start, Double end, SpeakerAttribution speakerAttribution) {
+        public Segment(String text, double start, Double end) {
+            this(text, start, end, null);
+        }
+    }
 
     enum Failure {
         ERASED,

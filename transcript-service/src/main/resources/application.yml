@@ -113,6 +113,9 @@ transcript:
       reconciliation-batch-size: ${TRANSCRIPT_MEETING_SESSION_RECONCILIATION_BATCH_SIZE:50}
       reconciliation-poll-millis: ${TRANSCRIPT_MEETING_SESSION_RECONCILIATION_POLL_MILLIS:30000}
   finalization:
+    # Enable only after every snapshot reader supports the optional hash-bound field.
+    # Turning this off stops new writes but continues to read existing projections.
+    persist-speaker-attribution: ${TRANSCRIPT_FINALIZATION_PERSIST_SPEAKER_ATTRIBUTION:false}
     recording-finished-consumer:
       enabled: ${TRANSCRIPT_RECORDING_FINISHED_CONSUMER_ENABLED:false}
       stream-key: ${TRANSCRIPT_RECORDING_FINISHED_STREAM_KEY:meeting:events}

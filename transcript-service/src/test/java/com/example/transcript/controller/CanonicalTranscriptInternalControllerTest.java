@@ -37,12 +37,12 @@ class CanonicalTranscriptInternalControllerTest {
         CanonicalTranscriptSnapshotDto snapshot = snapshot(tenantId, meetingId, sessionId);
         when(service.read(
                 tenantId, meetingId, sessionId, 4L, tenantId, runId,
-                "meeting-intelligence-v1", "meeting-ai"))
+                "meeting-intelligence-v1", "meeting-ai", false))
                 .thenReturn(snapshot);
 
         var response = controller.read(
                 tenantId, meetingId, sessionId, 4L, tenantId, runId,
-                "meeting-intelligence-v1",
+                "meeting-intelligence-v1", false,
                 UsernamePasswordAuthenticationToken.authenticated(
                         "meeting-ai", "n/a", List.of()));
 
@@ -56,7 +56,7 @@ class CanonicalTranscriptInternalControllerTest {
         assertThat(response.getHeaders().getFirst(HttpHeaders.PRAGMA)).isEqualTo("no-cache");
         verify(service).read(
                 tenantId, meetingId, sessionId, 4L, tenantId, runId,
-                "meeting-intelligence-v1", "meeting-ai");
+                "meeting-intelligence-v1", "meeting-ai", false);
     }
 
     @Test

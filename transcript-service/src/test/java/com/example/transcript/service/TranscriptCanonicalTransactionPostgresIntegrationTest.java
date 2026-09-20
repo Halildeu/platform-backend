@@ -106,6 +106,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         registry.add("spring.flyway.default-schema", () -> SCHEMA);
         registry.add("spring.flyway.schemas", () -> SCHEMA);
         registry.add("spring.jpa.properties.hibernate.default_schema", () -> SCHEMA);
+        registry.add("transcript.finalization.persist-speaker-attribution", () -> "true");
     }
 
     @Autowired private TranscriptFinalizationService finalizationService;
@@ -124,6 +125,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     @Autowired private TranscriptEventOutboxRepository outbox;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private PlatformTransactionManager transactionManager;
+    @Autowired private FinalizedTranscriptSnapshotCodec snapshotCodec;
 
     @BeforeEach
     void clean() {
@@ -162,10 +164,20 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
                 "b".repeat(64), "hello world", 1d, altered);
         assertThatThrownBy(() -> directSttIngestion.upsert(replay, SESSION))
                 .isInstanceOf(DirectSttTranscriptIngestionService.SourceWindowReplayConflictException.class);
+        reopened.setTextFinal(reopened.getTextDraft());
+        reopened.setStatus(TranscriptSegmentStatus.FINALIZED);
+        reopened = segments.saveAndFlush(reopened);
+        finalizationService.finalizeTranscript(context(TENANT), MEETING, SESSION, 1L);
+        var frozen = finalizations.findAll().getFirst();
+        assertThat(snapshotCodec.restore(frozen).segments().getFirst().speakerAttribution()).isEqualTo(attribution);
         reopened.setTextFinal("changed text");
+        segments.saveAndFlush(reopened);
         assertThat(com.example.transcript.dto.TranscriptSegmentDto.from(reopened).speakerAttribution()).isNull();
+        assertThat(snapshotCodec.restore(finalizations.findById(frozen.getId()).orElseThrow())
+                .segments().getFirst().speakerAttribution()).isEqualTo(attribution);
         erasureService.erase(TENANT, MEETING, SESSION, "SES-42");
         assertThat(segments.findById(created.id())).isEmpty();
+        assertThat(finalizations.findById(frozen.getId())).isEmpty();
     }
 
     @Test
