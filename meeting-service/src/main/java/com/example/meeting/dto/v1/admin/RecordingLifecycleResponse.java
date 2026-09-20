@@ -14,5 +14,10 @@ public record RecordingLifecycleResponse(
         MeetingStatus meetingStatus,
         TranscriptStatus transcriptStatus,
         Instant startedAt,
-        Instant endedAt) {
+        Instant endedAt,
+        boolean recordingIncomplete) {
+    public RecordingLifecycleResponse(UUID meetingId, UUID sessionId, String externalSessionId,
+            MeetingStatus meetingStatus, TranscriptStatus transcriptStatus, Instant startedAt, Instant endedAt) {
+        this(meetingId, sessionId, externalSessionId, meetingStatus, transcriptStatus, startedAt, endedAt, false);
+    }
 }

@@ -34,7 +34,8 @@ public record MeetingIntelligenceResultResponse(
         Instant generatedAt,
         UUID supersedesAnalysisRunId,
         boolean persisted,
-        String storageMode
+        String storageMode,
+        long incompleteRecordingCount
 ) {
     public MeetingIntelligenceResultResponse {
         summary = summary == null ? "" : summary;

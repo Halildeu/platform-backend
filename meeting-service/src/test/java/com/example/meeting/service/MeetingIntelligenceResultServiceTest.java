@@ -48,6 +48,7 @@ class MeetingIntelligenceResultServiceTest {
     @Mock
     private MeetingIntelligenceResultAccessAuditService accessAuditService;
 
+    @Mock private com.example.meeting.repository.MeetingSessionRepository sessionRepository;
     private MeetingIntelligenceResultService service;
     private final AdminTenantContext tenant =
             new AdminTenantContext(ORG_ID, "admin@example.com", "admin@example.com");
@@ -60,7 +61,7 @@ class MeetingIntelligenceResultServiceTest {
                 decisionRepository,
                 actionRepository,
                 accessAuditService,
-                new ObjectMapper());
+                new ObjectMapper(), sessionRepository);
     }
 
     @Test
@@ -104,6 +105,18 @@ class MeetingIntelligenceResultServiceTest {
         verify(actionRepository).findByAnalysisRunIdAndMeetingIdVisibleToOrg(
                 RUN_ID, MEETING_ID, ORG_ID);
         verify(accessAuditService).recordCanonicalRead(tenant, MEETING_ID, RUN_ID);
+    }
+
+    @Test
+    void incompleteRecordingInAnotherSessionSurvivesResultReadAndReadFailureIsNotZero() {
+        MeetingAnalysisRun run = analysisRun();
+        when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID)).thenReturn(Optional.of(new Meeting()));
+        when(runRepository.findLatestBySessionVisibleToOrg(MEETING_ID, ORG_ID, "SES-1")).thenReturn(Optional.of(run));
+        when(decisionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of());
+        when(actionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of());
+        when(sessionRepository.countIncomplete(MEETING_ID, ORG_ID)).thenReturn(1L).thenThrow(new IllegalStateException("fixture"));
+        assertThat(service.getForSession(tenant, MEETING_ID, "SES-1").incompleteRecordingCount()).isEqualTo(1);
+        assertThatThrownBy(() -> service.getForSession(tenant, MEETING_ID, "SES-1")).isInstanceOf(IllegalStateException.class);
     }
 
     @Test

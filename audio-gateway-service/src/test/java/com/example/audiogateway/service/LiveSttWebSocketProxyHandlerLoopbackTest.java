@@ -129,6 +129,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     @BeforeEach
     void setUp() {
         sessions = mock(AudioSessionRegistry.class);
+        org.mockito.Mockito.lenient().when(sessions.abandonment(any())).thenReturn(Mono.never());
         auditSink = mock(AudioGatewayAuditSink.class);
         meters = new SimpleMeterRegistry();
         upstreamClient = new ReactorNettyWebSocketClient();

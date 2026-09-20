@@ -38,6 +38,7 @@ public class MeetingIntelligenceResultService {
             Set.of("FAILED", "LOW_CONFIDENCE");
 
     private final MeetingRepository meetingRepository;
+    private final com.example.meeting.repository.MeetingSessionRepository sessionRepository;
     private final MeetingAnalysisRunRepository runRepository;
     private final MeetingDecisionRepository decisionRepository;
     private final MeetingActionRepository actionRepository;
@@ -50,13 +51,14 @@ public class MeetingIntelligenceResultService {
             MeetingDecisionRepository decisionRepository,
             MeetingActionRepository actionRepository,
             MeetingIntelligenceResultAccessAuditService accessAuditService,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper, com.example.meeting.repository.MeetingSessionRepository sessionRepository) {
         this.meetingRepository = meetingRepository;
         this.runRepository = runRepository;
         this.decisionRepository = decisionRepository;
         this.actionRepository = actionRepository;
         this.accessAuditService = accessAuditService;
         this.objectMapper = objectMapper;
+        this.sessionRepository = sessionRepository;
     }
 
     @Transactional
@@ -125,7 +127,7 @@ public class MeetingIntelligenceResultService {
                 run.getGeneratedAt(),
                 run.getSupersedesAnalysisRunId(),
                 true,
-                STORAGE_MODE);
+                STORAGE_MODE, sessionRepository.countIncomplete(meetingId, tenant.tenantId()));
         // Audit only after the full canonical payload has passed semantic validation.
         // saveAndFlush failures propagate, roll back this transaction, and prevent disclosure.
         accessAuditService.recordCanonicalRead(tenant, meetingId, run.getAnalysisRunId());

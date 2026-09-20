@@ -58,6 +58,7 @@ class MeetingIntelligenceResultAccessAuditPostgresIntegrationTest {
 
     @Autowired
     private MeetingRepository meetingRepository;
+    @Autowired private MeetingSessionRepository sessionRepository;
 
     @Autowired
     private MeetingAnalysisRunRepository runRepository;
@@ -144,7 +145,7 @@ class MeetingIntelligenceResultAccessAuditPostgresIntegrationTest {
                 decisionRepository,
                 actionRepository,
                 new MeetingIntelligenceResultAccessAuditService(accessAuditRepository),
-                new ObjectMapper());
+                new ObjectMapper(), sessionRepository);
         AdminTenantContext context =
                 new AdminTenantContext(tenantId, "reader@example.com", "role-admin");
 

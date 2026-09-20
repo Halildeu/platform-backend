@@ -167,7 +167,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     if (record == null
                             || !Objects.equals(record.tenantId(), tenantId)
                             || !Objects.equals(record.userId(), userId)
-                            || record.state() == SessionState.FINISHED) {
+                            || (record.state() != SessionState.STARTED && record.state() != SessionState.STREAMING)) {
                         return clientSession.close(CloseStatus.POLICY_VIOLATION);
                     }
                     if (!"internal".equals(record.sttProvider())
@@ -233,6 +233,12 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                             correlationId,
                                             speechmatics));
                     return connection
+                            .takeUntilOther(sessions.abandonment(sessionId))
+                            .then(Mono.defer(() -> {
+                                SessionRecord current = sessions.get(sessionId).orElse(null);
+                                return current == null || current.state() == SessionState.ABANDONING || current.state() == SessionState.ABANDONED
+                                        ? clientSession.close(CloseStatus.POLICY_VIOLATION) : Mono.empty();
+                            }))
                             .doOnError(error -> {
                                 if (error instanceof ClientFrameException) {
                                     return;
@@ -297,6 +303,11 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         final Flux<WebSocketMessage> admittedClientFrames = client.receive()
                 .limitRate(1)
                 .<WebSocketMessage>handle((message, sink) -> {
+                    SessionRecord admissionRecord = sessions.get(record.sessionId()).orElse(null);
+                    if (admissionRecord == null || (admissionRecord.state() != SessionState.STARTED && admissionRecord.state() != SessionState.STREAMING)) {
+                        sink.error(new ClientFrameException("live stream session is terminal"));
+                        return;
+                    }
                     // Do NOT release the payload: reactor-netty owns the inbound frame and
                     // releases it after this handler returns (FluxReceive.drainReceiver ->
                     // DefaultByteBufHolder.release). Releasing the DataBuffer here drops the

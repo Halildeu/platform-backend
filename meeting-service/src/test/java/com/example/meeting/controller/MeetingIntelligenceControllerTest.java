@@ -119,7 +119,7 @@ class MeetingIntelligenceControllerTest {
                         "ollama-v1", "Ozet", "verified", List.of(), List.of("Karar"),
                         List.of(new MeetingIntelligenceActionItem("Aksiyon", "user-42", null)),
                         List.of(), List.of(), 0, true, 1,
-                        Instant.parse("2026-07-11T20:00:00Z"), null, true, "canonical"));
+                        Instant.parse("2026-07-11T20:00:00Z"), null, true, "canonical", 0));
 
         mockMvc.perform(get("/api/v1/admin/meetings/{meetingId}/intelligence/result", MEETING_ID))
                 .andExpect(status().isOk())
@@ -164,7 +164,7 @@ class MeetingIntelligenceControllerTest {
                         runId, MEETING_ID, "SES-1", "5-adr0043", "qwen", "ollama",
                         "ollama-v1", "Earlier session", "verified", List.of(), List.of(),
                         List.of(), List.of(), List.of(), 0, true, 1,
-                        Instant.parse("2026-07-11T20:00:00Z"), null, true, "canonical"));
+                        Instant.parse("2026-07-11T20:00:00Z"), null, true, "canonical", 0));
         mockMvc.perform(get("/api/v1/admin/meetings/{meetingId}/intelligence/result", MEETING_ID)
                         .param("sessionId", "SES-1"))
                 .andExpect(status().isOk())

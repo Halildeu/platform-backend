@@ -77,7 +77,7 @@ class MeetingRecordingFinishedOutboxPostgresIntegrationTest {
         inTransaction(() -> service.syncRecordingLifecycle(
                 fixture.tenant(), fixture.meeting(),
                 new RecordingLifecycleSyncRequest(
-                        fixture.externalSessionId(), STARTED_AT, ENDED_AT.plusSeconds(30))));
+                        fixture.externalSessionId(), STARTED_AT, ENDED_AT)));
 
         Map<String, Object> row = jdbc.queryForMap("""
                 SELECT event_type, aggregate_type, aggregate_id, aggregate_revision,
@@ -181,6 +181,78 @@ class MeetingRecordingFinishedOutboxPostgresIntegrationTest {
                 WHERE aggregate_id = ?
                 """, fixture.session()))
                 .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void incompleteSurvivesReloadAndLateWritersCannotPromoteIt() {
+        Fixture fixture = insertFixture("incomplete");
+        var command = new RecordingLifecycleSyncRequest(fixture.externalSessionId(), STARTED_AT, ENDED_AT);
+        inTransaction(() -> service().abandonRecording(fixture.tenant(), fixture.meeting(), command));
+        inTransaction(() -> assertThat(service().abandonRecording(fixture.tenant(), fixture.meeting(), command).recordingIncomplete()).isTrue());
+        assertThatThrownBy(() -> inTransaction(() -> service().syncRecordingLifecycle(fixture.tenant(), fixture.meeting(), command)))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM meeting_service.meeting_event_outbox WHERE aggregate_id = ?", Long.class, fixture.session())).isZero();
+        assertThatThrownBy(() -> jdbc.update("UPDATE meeting_service.meeting_sessions SET recording_incomplete = false WHERE id = ?", fixture.session()))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE meeting_service.meeting_sessions SET transcript_status = 'COMPLETED' WHERE id = ?", fixture.session()))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        inTransaction(() -> assertThat(sessionRepository.countIncomplete(fixture.meeting(), fixture.tenant().tenantId())).isEqualTo(1));
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void finishAndAbandonRaceHasExactlyOneWinnerAndConsistentOutbox() throws Exception {
+        Fixture fixture = insertFixture("race");
+        var command = new RecordingLifecycleSyncRequest(fixture.externalSessionId(), STARTED_AT, ENDED_AT);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var finish = executor.submit(() -> { start.await(); try {
+                inTransaction(() -> service().syncRecordingLifecycle(fixture.tenant(), fixture.meeting(), command)); return true;
+            } catch (org.springframework.web.server.ResponseStatusException conflict) { return false; } });
+            var abandon = executor.submit(() -> { start.await(); try {
+                inTransaction(() -> service().abandonRecording(fixture.tenant(), fixture.meeting(), command)); return true;
+            } catch (org.springframework.web.server.ResponseStatusException conflict) { return false; } });
+            start.countDown();
+            assertThat(finish.get(15, java.util.concurrent.TimeUnit.SECONDS)).isNotEqualTo(abandon.get(15, java.util.concurrent.TimeUnit.SECONDS));
+        }
+        boolean incomplete = jdbc.queryForObject("SELECT recording_incomplete FROM meeting_service.meeting_sessions WHERE id = ?", Boolean.class, fixture.session());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM meeting_service.meeting_event_outbox WHERE aggregate_id = ?", Long.class, fixture.session()))
+                .isEqualTo(incomplete ? 0 : 1);
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void abandonedSessionRollsBackWhenParentPersistenceFailsAndCanRetry() {
+        Fixture fixture = insertFixture("abandon-rollback");
+        var command = new RecordingLifecycleSyncRequest(fixture.externalSessionId(), STARTED_AT, ENDED_AT);
+        jdbc.execute("CREATE FUNCTION meeting_service.reject_abandon_parent() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture write failure'; END $$");
+        jdbc.execute("CREATE TRIGGER reject_abandon_parent BEFORE UPDATE ON meeting_service.meetings FOR EACH ROW EXECUTE FUNCTION meeting_service.reject_abandon_parent()");
+        try {
+            assertThatThrownBy(() -> inTransaction(() -> service().abandonRecording(fixture.tenant(), fixture.meeting(), command))).isInstanceOf(RuntimeException.class);
+        } finally {
+            jdbc.execute("DROP TRIGGER reject_abandon_parent ON meeting_service.meetings");
+            jdbc.execute("DROP FUNCTION meeting_service.reject_abandon_parent()");
+        }
+        assertThat(jdbc.queryForObject("SELECT recording_incomplete FROM meeting_service.meeting_sessions WHERE id = ?", Boolean.class, fixture.session())).isFalse();
+        inTransaction(() -> assertThat(service().abandonRecording(fixture.tenant(), fixture.meeting(), command).recordingIncomplete()).isTrue());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void incompleteCountIncludesAnotherSessionButExcludesAnotherOrganization() {
+        Fixture valid = insertFixture("mixed-valid");
+        Fixture incomplete = insertFixture("mixed-incomplete");
+        jdbc.update("UPDATE meeting_service.meeting_sessions SET meeting_id = ?, tenant_id = ?, org_id = ? WHERE id = ?",
+                valid.meeting(), valid.tenant().tenantId(), valid.tenant().tenantId(), incomplete.session());
+        inTransaction(() -> service().syncRecordingLifecycle(valid.tenant(), valid.meeting(),
+                new RecordingLifecycleSyncRequest(valid.externalSessionId(), STARTED_AT, ENDED_AT)));
+        inTransaction(() -> service().abandonRecording(valid.tenant(), valid.meeting(),
+                new RecordingLifecycleSyncRequest(incomplete.externalSessionId(), STARTED_AT, ENDED_AT)));
+        assertThat(sessionRepository.countIncomplete(valid.meeting(), valid.tenant().tenantId())).isEqualTo(1);
+        assertThat(sessionRepository.countIncomplete(valid.meeting(), incomplete.tenant().tenantId())).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM meeting_service.meeting_event_outbox WHERE aggregate_id = ?", Long.class, incomplete.session())).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM meeting_service.meeting_event_outbox WHERE aggregate_id = ?", Long.class, valid.session())).isEqualTo(1);
     }
 
     private MeetingService service() {
