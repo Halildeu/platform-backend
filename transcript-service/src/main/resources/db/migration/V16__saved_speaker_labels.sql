@@ -1,3 +1,4 @@
+-- V15 is reserved by PR1176 for independent notification delivery.
 -- Editable companion metadata; canonical text and projection hashes stay immutable.
 ALTER TABLE transcript_finalizations
     ADD COLUMN speaker_labels JSONB NOT NULL DEFAULT '[]'::jsonb,

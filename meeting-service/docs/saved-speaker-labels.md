@@ -33,7 +33,11 @@ the write body is capped at 4096 bytes including chunked bodies, stored JSON at
 
 ## Persistence and races
 
-Transcript migration V15 adds two companion columns to transcript_finalizations.
+Transcript migration V16 adds two companion columns to transcript_finalizations.
+V15 belongs to PR1176's independent notification delivery. Integrate its migration
+before deploying V16: apply both in version order in the combined release. Do not
+ship V16 first and later introduce V15, enable out-of-order migration as a shortcut,
+or renumber an already applied migration. This draft has not applied either one.
 Canonical text, segment projection and their hashes remain immutable. Label writes
 take the session erasure fence, lock the exact occurrence row, recheck erasure and
 legal hold, then perform a narrow compare-and-swap update and metadata-only audit
