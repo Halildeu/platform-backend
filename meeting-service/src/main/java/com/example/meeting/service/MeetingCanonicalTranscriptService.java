@@ -94,7 +94,7 @@ public class MeetingCanonicalTranscriptService {
 
         List<CanonicalMeetingTranscriptSegment> segments = snapshot.segments().stream()
                 .map(segment -> new CanonicalMeetingTranscriptSegment(
-                        segment.text(), segment.start(), segment.end()))
+                        segment.text(), segment.start(), segment.end(), segment.speakerAttribution()))
                 .toList();
         String state = run.isLegalHold() || "LEGAL_HOLD".equals(snapshot.state())
                 ? "LEGAL_HOLD" : "FINALIZED";

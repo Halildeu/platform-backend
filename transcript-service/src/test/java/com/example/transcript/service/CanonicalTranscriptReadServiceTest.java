@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.transcript.finalization.FinalizedTranscriptSnapshotCodec;
+import com.example.common.meeting.events.SpeakerAttribution;
 import com.example.transcript.finalization.TranscriptSnapshotHasher;
 import com.example.transcript.model.TranscriptFinalization;
 import com.example.transcript.model.TranscriptSegment;
@@ -64,7 +65,7 @@ class CanonicalTranscriptReadServiceTest {
     @BeforeEach
     void setUp() {
         snapshotHasher = new TranscriptSnapshotHasher();
-        snapshotCodec = new FinalizedTranscriptSnapshotCodec(snapshotHasher, new ObjectMapper());
+        snapshotCodec = new FinalizedTranscriptSnapshotCodec(snapshotHasher, new ObjectMapper(), true);
         service = new CanonicalTranscriptReadService(
                 finalizationRepository,
                 segmentRepository,
@@ -74,6 +75,38 @@ class CanonicalTranscriptReadServiceTest {
                 accessAuditService,
                 erasureTombstones,
                 erasureFence);
+    }
+
+    @Test
+    void speakerProjectionIsOptInAndLegacyReconstructionCannotAddIt() throws Exception {
+        var segment = segment("Merhaba", 0, 1.0);
+        segment.setTextDraft("Merhaba");
+        segment.setSourceSessionId("SES-test");
+        var attribution = new SpeakerAttribution(SpeakerAttribution.scope(
+                TENANT_ID.toString(), MEETING_ID.toString(), "SES-test", 0),
+                List.of(new SpeakerAttribution.Turn("S1", 0, 7, 0, 1000)));
+        segment.setSpeakerAttribution(attribution);
+        var occurrence = finalization(List.of(segment), false, true);
+        when(finalizationRepository.findVisibleAnalysisOccurrence(TENANT_ID, MEETING_ID, SESSION_ID, 3L, RUN_ID))
+                .thenReturn(Optional.of(occurrence));
+        var defaultResponse = service.read(TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
+                "meeting-intelligence-v1", "meeting-ai");
+        var defaultJson = new ObjectMapper().valueToTree(defaultResponse.segments().getFirst());
+        assertThat(defaultJson.size()).isEqualTo(3);
+        assertThat(defaultJson.has("speakerAttribution")).isFalse();
+        var requested = service.read(TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
+                "meeting-intelligence-v1", "meeting-service", true);
+        assertThat(requested.segments().getFirst().speakerAttribution()).isEqualTo(attribution);
+
+        occurrence.setCanonicalSegments(null);
+        occurrence.setCanonicalProjectionSha256(null);
+        occurrence.setCanonicalTranscript(null);
+        occurrence.setCanonicalTranscriptSha256(null);
+        when(segmentRepository.findCanonicalFinalizedSession(TENANT_ID, MEETING_ID, SESSION_ID))
+                .thenReturn(List.of(segment));
+        var legacy = service.read(TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
+                "meeting-intelligence-v1", "meeting-service", true);
+        assertThat(legacy.segments().getFirst().speakerAttribution()).isNull();
     }
 
     @Test

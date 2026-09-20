@@ -32,7 +32,8 @@ class HttpCanonicalTranscriptClientTest {
     private static final UUID RUN = UUID.fromString("44444444-4444-4444-8444-444444444444");
     private static final String SPEC = "meeting-intelligence-v1";
     private static final String URL = "http://transcript-service:8098/api/v1/internal/tenants/"
-            + TENANT + "/meetings/" + MEETING + "/sessions/" + SESSION + "/finalizations/7";
+            + TENANT + "/meetings/" + MEETING + "/sessions/" + SESSION
+            + "/finalizations/7?includeSpeakerAttribution=true";
 
     @Mock private MeetingTranscriptReadTokenProvider tokens;
     private MockRestServiceServer server;
@@ -46,6 +47,17 @@ class HttpCanonicalTranscriptClientTest {
         server = MockRestServiceServer.bindTo(builder).build();
         client = new HttpCanonicalTranscriptClient(properties, tokens, builder.build());
         when(tokens.token()).thenReturn("read-token");
+    }
+
+    @Test
+    void requestsSpeakerProjectionAndDeserializesItsBoundedAnonymousContract() {
+        String withAttribution = json().replace("\"end\":1.0", "\"end\":1.0,\"speakerAttribution\":{"
+                + "\"scope\":\"55555555-5555-3555-8555-555555555555\",\"turns\":[{"
+                + "\"speaker\":\"S1\",\"textStart\":0,\"textEnd\":14,\"startMs\":0,\"endMs\":1000}]}");
+        server.expect(once(), requestTo(URL)).andRespond(withSuccess(withAttribution, MediaType.APPLICATION_JSON));
+        var result = client.read(TENANT, MEETING, SESSION, 7, RUN, SPEC);
+        assertThat(result.segments().getFirst().speakerAttribution().turns().getFirst().speaker()).isEqualTo("S1");
+        server.verify();
     }
 
     @Test

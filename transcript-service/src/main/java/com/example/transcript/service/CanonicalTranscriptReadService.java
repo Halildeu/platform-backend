@@ -66,6 +66,16 @@ public class CanonicalTranscriptReadService {
             UUID analysisRunId,
             String analysisSpecVersion,
             String serviceSubject) {
+        return read(tenantId, meetingId, sessionId, finalizationVersion, requestedTenantId,
+                analysisRunId, analysisSpecVersion, serviceSubject, false);
+    }
+
+    /** Opt-in projection: the analysis worker's strict default DTO remains unchanged. */
+    @Transactional
+    public CanonicalTranscriptSnapshotDto read(
+            UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion,
+            UUID requestedTenantId, UUID analysisRunId, String analysisSpecVersion,
+            String serviceSubject, boolean includeSpeakerAttribution) {
         if (finalizationVersion < 1) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "FINALIZATION_VERSION_INVALID");
         }
@@ -96,7 +106,8 @@ public class CanonicalTranscriptReadService {
 
         List<CanonicalTranscriptSegmentDto> responseSegments = storedSnapshot.segments().stream()
                 .map(segment -> new CanonicalTranscriptSegmentDto(
-                        segment.text(), segment.start(), segment.end()))
+                        segment.text(), segment.start(), segment.end(),
+                        includeSpeakerAttribution ? segment.speakerAttribution() : null))
                 .toList();
         CanonicalTranscriptSnapshotDto snapshot = new CanonicalTranscriptSnapshotDto(
                 tenantId,
@@ -204,7 +215,7 @@ public class CanonicalTranscriptReadService {
     private FinalizedTranscriptSnapshotCodec.StoredSnapshot captureEditorial(
             List<TranscriptSegment> segments) {
         try {
-            return snapshotCodec.captureEditorial(segments);
+            return snapshotCodec.captureLegacyEditorial(segments);
         } catch (TranscriptSnapshotHasher.InvalidSnapshotException ex) {
             return null;
         }
@@ -213,7 +224,7 @@ public class CanonicalTranscriptReadService {
     private FinalizedTranscriptSnapshotCodec.StoredSnapshot captureMachine(
             List<TranscriptSegment> segments) {
         try {
-            return snapshotCodec.captureMachine(segments);
+            return snapshotCodec.captureLegacyMachine(segments);
         } catch (TranscriptSnapshotHasher.InvalidSnapshotException ex) {
             return null;
         }

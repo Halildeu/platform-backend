@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
+import com.example.common.meeting.events.SpeakerAttribution;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAnalysisRun;
 import com.example.meeting.model.MeetingAnalysisRunDestructionReason;
@@ -76,6 +77,23 @@ class MeetingCanonicalTranscriptServiceTest {
         when(authz.checkPrincipal(
                 "user:stable-sub", MeetingAuthz.OWNER,
                 MeetingAuthz.OBJECT_TYPE, MEETING.toString())).thenReturn(true);
+    }
+
+    @Test
+    void ownerProjectionPreservesImmutableSpeakerScopeAndTurns() {
+        var attribution = new SpeakerAttribution(UUID.randomUUID(),
+                List.of(new SpeakerAttribution.Turn("S1", 0, 14, 0, 1000)));
+        var original = snapshot(HASH);
+        var withSpeakers = new CanonicalTranscriptClient.Snapshot(original.tenantId(), original.meetingId(),
+                original.sessionId(), original.finalizationVersion(), original.finalizedAt(), original.state(),
+                original.transcript(), original.transcriptSha256(), 1,
+                List.of(new CanonicalTranscriptClient.Segment("canonical text", 0, 1.0, attribution)));
+        when(analysisRuns.findVisibleExactRun(RUN, MEETING, TENANT)).thenReturn(Optional.of(run));
+        when(transcriptClient.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC)).thenReturn(withSpeakers);
+        var response = service.read(TENANT_CONTEXT, MEETING, RUN);
+        assertThat(response.segments().getFirst().speakerAttribution()).isEqualTo(attribution);
+        assertThat(response.transcript()).isEqualTo("canonical text");
+        verify(auditService).recordCanonicalTranscriptRead(TENANT_CONTEXT, MEETING, RUN);
     }
 
     @Test
