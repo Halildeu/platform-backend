@@ -163,4 +163,18 @@ class HttpAssignmentNotificationSinkTest {
                 .containsEntry("idempotencyKey", EVENT_KEY)
                 .containsEntry("correlationId", MEETING.toString());
     }
+    @Test
+    void nativeOptInCarriesOnlyMeetingIdAndPreservesInboxAndIdempotency() {
+        var event = message("meeting.action.assigned", "{\"actionText\":\"private\"}");
+        var baseline = sink.intent(event, 9L);
+        properties.setNativePushEnabled(true);
+        var body = sink.intent(event, 9L);
+        assertThat(body.get("channels")).isEqualTo(java.util.List.of("in-app", "push"));
+        assertThat(body.get("payload")).isEqualTo(Map.of("meetingId", MEETING.toString(), "pushAudience", "native"));
+        assertThat(body.get("recipients")).isEqualTo(baseline.get("recipients"));
+        assertThat(body.get("idempotencyKey")).isEqualTo(baseline.get("idempotencyKey"));
+        assertThat(body.get("intentId")).isEqualTo(baseline.get("intentId"));
+        assertThat(sink.intent(message("meeting.action.reassigned", "{}"), 9L).get("channels"))
+                .isEqualTo(java.util.List.of("in-app"));
+    }
 }

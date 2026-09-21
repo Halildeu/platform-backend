@@ -25,6 +25,7 @@ public class MeetingNotifyProperties {
     private String subjectIssuer = "";
     private String locale = "tr-TR";
     private String channel = "in-app";
+    private boolean nativePushEnabled;
     private int connectTimeoutMillis = 2_000;
     private int responseTimeoutMillis = 10_000;
 
@@ -43,6 +44,8 @@ public class MeetingNotifyProperties {
     public String getLocale() { return locale; }
     public void setLocale(String locale) { this.locale = locale; }
     public String getChannel() { return channel; }
+    public boolean isNativePushEnabled() { return nativePushEnabled; }
+    public void setNativePushEnabled(boolean value) { nativePushEnabled = value; }
     public void setChannel(String channel) { this.channel = channel; }
     public int getConnectTimeoutMillis() { return connectTimeoutMillis; }
     public void setConnectTimeoutMillis(int connectTimeoutMillis) { this.connectTimeoutMillis = connectTimeoutMillis; }

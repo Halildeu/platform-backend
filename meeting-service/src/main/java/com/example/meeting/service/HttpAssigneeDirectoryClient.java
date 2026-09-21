@@ -109,6 +109,33 @@ public class HttpAssigneeDirectoryClient implements AssigneeDirectoryClient {
                 "assignee directory returned " + ex.getStatusCode().value());
     }
 
+    @Override
+    public Optional<NotificationIdentity> resolveNotificationIdentity(String issuer, String principal) {
+        if (!properties.isEnabled()) throw new ResolutionUnavailableException("assignee directory disabled");
+        Long numeric = principal.matches("[1-9][0-9]*") ? Long.valueOf(principal) : null;
+        String subject = numeric == null ? principal : resolveKcSubject(numeric).orElse(null);
+        if (subject == null) return Optional.empty();
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                Resolved r = restClient.post()
+                        .uri(properties.getUserServiceBaseUrl() + "/api/users/internal/authenticated-principal/resolve")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.token())
+                        .contentType(MediaType.APPLICATION_JSON).body(new ResolveRequest(issuer, subject, null))
+                        .retrieve().body(Resolved.class);
+                if (r == null || r.userId() == null || r.userId() <= 0 || !r.subjectMatched()
+                        || (numeric != null && !numeric.equals(r.userId()))) return Optional.empty();
+                return Optional.of(new NotificationIdentity(r.userId(), r.enabled(), r.deleted(), r.companyId()));
+            } catch (RestClientResponseException ex) {
+                if (ex.getStatusCode().value() == 404) return Optional.empty();
+                if (ex.getStatusCode().value() == 401 && attempt == 0) { tokens.invalidate(); continue; }
+                throw new ResolutionUnavailableException("notification directory unavailable");
+            } catch (RestClientException ex) {
+                throw new ResolutionUnavailableException("notification directory unavailable");
+            }
+        }
+        throw new ResolutionUnavailableException("notification directory unavailable");
+    }
+
     private Optional<Long> resolve(String issuer, String kcSubject) {
         Resolved resolved = restClient.post()
                 .uri(properties.getUserServiceBaseUrl()
@@ -133,7 +160,10 @@ public class HttpAssigneeDirectoryClient implements AssigneeDirectoryClient {
     @JsonIgnoreProperties(ignoreUnknown = true)
     record Resolved(
             @JsonProperty("userId") Long userId,
-            @JsonProperty("subjectMatched") boolean subjectMatched) {
+            @JsonProperty("subjectMatched") boolean subjectMatched,
+            @JsonProperty("enabled") boolean enabled,
+            @JsonProperty("deleted") boolean deleted,
+            @JsonProperty("companyId") Long companyId) {
     }
 
     private Optional<String> mapped(RestClientResponseException ex) {

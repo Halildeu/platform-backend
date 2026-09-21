@@ -69,6 +69,11 @@ public class ChannelAdapterRegistry {
         return Optional.ofNullable(index().get(channelKey));
     }
 
+    public static String dispatchKey(String channel, String provider) {
+        return "push".equals(channel) && ("native-fcm".equals(provider) || "native-apns".equals(provider))
+            ? "native-push" : channel;
+    }
+
     public boolean supports(String channelKey) {
         return index().containsKey(channelKey);
     }
