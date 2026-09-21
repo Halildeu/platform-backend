@@ -37,6 +37,47 @@ class IntentSubmissionServiceIntegrationTest extends AbstractPostgresTest {
     @Autowired NotificationIntentRepository intentRepo;
     @Autowired IdempotencyKeyRepository idempRepo;
     @Autowired AuditEventRepository auditRepo;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"meeting.transcript.ready", "meeting.summary.ready"})
+    void meetingReadyReplayAfterPartialAcceptanceKeepsOneIntentPerRecipient(String topic) {
+        String org = UUID.randomUUID().toString(), meeting = UUID.randomUUID().toString();
+        String occurrence = UUID.randomUUID() + "|" + topic;
+        var first = readyRequest(org, meeting, occurrence, topic, "7");
+        var second = readyRequest(org, meeting, occurrence, topic, "8");
+        assertThat(service.submit(first).status()).isEqualTo("ACCEPTED");
+        // First recipient is durably accepted; the next intake transaction dies.
+        assertThatThrownBy(() -> new org.springframework.transaction.support.TransactionTemplate(transactions)
+                .executeWithoutResult(status -> {
+                    assertThat(service.submit(second).status()).isEqualTo("ACCEPTED");
+                    throw new IllegalStateException("simulated crash before second commit");
+                })).isInstanceOf(IllegalStateException.class);
+        assertThat(intentRepo.findByIntentId(second.intentId())).isEmpty();
+
+        // A restarted producer reconstructs identical IDs from the durable event.
+        assertThat(service.submit(readyRequest(org, meeting, occurrence, topic, "7")).status()).isEqualTo("REPLAYED");
+        assertThat(service.submit(readyRequest(org, meeting, occurrence, topic, "8")).status()).isEqualTo("ACCEPTED");
+        assertThat(service.submit(second).status()).isEqualTo("REPLAYED");
+        assertThat(intentRepo.findAll().stream().filter(i -> org.equals(i.getOrgId())).toList()).hasSize(2);
+        assertThat(auditRepo.findByCorrelationIdOrderByOccurredAtAsc(meeting).stream()
+                .filter(a -> "INTENT_CREATED".equals(a.getEventType())).toList()).hasSize(2);
+    }
+
+    private SubmitIntentRequest readyRequest(String org, String meeting, String occurrence, String topic, String user) {
+        String key = occurrence + "|native-ready|" + user;
+        String id;
+        try {
+            id = "mtg-" + java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(key.getBytes(java.nio.charset.StandardCharsets.UTF_8)), 0, 24);
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new AssertionError(impossible); }
+        return new SubmitIntentRequest(id, key, meeting, org, topic,
+                NotificationIntent.Severity.info, NotificationIntent.DataClassification.transactional,
+                List.of(new SubmitIntentRequest.RecipientRef(SubmitIntentRequest.RecipientRef.Type.subscriber,
+                        user, null, null, null, "tr-TR")),
+                new SubmitIntentRequest.TemplateRef(topic, 1, "tr-TR"), List.of("push"),
+                Map.of("meetingId", meeting, "pushAudience", "native"), null, null, null, null, null);
+    }
 
     @BeforeEach
     void seedTemplate() {

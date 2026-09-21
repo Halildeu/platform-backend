@@ -112,7 +112,11 @@ class MeetingEventOutboxPollerPostgresIntegrationTest {
     })
     @EntityScan(basePackageClasses = Meeting.class)
     @EnableJpaRepositories(basePackageClasses = MeetingRepository.class)
-    @Import(MeetingEventOutboxPoller.class)
+    @Import({MeetingEventOutboxPoller.class,
+            com.example.meeting.service.MeetingSessionErasureService.class,
+            com.example.meeting.config.MeetingSessionErasureProperties.class,
+            com.example.meeting.service.MeetingAnalysisRunDestructionRecorder.class,
+            com.example.meeting.service.MeetingRetentionCleanupService.class})
     static class Boot {
         @Bean
         RecordingMeetingEventPublisher recordingPublisher() {
@@ -551,5 +555,156 @@ class MeetingEventOutboxPollerPostgresIntegrationTest {
             effects.set(0);
             failure = null;
         }
+    }
+
+    @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
+    @Autowired private com.example.meeting.service.MeetingSessionErasureService erasureService;
+    @Autowired private com.example.meeting.config.MeetingSessionErasureProperties erasureProperties;
+    @Autowired private com.example.meeting.service.MeetingRetentionCleanupService retentionCleanup;
+
+    private UUID enqueueReadyNotification(Seed seed) {
+        UUID id = seedPending(seed, "meeting.summary.ready", seed.runId + "|meeting.summary.ready");
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_event_outbox SET status='PUBLISHED' WHERE id=?", id);
+        new org.springframework.transaction.support.TransactionTemplate(transactionManager)
+                .executeWithoutResult(s -> outboxRepo.enqueueNotification(id, true));
+        return id;
+    }
+
+    private com.example.meeting.notify.NotificationDeliveryQueue notificationQueue(
+            com.example.meeting.notify.SummaryReadyNotificationSink sink) {
+        var factory = new org.springframework.beans.factory.support.DefaultListableBeanFactory();
+        factory.registerSingleton("summary", sink);
+        return new com.example.meeting.notify.NotificationDeliveryQueue(outboxRepo, transactionManager,
+                org.mockito.Mockito.mock(com.example.meeting.notify.AssignmentNotificationSink.class),
+                factory.getBeanProvider(com.example.meeting.notify.SummaryReadyNotificationSink.class), false, 20);
+    }
+
+    private void assertReadyNotificationSuppressed(UUID id, boolean cascaded) {
+        var sink = org.mockito.Mockito.mock(com.example.meeting.notify.SummaryReadyNotificationSink.class);
+        notificationQueue(sink).runOne();
+        org.mockito.Mockito.verifyNoInteractions(sink);
+        if (cascaded) {
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA
+                    + ".notification_delivery_outbox WHERE source_id=?", Integer.class, id)).isZero();
+            assertThat(outboxRepo.findById(id)).isEmpty();
+        } else {
+            assertThat(jdbc.queryForMap("SELECT status, attempts, last_error FROM " + SCHEMA
+                    + ".notification_delivery_outbox WHERE source_id=?", id))
+                    .containsEntry("status", "DEAD").containsEntry("attempts", 0).containsEntry("last_error", "SOURCE_UNAVAILABLE");
+            assertThat(outboxRepo.findById(id).orElseThrow().getStatus().name()).isEqualTo("PUBLISHED");
+        }
+        notificationQueue(sink).runOne();
+        org.mockito.Mockito.verifyNoInteractions(sink);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void requestedOrCompletedErasureSuppressesQueuedSummary(boolean complete) {
+        Seed seed = seed();
+        UUID session = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO meeting_service.meeting_sessions
+                  (id, meeting_id, tenant_id, org_id, transcript_status,
+                   created_by_subject, last_updated_by_subject, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'PENDING', 'creator', 'creator', now(), now())
+                """, session, seed.meetingId, seed.orgId, seed.orgId);
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_analysis_runs SET transcript_session_id=? WHERE analysis_run_id=?",
+                session.toString(), seed.runId);
+        UUID id = enqueueReadyNotification(seed);
+        erasureProperties.setEnabled(true);
+        try {
+            erasureService.request(new com.example.meeting.security.AdminTenantContext(seed.orgId, "admin", "admin"),
+                    seed.meetingId, session);
+            if (complete) {
+                UUID token = UUID.randomUUID();
+                var claimed = erasureService.claim(token, "notification-test").stream()
+                        .filter(row -> row.getSessionId().equals(session)).findFirst().orElseThrow();
+                assertThat(erasureService.eraseLocal(claimed, token).status())
+                        .isEqualTo(com.example.meeting.service.MeetingSessionErasureService.LocalResult.Status.READY);
+                erasureService.markComplete(session, token, 0);
+            }
+            assertReadyNotificationSuppressed(id, complete);
+        } finally { erasureProperties.setEnabled(false); }
+    }
+
+    @Test void retentionOfSummaryDoesNotSendQueuedReadyNotification() {
+        Seed seed = seed();
+        UUID id = enqueueReadyNotification(seed);
+        retentionCleanup.cleanup(Instant.now().plus(java.time.Duration.ofDays(800)));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA
+                + ".meeting_analysis_runs WHERE analysis_run_id=?", Integer.class, seed.runId)).isZero();
+        assertReadyNotificationSuppressed(id, true);
+    }
+
+    @Test void summaryDeletionCannotCommitUntilNotificationHandoffCommits() {
+        Seed seed = seed();
+        UUID id = enqueueReadyNotification(seed);
+        var sink = org.mockito.Mockito.mock(com.example.meeting.notify.SummaryReadyNotificationSink.class);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            try (var connection = dataSource.getConnection()) {
+                connection.setAutoCommit(false);
+                try (var statement = connection.createStatement()) {
+                    statement.execute("SET LOCAL lock_timeout = '100ms'");
+                    assertThatThrownBy(() -> statement.executeUpdate("DELETE FROM " + SCHEMA
+                            + ".meeting_analysis_runs WHERE analysis_run_id='" + seed.runId + "'"))
+                            .isInstanceOf(java.sql.SQLException.class).hasMessageContaining("lock timeout");
+                } finally { connection.rollback(); }
+            }
+            return null;
+        }).when(sink).deliver(org.mockito.ArgumentMatchers.any());
+        notificationQueue(sink).runOne();
+        org.mockito.Mockito.verify(sink).deliver(org.mockito.ArgumentMatchers.any());
+        assertThat(jdbc.queryForObject("SELECT status FROM " + SCHEMA
+                + ".notification_delivery_outbox WHERE source_id=?", String.class, id)).isEqualTo("DELIVERED");
+        retentionCleanup.cleanup(Instant.now().plus(java.time.Duration.ofDays(800)));
+        assertThat(outboxRepo.findById(id)).isEmpty();
+    }
+
+    @Test
+    void notificationHandoffIsAtomicAndRetriesDoNotChangeDomainState() throws Exception {
+        Seed seed = seed();
+        UUID id = seedPending(seed, "meeting.summary.ready", seed.runId + "|meeting.summary.ready");
+        var tx = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        UUID token = UUID.randomUUID();
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_event_outbox SET status='CLAIMED', claim_token=? WHERE id=?", token, id);
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+            assertThat(outboxRepo.markPublishedFenced(id, token, Instant.now())).isEqualTo(1);
+            assertThat(outboxRepo.enqueueNotification(id, true)).isEqualTo(1);
+            throw new IllegalStateException("crash before commit");
+        })).isInstanceOf(IllegalStateException.class);
+        assertThat(jdbc.queryForObject("SELECT status FROM " + SCHEMA + ".meeting_event_outbox WHERE id=?", String.class, id)).isEqualTo("CLAIMED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA + ".notification_delivery_outbox WHERE source_id=?", Integer.class, id)).isZero();
+        tx.executeWithoutResult(status -> {
+            assertThat(outboxRepo.markPublishedFenced(id, token, Instant.now())).isEqualTo(1);
+            assertThat(outboxRepo.enqueueNotification(id, true)).isEqualTo(1);
+            assertThat(outboxRepo.enqueueNotification(id, true)).isZero();
+        });
+        tx.executeWithoutResult(status -> assertThat(outboxRepo.lockNextNotification(false)).isEmpty()); // native flag pause preserves summary job
+        var locked = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        try (var workers = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var holding = workers.submit(() -> tx.executeWithoutResult(status -> {
+                assertThat(outboxRepo.lockNextNotification(true)).isPresent();
+                locked.countDown();
+                try { if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("timeout"); }
+                catch (InterruptedException ex) { Thread.currentThread().interrupt(); throw new IllegalStateException(ex); }
+                status.setRollbackOnly(); // process loss leaves the durable job pending
+            }));
+            try {
+                assertThat(locked.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                tx.executeWithoutResult(status -> assertThat(outboxRepo.lockNextNotification(true)).isEmpty());
+            } finally { release.countDown(); }
+            holding.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        tx.executeWithoutResult(status -> {
+            assertThat(outboxRepo.lockNextNotification(true)).isPresent();
+            outboxRepo.notificationFailed(id, 20, Instant.now().plusSeconds(30), "Offline");
+        });
+        assertThat(jdbc.queryForObject("SELECT status FROM " + SCHEMA + ".meeting_event_outbox WHERE id=?", String.class, id)).isEqualTo("PUBLISHED");
+        assertThat(jdbc.queryForObject("SELECT attempts FROM " + SCHEMA + ".meeting_event_outbox WHERE id=?", Integer.class, id)).isZero();
+        assertThat(jdbc.queryForObject("SELECT attempts FROM " + SCHEMA + ".notification_delivery_outbox WHERE source_id=?", Integer.class, id)).isEqualTo(1);
+        tx.executeWithoutResult(status -> assertThat(outboxRepo.lockNextNotification(true)).isEmpty());
+        jdbc.update("DELETE FROM " + SCHEMA + ".meeting_event_outbox WHERE id=?", id);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA + ".notification_delivery_outbox WHERE source_id=?", Integer.class, id)).isZero();
     }
 }

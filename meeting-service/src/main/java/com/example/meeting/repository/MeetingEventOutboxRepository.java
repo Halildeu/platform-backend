@@ -149,4 +149,75 @@ public interface MeetingEventOutboxRepository extends JpaRepository<MeetingEvent
     Optional<MeetingEventOutbox> findByEventKey(String eventKey);
 
     long countByStatus(com.example.meeting.model.MeetingEventOutboxStatus status);
+
+    // Enqueued in the SAME transaction as the fenced domain PUBLISHED transition.
+    @Modifying
+    @Query(value = """
+        INSERT INTO {h-schema}notification_delivery_outbox (source_id)
+        SELECT id FROM {h-schema}meeting_event_outbox
+        WHERE id = :id AND status = 'PUBLISHED' AND (event_type IN ('meeting.action.assigned', 'meeting.action.reassigned') OR (:includeSummary AND event_type = 'meeting.summary.ready'))
+        ON CONFLICT (source_id) DO NOTHING
+        """, nativeQuery = true)
+    int enqueueNotification(@Param("id") UUID id, @Param("includeSummary") boolean includeSummary);
+
+    // One locked job, no expiring batch lease. Lock survives until HTTP outcome commits.
+    @Query(value = """
+        SELECT o.* FROM {h-schema}notification_delivery_outbox n
+        JOIN {h-schema}meeting_event_outbox o ON o.id = n.source_id
+        WHERE n.status = 'PENDING' AND n.next_attempt_at <= CURRENT_TIMESTAMP
+          AND (:includeSummary OR o.event_type <> 'meeting.summary.ready')
+        ORDER BY n.next_attempt_at, n.source_id
+        LIMIT 1 FOR UPDATE OF n SKIP LOCKED
+        """, nativeQuery = true)
+    Optional<MeetingEventOutbox> lockNextNotification(@Param("includeSummary") boolean includeSummary);
+
+    // V7 already cascades result -> domain event -> notification job. The job
+    // lock prevents deletion from committing during handoff. Do NOT lock the
+    // result here: job -> result would reverse the erasure cascade lock order.
+    @Query(value = """
+        SELECT r.analysis_run_id FROM {h-schema}meeting_analysis_runs r
+        JOIN {h-schema}meeting_event_outbox o
+          ON r.analysis_run_id = o.aggregate_id AND r.tenant_id = o.tenant_id AND r.meeting_id = o.meeting_id
+        WHERE o.id = :id AND o.event_type = 'meeting.summary.ready'
+          AND (r.org_id IS NULL OR r.org_id = o.tenant_id)
+        """, nativeQuery = true)
+    Optional<UUID> findNotificationSource(@Param("id") UUID id);
+
+    // Suppress requests already visible at delivery admission, even before
+    // deletion cascades the queued job away.
+    @Query(value = """
+        SELECT EXISTS (
+            SELECT 1 FROM {h-schema}meeting_session_erasure e
+            JOIN {h-schema}meeting_analysis_runs r
+              ON e.tenant_id = r.tenant_id AND e.meeting_id = r.meeting_id
+             AND CAST(e.session_id AS text) = r.transcript_session_id
+            JOIN {h-schema}meeting_event_outbox o ON o.aggregate_id = r.analysis_run_id
+            WHERE o.id = :id)
+        """, nativeQuery = true)
+    boolean notificationErasureRequested(@Param("id") UUID id);
+
+    @Modifying
+    @Query(value = """
+        UPDATE {h-schema}notification_delivery_outbox
+        SET status = 'DEAD', last_error = 'SOURCE_UNAVAILABLE' WHERE source_id = :id
+        """, nativeQuery = true)
+    int notificationSuppressed(@Param("id") UUID id);
+
+    @Modifying
+    @Query(value = """
+        UPDATE {h-schema}notification_delivery_outbox
+        SET status = 'DELIVERED', last_error = NULL WHERE source_id = :id
+        """, nativeQuery = true)
+    int notificationDelivered(@Param("id") UUID id);
+
+    @Modifying
+    @Query(value = """
+        UPDATE {h-schema}notification_delivery_outbox
+        SET attempts = attempts + 1,
+            status = CASE WHEN attempts + 1 >= :maxAttempts THEN 'DEAD' ELSE 'PENDING' END,
+            next_attempt_at = :retryAt, last_error = :errorClass
+        WHERE source_id = :id
+        """, nativeQuery = true)
+    int notificationFailed(@Param("id") UUID id, @Param("maxAttempts") int maxAttempts,
+                           @Param("retryAt") Instant retryAt, @Param("errorClass") String errorClass);
 }

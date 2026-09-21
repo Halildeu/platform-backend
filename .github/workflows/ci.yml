@@ -28,4 +28,4 @@ jobs:
         run: ./mvnw -q -DskipTests install -pl auth-service -am
 
       - name: Run exact auth-service token mint tests
-        run: ./mvnw -q -pl auth-service test -Dtest='MeetingAiServiceTokenMintTest,TranscriptServiceBlankSecretTokenMintTest' -Dsurefire.failIfNoSpecifiedTests=true
+        run: ./mvnw -q -pl auth-service test -Dtest='MeetingAiServiceTokenMintTest,TranscriptServiceBlankSecretTokenMintTest,TranscriptNotificationPolicyTest' -Dsurefire.failIfNoSpecifiedTests=true

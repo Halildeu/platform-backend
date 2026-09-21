@@ -56,6 +56,20 @@ class TranscriptEventOutboxPollerTest {
     }
 
     @Test
+    void successfulDomainDeliveryEnqueuesWithoutHttp() {
+        var sink = mock(com.example.transcript.notify.NotificationDeliveryQueue.class);
+        org.springframework.beans.factory.ObjectProvider<com.example.transcript.notify.NotificationDeliveryQueue> provider =
+                mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(sink);
+        poller.setDeliveryQueue(provider);
+        when(repository.markPublishedFenced(eq(rowId),eq(claimToken),any())).thenReturn(1);
+        poller.runCycle();
+        verify(publisher).publish(any());
+        verify(sink).enqueue(rowId); verify(sink,never()).runOne();
+        verify(repository, never()).markFailedFenced(any(), any(), any(), any(Integer.class), any(), any());
+    }
+
+    @Test
     void publishFailureReturnsRowToBoundedFailurePath() {
         RuntimeException failure = new IllegalStateException("redis unavailable");
         org.mockito.Mockito.doThrow(failure).when(publisher).publish(any());
@@ -90,5 +104,14 @@ class TranscriptEventOutboxPollerTest {
 
         verify(repository, never()).findByClaimToken(any());
         verify(publisher, never()).publish(any());
+    }
+    @Test
+    void lostFenceNeverEnqueuesNotification() {
+        var queue = mock(com.example.transcript.notify.NotificationDeliveryQueue.class);
+        org.springframework.beans.factory.ObjectProvider<com.example.transcript.notify.NotificationDeliveryQueue> provider = mock(org.springframework.beans.factory.ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(queue);
+        poller.setDeliveryQueue(provider);
+        poller.markPublished(rowId, claimToken);
+        verify(queue, never()).enqueue(any());
     }
 }

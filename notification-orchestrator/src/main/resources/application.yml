@@ -176,10 +176,24 @@ notify:
         defaultFrequencyHint: 2
       # Faz 24 Görevler dilim-4b (gitops#3486/#3537): a meeting action was assigned
       # to / handed over to the subscriber. Fixed-copy templates, no meeting content.
+      - topicKey: meeting.summary.ready
+        label: "Toplantı Özeti Hazır"
+        category: meeting
+        supportedChannels: [PUSH]
+        criticalEligible: false
+        description: "Kaydedilmiş toplantı özeti hazır olduğunda bildirim."
+        defaultFrequencyHint: null
+      - topicKey: meeting.transcript.ready
+        label: "Toplantı Metni Hazır"
+        category: meeting
+        supportedChannels: [PUSH]
+        criticalEligible: false
+        description: "Kaydedilmiş toplantı metni hazır olduğunda bildirim."
+        defaultFrequencyHint: null
       - topicKey: meeting.action.assigned
         label: "Toplantı Görevi Atandı"
         category: meeting
-        supportedChannels: [IN_APP, EMAIL]
+        supportedChannels: [IN_APP, EMAIL, PUSH]
         criticalEligible: false
         description: "Bir toplantı aksiyonu size görev olarak atandığında bildirim."
         defaultFrequencyHint: null

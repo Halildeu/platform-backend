@@ -71,6 +71,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         SourceWindowRetentionFence.class,
         TranscriptSessionErasureTombstoneStore.class,
         TranscriptSessionErasureService.class,
+        TranscriptRetentionCleanupService.class,
         RecordingFinishedEventProcessor.class,
         TranscriptQuiescentFinalizationProcessor.class,
         TranscriptFinalizationStateMachine.class,
@@ -269,6 +270,88 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     @Autowired private PlatformTransactionManager transactionManager;
     @Autowired private FinalizedTranscriptSnapshotCodec snapshotCodec;
     @Autowired private CanonicalSpeakerLabelService speakerLabels;
+    @Autowired private TranscriptRetentionCleanupService retentionCleanup;
+
+    private UUID enqueueReadyNotification() {
+        insertResolvedAssociation();
+        saveSegment(TENANT, MEETING, SESSION, "SES-42", 1L, TranscriptSegmentStatus.FINALIZED, "final text");
+        finalizationService.finalizeTranscript(context(TENANT), MEETING, SESSION, 1L);
+        UUID id = outbox.findAll().getFirst().getId();
+        jdbc.update("UPDATE " + SCHEMA + ".transcript_event_outbox SET status='PUBLISHED' WHERE id=?", id);
+        new TransactionTemplate(transactionManager).executeWithoutResult(s -> outbox.enqueueNotification(id));
+        return id;
+    }
+
+    private com.example.transcript.notify.NotificationDeliveryQueue notificationQueue(
+            com.example.transcript.notify.TranscriptReadyNotificationSink sink) {
+        return new com.example.transcript.notify.NotificationDeliveryQueue(outbox, transactionManager, sink, false, 20);
+    }
+
+    private void assertReadyNotificationSuppressed(UUID id) {
+        var sink = org.mockito.Mockito.mock(com.example.transcript.notify.TranscriptReadyNotificationSink.class);
+        notificationQueue(sink).runOne();
+        org.mockito.Mockito.verifyNoInteractions(sink);
+        assertThat(jdbc.queryForMap("SELECT status, attempts, last_error FROM " + SCHEMA
+                + ".notification_delivery_outbox WHERE source_id=?", id))
+                .containsEntry("status", "DEAD").containsEntry("attempts", 0).containsEntry("last_error", "SOURCE_UNAVAILABLE");
+        assertThat(outbox.findById(id).orElseThrow().getStatus().name()).isEqualTo("PUBLISHED");
+        notificationQueue(sink).runOne(); // terminal, survives a new worker instance
+        org.mockito.Mockito.verifyNoInteractions(sink);
+    }
+
+    @Test void erasedTranscriptDoesNotSendQueuedReadyNotification() {
+        UUID id = enqueueReadyNotification();
+        erasureService.erase(TENANT, MEETING, SESSION, "SES-42");
+        assertThat(finalizations.count()).isZero();
+        assertReadyNotificationSuppressed(id);
+    }
+
+    @Test void preparedErasureSuppressesNotificationEvenBeforeSourceDeletion() {
+        UUID id = enqueueReadyNotification();
+        erasureService.prepare(TENANT, MEETING, SESSION, "SES-42");
+        assertThat(finalizations.count()).isEqualTo(1);
+        assertReadyNotificationSuppressed(id);
+    }
+
+    @Test void retentionOfTranscriptDoesNotSendQueuedReadyNotification() {
+        UUID id = enqueueReadyNotification();
+        retentionCleanup.cleanup(Instant.now().plus(java.time.Duration.ofDays(400)));
+        assertThat(finalizations.count()).isZero();
+        assertReadyNotificationSuppressed(id);
+    }
+
+    @Test void anotherOccurrenceCannotResurrectErasedNotification() {
+        UUID id = enqueueReadyNotification();
+        var original = finalizations.findAll().getFirst();
+        // The session still exists, but the event's exact occurrence was removed.
+        finalizationService.finalizeTranscript(context(TENANT), MEETING, SESSION, 2L);
+        jdbc.update("UPDATE " + SCHEMA + ".transcript_finalizations SET created_at=? WHERE id=?",
+                Timestamp.from(Instant.now().minus(java.time.Duration.ofDays(400))), original.getId());
+        retentionCleanup.cleanup(Instant.now());
+        assertThat(finalizations.findAll()).singleElement().satisfies(f -> assertThat(f.getFinalizationVersion()).isEqualTo(2));
+        assertReadyNotificationSuppressed(id);
+    }
+
+    @Test void liveSourceIsLockedUntilNotificationHandoffCommits() {
+        UUID id = enqueueReadyNotification();
+        var sink = org.mockito.Mockito.mock(com.example.transcript.notify.TranscriptReadyNotificationSink.class);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            // A concurrent erasure/retention cannot acquire the source for deletion.
+            try (var connection = POSTGRES.createConnection("")) {
+                connection.setAutoCommit(false);
+                try (var statement = connection.createStatement()) {
+                    assertThatThrownBy(() -> statement.executeQuery("SELECT id FROM " + SCHEMA
+                            + ".transcript_finalizations FOR UPDATE NOWAIT"))
+                            .isInstanceOf(SQLException.class).hasMessageContaining("could not obtain lock");
+                } finally { connection.rollback(); }
+            }
+            return null;
+        }).when(sink).deliver(org.mockito.ArgumentMatchers.any());
+        notificationQueue(sink).runOne();
+        org.mockito.Mockito.verify(sink).deliver(org.mockito.ArgumentMatchers.any());
+        assertThat(jdbc.queryForObject("SELECT status FROM " + SCHEMA
+                + ".notification_delivery_outbox WHERE source_id=?", String.class, id)).isEqualTo("DELIVERED");
+    }
 
     @BeforeEach
     void clean() {
@@ -1043,5 +1126,54 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
 
     private AdminTenantContext context(UUID tenant) {
         return new AdminTenantContext(tenant, "admin", "admin");
+    }
+
+    @Test
+    void notificationHandoffIsAtomicAndRetriesDoNotChangeDomainState() throws Exception {
+        insertResolvedAssociation();
+        saveSegment(TENANT, MEETING, SESSION, "SES-42", 1L, TranscriptSegmentStatus.FINALIZED, "final text");
+        finalizationService.finalizeTranscript(context(TENANT), MEETING, SESSION, 1L);
+        UUID id = outbox.findAll().getFirst().getId();
+        var tx = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        UUID token = UUID.randomUUID();
+        jdbc.update("UPDATE " + SCHEMA + ".transcript_event_outbox SET status='CLAIMED', claim_token=? WHERE id=?", token, id);
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+            assertThat(outbox.markPublishedFenced(id, token, Instant.now())).isEqualTo(1);
+            assertThat(outbox.enqueueNotification(id)).isEqualTo(1);
+            throw new IllegalStateException("crash before commit");
+        })).isInstanceOf(IllegalStateException.class);
+        assertThat(jdbc.queryForObject("SELECT status FROM " + SCHEMA + ".transcript_event_outbox WHERE id=?", String.class, id)).isEqualTo("CLAIMED");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA + ".notification_delivery_outbox WHERE source_id=?", Integer.class, id)).isZero();
+        tx.executeWithoutResult(status -> {
+            assertThat(outbox.markPublishedFenced(id, token, Instant.now())).isEqualTo(1);
+            assertThat(outbox.enqueueNotification(id)).isEqualTo(1);
+            assertThat(outbox.enqueueNotification(id)).isZero();
+        });
+        var locked = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        try (var workers = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var holding = workers.submit(() -> tx.executeWithoutResult(status -> {
+                assertThat(outbox.lockNextNotification()).isPresent();
+                locked.countDown();
+                try { if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("timeout"); }
+                catch (InterruptedException ex) { Thread.currentThread().interrupt(); throw new IllegalStateException(ex); }
+                status.setRollbackOnly(); // process loss leaves the durable job pending
+            }));
+            try {
+                assertThat(locked.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                tx.executeWithoutResult(status -> assertThat(outbox.lockNextNotification()).isEmpty());
+            } finally { release.countDown(); }
+            holding.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        tx.executeWithoutResult(status -> {
+            assertThat(outbox.lockNextNotification()).isPresent();
+            outbox.notificationFailed(id, 20, Instant.now().plusSeconds(30), "Offline");
+        });
+        assertThat(jdbc.queryForObject("SELECT status FROM " + SCHEMA + ".transcript_event_outbox WHERE id=?", String.class, id)).isEqualTo("PUBLISHED");
+        assertThat(jdbc.queryForObject("SELECT attempts FROM " + SCHEMA + ".transcript_event_outbox WHERE id=?", Integer.class, id)).isZero();
+        assertThat(jdbc.queryForObject("SELECT attempts FROM " + SCHEMA + ".notification_delivery_outbox WHERE source_id=?", Integer.class, id)).isEqualTo(1);
+        tx.executeWithoutResult(status -> assertThat(outbox.lockNextNotification()).isEmpty());
+        jdbc.update("DELETE FROM " + SCHEMA + ".transcript_event_outbox WHERE id=?", id);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA + ".notification_delivery_outbox WHERE source_id=?", Integer.class, id)).isZero();
     }
 }
