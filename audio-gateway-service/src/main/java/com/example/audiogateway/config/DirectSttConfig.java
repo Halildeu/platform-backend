@@ -321,7 +321,8 @@ public class DirectSttConfig {
                 Duration.ofMillis(cfg.getTimeoutMs()),
                 meters,
                 liveAnalysisStreamHub,
-                Duration.ofMillis(cfg.getMinIntervalMs()));
+                Duration.ofMillis(cfg.getMinIntervalMs()),
+                Duration.ofMillis(cfg.getMaxWaitMs()));
     }
 
     /**

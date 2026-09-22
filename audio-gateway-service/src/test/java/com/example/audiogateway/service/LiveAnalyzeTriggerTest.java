@@ -148,9 +148,74 @@ class LiveAnalyzeTriggerTest {
     }
 
     @Test
+    void flushesShortSpeechWithoutWaitingForAnotherFragmentOrRecordingStop() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (var trigger = new LiveAnalyzeTrigger(client, 5, "", Duration.ofSeconds(2),
+                meters, null, Duration.ZERO, Duration.ofMillis(150))) {
+            trigger.offer("short-speech", resultWith("The team approved the proposal."));
+            final var request = server.takeRequest(2, TimeUnit.SECONDS);
+            assertThat(request).isNotNull();
+            assertThat(request.getBody().readUtf8()).contains("approved the proposal", "\"segment_seq\":1");
+            assertThat(server.takeRequest(350, TimeUnit.MILLISECONDS)).isNull();
+        }
+    }
+
+    @Test
+    void aCountFlushCancelsItsDeadlineButKeepsTheNextShortWindow() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}"));
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (var trigger = new LiveAnalyzeTrigger(client, 2, "", Duration.ofSeconds(2),
+                meters, null, Duration.ZERO, Duration.ofMillis(150))) {
+            trigger.offer("mixed", resultWith("First decision."));
+            trigger.offer("mixed", resultWith("Second decision."));
+            assertThat(server.takeRequest(2, TimeUnit.SECONDS)).isNotNull();
+            assertThat(server.takeRequest(350, TimeUnit.MILLISECONDS)).isNull();
+            trigger.offer("mixed", resultWith("Final action before a pause."));
+            final var next = server.takeRequest(2, TimeUnit.SECONDS);
+            assertThat(next).isNotNull();
+            assertThat(next.getBody().readUtf8()).contains("First decision.", "Final action", "\"segment_seq\":2");
+            assertThat(server.takeRequest(350, TimeUnit.MILLISECONDS)).isNull();
+        }
+    }
+
+    @Test
+    void timedWindowsStillCoalesceBehindAnInFlightAnalysis() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}").setBodyDelay(900, TimeUnit.MILLISECONDS));
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (var trigger = new LiveAnalyzeTrigger(client, 2, "", Duration.ofSeconds(3),
+                meters, null, Duration.ZERO, Duration.ofMillis(150))) {
+            trigger.offer("slow-window", resultWith("First decision."));
+            trigger.offer("slow-window", resultWith("First owner."));
+            assertThat(server.takeRequest(2, TimeUnit.SECONDS)).isNotNull();
+            trigger.offer("slow-window", resultWith("Second action."));
+            assertThat(server.takeRequest(250, TimeUnit.MILLISECONDS)).isNull();
+            trigger.offer("slow-window", resultWith("Newest action."));
+            assertThat(server.takeRequest(250, TimeUnit.MILLISECONDS)).isNull();
+            final var next = server.takeRequest(2, TimeUnit.SECONDS);
+            assertThat(next).isNotNull();
+            assertThat(next.getBody().readUtf8()).contains("First decision.", "Second action.", "Newest action.", "\"segment_seq\":3");
+            assertThat(server.takeRequest(350, TimeUnit.MILLISECONDS)).isNull();
+        }
+    }
+
+    @Test
+    void closingCancelsAnUnderfilledWindow() throws Exception {
+        final var trigger = new LiveAnalyzeTrigger(client, 5, "", Duration.ofSeconds(2),
+                meters, null, Duration.ZERO, Duration.ofMillis(150));
+        trigger.offer("closing-window", resultWith("Decision not yet flushed."));
+        trigger.close();
+        assertThat(server.takeRequest(350, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    @Test
     void liveCadenceConfigurationIsBoundedAndDefaultsToFifteenSeconds() {
         final var config = new com.example.audiogateway.config.AudioGatewayProperties.DirectStt.LiveAnalyze();
         assertThat(config.getMinIntervalMs()).isEqualTo(15_000);
+        assertThat(config.getMaxWaitMs()).isEqualTo(15_000);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> config.setMaxWaitMs(0))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> config.setMaxWaitMs(300_001))
+                .isInstanceOf(IllegalArgumentException.class);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> config.setMinIntervalMs(-1))
                 .isInstanceOf(IllegalArgumentException.class);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> config.setMinIntervalMs(300_001))
