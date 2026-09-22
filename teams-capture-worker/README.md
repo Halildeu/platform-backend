@@ -43,12 +43,50 @@ bağlanamaz. Worker bu eşleştirmeyi Graph çağrısından önce kalıcı yazar
 `GET /api/teams/calls/{callId}` aynı anahtarla güncel çağrı durumunu ve kanonik
 toplantı UUID'sini döndürür.
 
+Katılım komutu aynı toplantı/olay için eşzamanlı veya yeniden başlatma sonrasında
+tekrar gönderildiğinde ikinci Graph çağrısı oluşturulmaz. İstek gönderilmeden
+önce rezervasyon kalıcı yazılır; başarılı yanıtın callId ve toplantı bağı birlikte
+kaydedilir. Token alma gibi **Graph katılım isteği gönderilmeden** oluşan hata
+ve kesin 400/401/403/404/429 ret yanıtı güvenli yeniden denemeye izin verir.
+Gönderim sonrası zaman aşımı, 5xx veya eksik başarı yanıtı `join_outcome_unconfirmed`
+olarak korunur; otomatik ikinci bot oluşturulmaz. Kalıcı yazma başarısızken
+callId biliniyorsa worker yalnız o bot çağrısından çıkmayı dener. Çıkışın da
+doğrulanamaması ayrı hata kodudur.
+
+`GET /api/teams/meetings/{meetingId}/join-status`, belirsiz katılım ve bilinen
+callId için özel kontrol uç noktasıdır. Operatör belirsiz durumda yeni toplantı
+UUID'siyle deneme yapmamalı; mevcut Graph çağrısı/katılımcı listesi ve kayıt
+zamanıyla incelemelidir. Bu sürüm belirsiz rezervasyonu otomatik silmez veya
+yeniden başlatma ile temizlemez. Eşleştirmeyi kanıtlamadan dosya değiştirilmez.
+
+Arka plan bakım işlemi aktif çağrılar için 15 dakikada bir `keepAlive` gönderir;
+doğrulanamayan sonuç bir dakika sonra yeniden denenir. 404 çağrıyı sonlanmış
+olarak işaretler. `POST /api/teams/calls/{callId}/leave`, yalnız bu worker'ın
+bildiği çağrıdan botu çıkarır; toplantının kendisini sonlandırmaz. 204/404 dışında
+çıkış başarılı sayılmaz. Bu işlemler de `X-Teams-Control-Key` ister.
+
 Çağrı ve takvim eşleştirmeleri en fazla1000 kayıtla sınırlandırılır ve
 `TeamsCapture__CallStateFilePath` ile `TeamsCapture__CalendarStateFilePath`
 yollarına atomik olarak yazılır. Dağıtımda bu yollar kalıcı bir volume üzerinde
 olmalı ve worker tek replika çalışmalıdır. Böylece süreç veya pod yeniden
 başladığında çağrı takibi devam eder. Çok replika için sonraki aşamada ortak
 veritabanı adaptörü gerekir.
+
+`TeamsCapture__CompletedCallRetentionHours` isteğe bağlıdır (1–2160 saat).
+Varsayılan otomatik silme kapalıdır; kurum metadata saklama süresini belirler.
+Açıldığında yalnız bütün çağrıları sonlanmış ve süreyi aşmış toplantının çağrı,
+katılım rezervasyonu ve takvim eşleştirmesi temizlenir. Aktif/belirsiz kayıtlar
+silinmez. Temizlik hatası aktif çağrıların bakımını durdurmaz. Süreyi aşan
+silinmiş kayıtlarda tekrar isteğini engelleyen kayıt da kalmaz: üstteki toplantı
+servisi bitmiş toplantıya yeni katılım komutu göndermemelidir. 1000 kayıt sınırı
+doluysa operatör incelemesi gerekir; daha fazla Graph çağrısı oluşturulmaz.
+
+Özel `GET /api/teams/readiness`, yapılandırma kontrolünü canlı ürün kabulünden
+ayırır. `liveAudio`, `liveSpeakerAttribution`, `teamsSidePanel` ve
+`automaticCalendarScan` bu sürümde **false** değerindedir. `/health` yanıtının
+200 olması yalnız sürecin ayakta olduğunu gösterir. ClientSecret dahil gerekli
+ayarlar olmadan katılım hazırlanmış sayılmaz; bu kontrol izin/credential
+geçerliliğini veya callback'in Microsoft'tan erişilebilirliğini kanıtlamaz.
 
 Mevcut tenant onayı Calendars izni içermediğinden worker tenant takvimlerini
 Graph üzerinden taramaz. Takvim bilgisi, toplantıyı zaten bilen yetkili platform
@@ -110,7 +148,7 @@ Paket kökünde manifest.json, color.png (192×192) ve outline.png (32×32,
 beyaz/şeffaf) bulunmalıdır. İkonlar özgün mikrofon işaretidir; yeniden üretim:
 `node teams-capture-worker/teams-app-manifest/generate-icons.mjs`.
 Yerel/CI biçim kontrolü:
-`node --test teams-capture-worker/teams-app-manifest/manifest.test.mjs`.
+`node --test teams-capture-worker/teams-app-manifest/*.test.mjs`.
 Bu kontrol tüm Microsoft şemasının veya tenant yüklemesinin kabulü değildir.
 
 Şablonun app/bot ID, callback domain, website, privacy ve terms alanları
@@ -119,3 +157,10 @@ onaylı değerlerle doldurulmadan yüklenebilir paket olarak kullanılmaz.
 1.19 şeması ve Teams yükleme doğrulamasından geçirilmelidir.
 Kaynak: https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json
 Takip: GitOps #3716. Bu değişiklik tenant, DNS, izin veya runtime değiştirmez.
+
+Onaylı beş açık yapılandırma alanından kurulacak paket dosyalarını üretme ve
+DEV kontrolü: [İşletim ve teslim kılavuzu](docs/operations.md).
+
+Çağrı yaşam döngüsü kaynakları:
+- https://learn.microsoft.com/en-us/graph/api/call-keepalive?view=graph-rest-1.0
+- https://learn.microsoft.com/en-us/graph/api/call-delete?view=graph-rest-1.0

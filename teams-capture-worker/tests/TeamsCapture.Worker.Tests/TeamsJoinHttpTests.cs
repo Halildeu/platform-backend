@@ -45,10 +45,12 @@ public sealed class TeamsJoinHttpTests
             builder.ConfigureLogging(logging => logging.ClearProviders());
             builder.ConfigureServices(services =>
             {
+                services.RemoveAll<Microsoft.Extensions.Hosting.IHostedService>();
                 services.RemoveAll<IOptions<TeamsCaptureOptions>>();
                 services.AddSingleton(Options.Create(new TeamsCaptureOptions
                 {
                     Enabled = true,
+                    ClientSecret = "synthetic-test-credential",
                     TenantId = Guid.NewGuid().ToString(),
                     ApplicationId = Guid.NewGuid().ToString(),
                     PublicCallbackBaseUrl = "https://bot.test.example",

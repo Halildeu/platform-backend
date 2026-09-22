@@ -127,7 +127,7 @@ public sealed class GraphTeamsParticipantRosterClientTests
         new HttpClient(handler), Options.Create(new TeamsCaptureOptions
         {
             Enabled = true, TenantId = Guid.NewGuid().ToString(), ApplicationId = Guid.NewGuid().ToString(),
-            PublicCallbackBaseUrl = "https://bot.test.example", ControlApiKey = new string('k', 32),
+            PublicCallbackBaseUrl = "https://bot.test.example", ControlApiKey = new string('k', 32), ClientSecret = "synthetic-test-credential",
             CallStateFilePath = Path.GetFullPath("unused-calls.json"),
             CalendarStateFilePath = Path.GetFullPath("unused-calendar.json")
         }), new Tokens(), state);

@@ -49,6 +49,19 @@ public sealed class DurableTeamsCalendarMeetingResolver : ITeamsCalendarMeetingR
         }
     }
 
+    public void RemoveCompleted(IEnumerable<Guid> meetingIds)
+    {
+        var completed = meetingIds.ToHashSet();
+        lock (gate)
+        {
+            if (!meetings.Values.Any(value => completed.Contains(value.MeetingId))) return;
+            var snapshot = meetings.Where(item => !completed.Contains(item.Value.MeetingId))
+                .ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
+            Persist(snapshot);
+            meetings = snapshot;
+        }
+    }
+
     private static bool ValidReference(string value) => value is { Length: > 0 and <= 256 }
         && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or ':' or '.');
 

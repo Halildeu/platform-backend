@@ -2,6 +2,13 @@
 
 ## Doğrulanmış başlangıç
 
+- 22 Eylül kişisel SSH kontrolü: `devai.acik.com` / `10.9.10.53`, Ubuntu
+  22.04.5 LTS; `/home/zeynep/repos` ve kişisel GitHub erişimi çalışıyor.
+  DEV geliştirme/özel loopback önizlemesi için kullanılabilir. Microsoft'un
+  application-hosted ham medya SDK'sı için Windows Server yerine geçmez.
+  Kullanıcının kısıtı yeni sunucu/hizmet satın almamaktır; önce mevcut kaynak
+  uygunluğu belirlenir. Ortak preview ve TEST runtime bu çalışmayla değiştirilmez.
+
 - `ai@acik.com` test organizatör hesabıdır; botun Entra uygulama kimliğinden
   ayrıdır. Hesabın Teams/Outlook kullanılabilirliği IT ile canlı doğrulanır.
 - GitOps #3716 kaydındaki Entra uygulaması `meeting-intelligence-teams-bot-test`,
@@ -58,6 +65,12 @@ Parola veya özel anahtar sohbet/mail/repo içine yazılmaz. Gerekli alanlar:
   erişimini sınırlıyor kabul edilmez.
 
 ## Uygulama sırası ve kabul
+
+**Hesap dışındaki açık işler:** seçilen canlı medya adaptörünün uygulanması,
+kanonik ses/STT/analiz hattına bağlanması, toplantıya yetkili Teams yan paneli
+ve organizatör takviminden zamanlı katılım akışının bağlanması henüz bitmiş
+değildir. Roster ve kontrol düzlemi testlerinin geçmesi bu işleri tamamlamaz.
+Kuruma hesap talebi yapmak bu işlerin tek engelinin hesap olduğu anlamına gelmez.
 
 1. Mevcut katılım/kontrol paketi ve gerçek tenant ayarları doğrulanır. Callback
    kimlik kontrolü, kalıcı çağrı-toplantı bağı, restart ve terminal çağrı davranışı

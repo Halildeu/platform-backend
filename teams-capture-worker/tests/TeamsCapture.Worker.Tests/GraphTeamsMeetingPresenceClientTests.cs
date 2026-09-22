@@ -15,9 +15,7 @@ public sealed class GraphTeamsMeetingPresenceClientTests
         var handler = new CapturingHandler("{}");
         var client = CreateClient(new TeamsCaptureOptions(), handler);
 
-        var result = await client.JoinAsync(Command(), CancellationToken.None);
-
-        Assert.Null(result);
+        await Assert.ThrowsAsync<TeamsJoinNotCreatedException>(() => client.JoinAsync(Command(), CancellationToken.None));
         Assert.False(handler.WasCalled);
     }
 
@@ -43,11 +41,39 @@ public sealed class GraphTeamsMeetingPresenceClientTests
             Options.Create(options),
             new CalendarResolver(),
             new AccessTokenProvider(),
-            new HttpClient(handler), new TeamsCallbackState());
+            new HttpClient(handler));
+
+    [Fact]
+    public async Task Token_outage_does_not_lock_meeting_and_retry_creates_exactly_one_call()
+    {
+        using var fixture = new TeamsOperationalTests.Fixture();
+        var tokens = new RecoveringTokenProvider();
+        var handler = new CapturingHandler("{\"id\":\"call-1\"}");
+        var client = new GraphTeamsMeetingPresenceClient(fixture.Options, new CalendarResolver(), tokens, new HttpClient(handler));
+        var state = new TeamsCallbackState(fixture.Options);
+        var coordinator = new TeamsMeetingPresenceCoordinator(state, new TeamsOperationalTests.LifecycleStub());
+        var command = Command();
+        Assert.Equal("join_not_created", (await coordinator.JoinAsync(command, client, CancellationToken.None)).FailureCode);
+        Assert.False(handler.WasCalled);
+        Assert.Null(state.ReadJoin(command.MeetingId));
+        Assert.True((await coordinator.JoinAsync(command, client, CancellationToken.None)).Joined);
+        Assert.True(handler.WasCalled);
+    }
+
+    private sealed class RecoveringTokenProvider : ITeamsAccessTokenProvider
+    {
+        private int attempts;
+        public Task<string?> GetAccessTokenAsync(CancellationToken cancellationToken)
+        {
+            if (++attempts == 1) throw new HttpRequestException("synthetic token outage");
+            return Task.FromResult<string?>("synthetic-token");
+        }
+    }
 
     private static TeamsCaptureOptions ReadyOptions() => new()
     {
         Enabled = true,
+        ClientSecret = "synthetic-test-credential",
         TenantId = Guid.NewGuid().ToString(),
         ApplicationId = Guid.NewGuid().ToString(),
         PublicCallbackBaseUrl = "https://bot.test.example",

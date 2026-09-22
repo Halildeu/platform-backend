@@ -27,14 +27,24 @@ public sealed class TeamsCaptureOptions
 
     public string? CalendarStateFilePath { get; init; }
 
+    // Metadata only. Automatic cleanup remains off until the operator supplies retention.
+    public int? CompletedCallRetentionHours { get; init; }
+
     public bool IsReadyForRegistration() => Enabled
-        && Guid.TryParse(TenantId, out _)
-        && Guid.TryParse(ApplicationId, out _)
+        && Guid.TryParse(TenantId, out var tenant) && tenant != Guid.Empty
+        && Guid.TryParse(ApplicationId, out var application) && application != Guid.Empty
+        && !string.IsNullOrWhiteSpace(ClientSecret)
         && Uri.TryCreate(PublicCallbackBaseUrl, UriKind.Absolute, out var callbackUrl)
         && callbackUrl.Scheme == Uri.UriSchemeHttps
+        && string.IsNullOrEmpty(callbackUrl.UserInfo)
+        && callbackUrl.AbsolutePath == "/" && string.IsNullOrEmpty(callbackUrl.Query)
+        && string.IsNullOrEmpty(callbackUrl.Fragment) && !callbackUrl.IsLoopback
         && ControlApiKey?.Length >= 32
         && !string.IsNullOrWhiteSpace(CallStateFilePath)
         && Path.IsPathFullyQualified(CallStateFilePath)
         && !string.IsNullOrWhiteSpace(CalendarStateFilePath)
-        && Path.IsPathFullyQualified(CalendarStateFilePath);
+        && Path.IsPathFullyQualified(CalendarStateFilePath)
+        && !string.Equals(Path.GetFullPath(CallStateFilePath), Path.GetFullPath(CalendarStateFilePath),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+        && (CompletedCallRetentionHours is null or >= 1 and <= 2160);
 }

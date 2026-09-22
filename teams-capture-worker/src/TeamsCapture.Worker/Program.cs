@@ -17,6 +17,11 @@ builder.Services.AddSingleton<DurableTeamsCalendarMeetingResolver>();
 builder.Services.AddSingleton<ITeamsCalendarMeetingResolver>(services =>
     services.GetRequiredService<DurableTeamsCalendarMeetingResolver>());
 builder.Services.AddSingleton<TeamsMeetingPresenceCoordinator>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddHttpClient<ITeamsCallLifecycleClient, GraphTeamsCallLifecycleClient>(client =>
+    client.Timeout = TimeSpan.FromSeconds(15))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHostedService<TeamsCallMaintenanceService>();
 builder.Services.AddHttpClient<ITeamsMeetingPresenceClient, GraphTeamsMeetingPresenceClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(30))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -41,6 +46,17 @@ builder.Services.AddAuthorization();
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 65536);
 
 var app = builder.Build();
+app.Use(async (context, next) =>
+{
+    try { await next(context); }
+    catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+    {
+        app.Logger.LogError("Teams durable state unavailable; request was not confirmed.");
+        if (context.Response.HasStarted) throw;
+        context.Response.StatusCode = 503;
+        await context.Response.WriteAsJsonAsync(new { code = "durable_state_unavailable" });
+    }
+});
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapPost("/api/teams/callback", (JsonElement payload, HttpContext context,
@@ -76,7 +92,55 @@ app.MapPost("/api/teams/meetings/{meetingId:guid}/join", async (
         cancellationToken).ConfigureAwait(false);
     return result.Joined
         ? Results.Accepted(value: new { result.CallId })
-        : Results.Problem(statusCode: 502, title: result.FailureCode);
+        : Results.Problem(statusCode: result.FailureCode is "conflict" or "capacity_exhausted"
+            or "call_already_ended" or "join_outcome_unconfirmed" ? 409 : 502, title: result.FailureCode);
+});
+
+app.MapGet("/api/teams/meetings/{meetingId:guid}/join-status", (
+    Guid meetingId, HttpContext context, IOptions<TeamsCaptureOptions> settings, TeamsCallbackState state) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    if (!ControlKeyMatches(context, settings.Value.ControlApiKey ?? "")) return Results.Unauthorized();
+    var attempt = state.ReadJoin(meetingId);
+    return attempt is null ? Results.NotFound() : Results.Ok(new
+    {
+        meetingId, attempt.CallId, attempt.RequestedAt,
+        state = attempt.CallId is null ? "join_outcome_unconfirmed" : state.Read(attempt.CallId)
+    });
+});
+
+app.MapPost("/api/teams/calls/{callId}/leave", async (
+    string callId, HttpContext context, IOptions<TeamsCaptureOptions> settings, TeamsCallbackState state,
+    ITeamsCallLifecycleClient lifecycle, CancellationToken cancellationToken) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    if (!ControlKeyMatches(context, settings.Value.ControlApiKey ?? "")) return Results.Unauthorized();
+    if (!settings.Value.IsReadyForRegistration()) return Results.StatusCode(503);
+    if (state.ReadMeetingId(callId) is null) return Results.NotFound();
+    if (state.Read(callId) == "terminated") return Results.NoContent();
+    var result = await lifecycle.LeaveAsync(callId, cancellationToken).ConfigureAwait(false);
+    if (result == TeamsCallOperationResult.Unconfirmed)
+        return Results.Problem(statusCode: 502, title: "call_leave_not_confirmed");
+    state.MarkTerminated(callId);
+    return Results.NoContent();
+});
+
+app.MapGet("/api/teams/readiness", (HttpContext context, IOptions<TeamsCaptureOptions> settings) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    var config = settings.Value;
+    if (!ControlKeyMatches(context, config.ControlApiKey ?? "")) return Results.Unauthorized();
+    return Results.Json(new
+    {
+        controlPlaneConfigured = config.IsReadyForRegistration(),
+        tenantAcceptance = "not-verified-by-configuration",
+        mediaMode = "service-hosted-presence-only",
+        liveAudio = false, liveSpeakerAttribution = false, teamsSidePanel = false, automaticCalendarScan = false,
+        completedCallRetentionConfigured = config.CompletedCallRetentionHours is not null,
+        requirements = new[] { "tenant-callback-and-calling-registration", "approved-media-host-and-adapter",
+            "media-permission-and-recording-status", "canonical-audio-analysis-integration", "authorized-teams-side-panel",
+            "real-two-participant-live-acceptance" }
+    }, statusCode: config.IsReadyForRegistration() ? 200 : 503);
 });
 
 app.MapGet("/api/teams/calls/{callId}", (
@@ -124,13 +188,16 @@ app.MapGet("/health", (IOptions<TeamsCaptureOptions> options) => Results.Ok(new
     status = "up",
     capture = options.Value.IsReadyForRegistration()
         ? "ready-for-authorized-join"
-        : "disabled-until-tenant-registration"
+        : "disabled-until-tenant-registration",
+    media = "service-hosted-presence-only",
+    liveAudio = false
 }));
 
 app.Run();
 
 static bool ControlKeyMatches(HttpContext context, string expected)
 {
+    if (expected.Length < 32) return false;
     if (!context.Request.Headers.TryGetValue("X-Teams-Control-Key", out var supplied)
         || supplied.Count != 1) return false;
     var expectedBytes = Encoding.UTF8.GetBytes(expected);

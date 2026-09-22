@@ -68,11 +68,12 @@ public sealed class TeamsParticipantRosterHttpTests
             builder.ConfigureLogging(logging => logging.ClearProviders());
             builder.ConfigureServices(services =>
             {
+                services.RemoveAll<Microsoft.Extensions.Hosting.IHostedService>();
                 services.RemoveAll<IOptions<TeamsCaptureOptions>>();
                 services.AddSingleton(Options.Create(new TeamsCaptureOptions
                 {
                     Enabled = true, TenantId = Guid.NewGuid().ToString(), ApplicationId = Guid.NewGuid().ToString(),
-                    PublicCallbackBaseUrl = "https://bot.test.example", ControlApiKey = ControlKey,
+                    PublicCallbackBaseUrl = "https://bot.test.example", ControlApiKey = ControlKey, ClientSecret = "synthetic-test-credential",
                     CallStateFilePath = Path.GetFullPath("unused-calls.json"),
                     CalendarStateFilePath = Path.GetFullPath("unused-calendar.json")
                 }));

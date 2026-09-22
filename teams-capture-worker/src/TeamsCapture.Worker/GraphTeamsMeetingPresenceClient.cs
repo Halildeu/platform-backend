@@ -15,43 +15,41 @@ public sealed class GraphTeamsMeetingPresenceClient : ITeamsMeetingPresenceClien
     private readonly ITeamsCalendarMeetingResolver calendarResolver;
     private readonly ITeamsAccessTokenProvider tokenProvider;
     private readonly HttpClient httpClient;
-    private readonly TeamsCallbackState callbackState;
 
     public GraphTeamsMeetingPresenceClient(
         IOptions<TeamsCaptureOptions> options,
         ITeamsCalendarMeetingResolver calendarResolver,
         ITeamsAccessTokenProvider tokenProvider,
-        HttpClient httpClient,
-        TeamsCallbackState callbackState)
+        HttpClient httpClient)
     {
         this.options = options.Value;
         this.calendarResolver = calendarResolver;
         this.tokenProvider = tokenProvider;
         this.httpClient = httpClient;
-        this.callbackState = callbackState;
     }
 
     public async Task<TeamsJoinReceipt?> JoinAsync(
         MeetingPresenceCommand command,
         CancellationToken cancellationToken)
     {
-        if (!options.IsReadyForRegistration())
+        if (!options.IsReadyForRegistration()) throw new TeamsJoinNotCreatedException();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        ScheduledTeamsMeeting? meeting;
+        string? accessToken;
+        try
         {
-            return null;
+            deadline.Token.ThrowIfCancellationRequested();
+            meeting = await calendarResolver.ResolveAsync(command.CalendarEventId, deadline.Token).ConfigureAwait(false);
+            if (meeting is null || !meeting.IsValid()) throw new TeamsJoinNotCreatedException();
+            accessToken = await tokenProvider.GetAccessTokenAsync(deadline.Token).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(accessToken)) throw new TeamsJoinNotCreatedException();
+            deadline.Token.ThrowIfCancellationRequested();
         }
-
-        var meeting = await calendarResolver
-            .ResolveAsync(command.CalendarEventId, cancellationToken)
-            .ConfigureAwait(false);
-        if (meeting is null || !meeting.IsValid())
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException)
         {
-            return null;
-        }
-
-        var accessToken = await tokenProvider.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(accessToken))
-        {
-            return null;
+            // Token acquisition can fail without having sent a create-call request.
+            throw new TeamsJoinNotCreatedException();
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://graph.microsoft.com/v1.0/communications/calls");
@@ -62,18 +60,26 @@ public sealed class GraphTeamsMeetingPresenceClient : ITeamsMeetingPresenceClien
             Encoding.UTF8,
             "application/json");
 
-        using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
+        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+        // These responses explicitly reject creation. 408, 5xx, redirects and malformed
+        // success responses stay ambiguous: a caller must not blindly create another call.
+        if (response.StatusCode is System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.Unauthorized
+            or System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.NotFound
+            or System.Net.HttpStatusCode.TooManyRequests) throw new TeamsJoinNotCreatedException();
+        if (response.StatusCode != System.Net.HttpStatusCode.Created)
         {
             return null;
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var body = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return body.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
-               && !string.IsNullOrWhiteSpace(id.GetString())
-            && callbackState.Register(id.GetString()!, command.MeetingId) ? new TeamsJoinReceipt(id.GetString()!)
-            : null;
+        try
+        {
+            await response.Content.LoadIntoBufferAsync(1024 * 1024).WaitAsync(deadline.Token).ConfigureAwait(false);
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false));
+            return body.RootElement.ValueKind == JsonValueKind.Object
+                && body.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
+                && TeamsCallbackState.ValidCallId(id.GetString()) ? new TeamsJoinReceipt(id.GetString()!) : null;
+        }
+        catch (Exception error) when (error is JsonException or HttpRequestException) { return null; }
     }
 
     private Dictionary<string, object?> BuildJoinRequest(ScheduledTeamsMeeting meeting) => new()
