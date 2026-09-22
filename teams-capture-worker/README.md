@@ -8,8 +8,12 @@ audio-gateway session → Direct-STT → meeting-ai → meeting-service kanonik 
 Özet, kararlar, aksiyonlar ve görev atamaları worker tarafından üretilmez veya
 saklanmaz; yalnız kanonik sonuç okunur.
 
-Bu worker canlı ses almaz. Microsoft Graph'in ham medya botu yalnız uyumluluk
-kaydı senaryoları için uygundur; Meeting Intelligence'ın genel ürün yolu değildir.
+Bu worker canlı ses almaz. Microsoft, ham medya botlarını AI toplantı ajanları
+için önermez; bu yolun ek altyapı gereksinimleri vardır. Bu bir teknik yasak
+değildir. Kullanıcının toplantı sırasında ses, konuşmacı adı ve analiz istemesi
+için mevcut service-hosted katılım kodu tek başına yeterli değildir. Doğrudan
+Microsoft medya bağlantısı ve aracı hizmet seçenekleri ayrı değerlendirilir;
+bu kaynak dilimi iki seçenekten birinin canlı medya kabulü değildir.
 Katılımcı bilgilendirmesi ve recorder rızası, bot katılımından bağımsızdır.
 
 Gerekli Microsoft tarafı: tenant ve application kimlikleri, HTTPS callback,
@@ -51,6 +55,51 @@ Graph üzerinden taramaz. Takvim bilgisi, toplantıyı zaten bilen yetkili platf
 servisinden gelir; böylece yeni ve geniş bir Microsoft izni gerekmez. Gerçek
 secret sağlama, kalıcı volume, callback alan adı ve Teams manifest aktivasyonu
 GitOps3716 üzerinden yürütülür.
+
+## Katılımcı ve ses kaynağı bilgisi
+
+`GET /api/teams/calls/{callId}/participants`, kurum içi `X-Teams-Control-Key`
+ile korunur. Yalnız bu worker'da kanonik toplantıya bağlı ve `established`
+durumunda olan çağrının Microsoft Graph katılımcı listesini okur. Çağrı kimliği
+bir toplantı UUID'si veya takvim olayı kimliği değildir.
+
+Yanıt `callId`, `meetingId`, `observedAt` ve `participants` içerir. Her katılımcıda
+`participantId`, varsa Teams `userId` / `displayName`, `isInLobby`, `isMuted` ve
+yalnız `audio` medya kanallarının `audioSourceIds` değerleri bulunur. Eksik
+isim/kimlik null kalır; telefon veya uygulama kimliği insan adı diye çevrilmez.
+Bu alanlar Teams'in hesap/görünen ad bilgisidir, gerçek kişinin doğrulandığı
+iddiası değildir. Yanıt `Cache-Control: no-store` taşır; liste kalıcı dosyaya
+yazılmaz ve isim/ses kaynağı içerikleri loglanmaz.
+
+`attributionStatus=roster-only-live-media-not-connected` her yanıtta açıktır:
+bu liste **kimin şu anda konuştuğunu veya bir cümlenin sahibini söylemez**.
+Bir medya adaptörü, ses alınırken aynı çağrının güncel kaynak bilgisini ve
+zamanını korumalı; eski roster'ı geçmiş transkripte sonradan isim yapıştırmak
+için kullanmamalıdır. `isMuted=false` konuşuyor demek değildir. Aynı mikrofonun
+önündeki birden fazla insan yalnız Teams hesabıyla ayrıştırılamaz.
+
+Koruma: kapalı yapılandırma 503; hatalı/eksik kontrol anahtarı 401; bilinmeyen
+çağrı 404; kurulmamış/sonlanmış çağrı 409; Graph başarısızlığı veya kullanılamaz
+liste 502. 15 saniye süre ve 1 MiB yanıt sınırı vardır. Eksik/paged liste,
+tekrarlanan katılımcı kimliği ve farklı katılımcılarda aynı ses kaynağı
+reddedilir; `@odata.nextLink` izlenmez, eksik liste tam liste diye sunulmaz.
+Ses kaynağı numaraları çağrılar arasında birleştirilmez. Bu uç nokta tarayıcıya
+ve Teams yan paneline kontrol anahtarı verme yetkisi değildir; kullanıcıya
+sunulacak görünüm kanonik backend toplantı erişim kontrolünden geçmelidir.
+
+Microsoft Graph, katılımcı okuma izninin çağrı oluşturulurken kontrol edildiğini
+belirtir. Bu geliştirme yeni Graph izni istemez veya yönetici onayı vermez;
+mevcut TEST uygulamasıyla gerçek çağrı kabulü ayrıca doğrulanmalıdır. Ham medya
+seçeneği, ayrıca `Calls.AccessMedia.All` gibi medya izinlerinin ve kayıt durumu
+protokolünün uygun kurulmasını gerektirir.
+
+Kaynaklar:
+- https://learn.microsoft.com/en-us/graph/api/call-list-participants
+- https://learn.microsoft.com/en-us/graph/api/resources/mediastream
+- https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/real-time-media-concepts
+- https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/requirements-considerations-application-hosted-media-bots
+
+Kurulum ve gerçek kabul sırası: [Canlı Teams ses bağlantısı](docs/live-teams-setup.md).
 
 Callback sözleşmesi: https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/articles/calls/calling-notifications.html
 

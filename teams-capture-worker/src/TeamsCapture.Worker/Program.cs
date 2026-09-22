@@ -20,6 +20,9 @@ builder.Services.AddSingleton<TeamsMeetingPresenceCoordinator>();
 builder.Services.AddHttpClient<ITeamsMeetingPresenceClient, GraphTeamsMeetingPresenceClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(30))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHttpClient<ITeamsParticipantRosterClient, GraphTeamsParticipantRosterClient>(client =>
+    client.Timeout = TimeSpan.FromSeconds(15))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
 {
     options.MetadataAddress = "https://api.aps.skype.com/v1/.well-known/OpenIdConfiguration";
@@ -89,6 +92,30 @@ app.MapGet("/api/teams/calls/{callId}", (
     return callState is null
         ? Results.NotFound()
         : Results.Ok(new { callId, meetingId = state.ReadMeetingId(callId), state = callState });
+});
+
+app.MapGet("/api/teams/calls/{callId}/participants", async (
+    string callId,
+    HttpContext context,
+    IOptions<TeamsCaptureOptions> settings,
+    TeamsCallbackState state,
+    ITeamsParticipantRosterClient rosterClient,
+    CancellationToken cancellationToken) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    var config = settings.Value;
+    if (!config.IsReadyForRegistration()) return Results.StatusCode(503);
+    if (!ControlKeyMatches(context, config.ControlApiKey!)) return Results.Unauthorized();
+    var meetingId = state.ReadMeetingId(callId);
+    if (meetingId is null) return Results.NotFound();
+    if (state.Read(callId) != "established")
+        return Results.Conflict(new { code = "call_not_established" });
+    var roster = await rosterClient.ReadAsync(callId, cancellationToken).ConfigureAwait(false);
+    if (roster is null || roster.CallId != callId || roster.MeetingId != meetingId)
+        return Results.Problem(statusCode: 502, title: "participant_roster_unavailable");
+    if (state.Read(callId) != "established")
+        return Results.Conflict(new { code = "call_not_established" });
+    return Results.Ok(roster);
 });
 
 app.MapGet("/health", (IOptions<TeamsCaptureOptions> options) => Results.Ok(new
