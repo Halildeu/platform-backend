@@ -3,7 +3,11 @@ package com.example.meeting.service;
 import com.example.meeting.config.MeetingAssigneeDirectoryProperties;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
@@ -160,6 +164,65 @@ public class HttpAssigneeDirectoryClient implements AssigneeDirectoryClient {
     }
 
     private static final String REQUESTER_NOT_IN_DIRECTORY = "requester_not_in_directory";
+
+    /** user-service caps one display-name lookup at 200 subjects. */
+    static final int DISPLAY_NAME_BATCH = 200;
+
+    @Override
+    public Map<String, String> resolveDisplayNames(Collection<String> subjects) {
+        if (!properties.isEnabled()) {
+            throw new ResolutionUnavailableException("assignee directory disabled");
+        }
+        List<String> all = new ArrayList<>(subjects);
+        Map<String, String> names = new HashMap<>();
+        for (int from = 0; from < all.size(); from += DISPLAY_NAME_BATCH) {
+            List<String> batch = all.subList(from, Math.min(all.size(), from + DISPLAY_NAME_BATCH));
+            try {
+                collectNames(batch, names);
+            } catch (RestClientResponseException ex) {
+                if (ex.getStatusCode().value() != HttpStatus.UNAUTHORIZED.value()) {
+                    throw new ResolutionUnavailableException(
+                            "display names returned " + ex.getStatusCode().value());
+                }
+                tokens.invalidate();
+                try {
+                    collectNames(batch, names);
+                } catch (RestClientException | IllegalStateException retry) {
+                    throw new ResolutionUnavailableException("display names unavailable after token refresh");
+                }
+            } catch (RestClientException | IllegalStateException ex) {
+                throw new ResolutionUnavailableException("display names unavailable");
+            }
+        }
+        return names;
+    }
+
+    private void collectNames(List<String> batch, Map<String, String> into) {
+        NamedSubject[] rows = restClient.post()
+                .uri(properties.getUserServiceBaseUrl() + "/api/users/internal/display-names")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.token())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(new DisplayNameLookup(batch))
+                .retrieve()
+                .body(NamedSubject[].class);
+        if (rows == null) {
+            return;
+        }
+        for (NamedSubject row : rows) {
+            if (row != null && row.subject() != null && row.displayName() != null && !row.displayName().isBlank()) {
+                into.put(row.subject(), row.displayName());
+            }
+        }
+    }
+
+    record DisplayNameLookup(@JsonProperty("subjects") List<String> subjects) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record NamedSubject(
+            @JsonProperty("subject") String subject,
+            @JsonProperty("displayName") String displayName) {
+    }
 
     record CandidateSearch(
             @JsonProperty("requesterSubject") String requesterSubject,

@@ -1,6 +1,8 @@
 package com.example.meeting.service;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -42,6 +44,17 @@ public interface AssigneeDirectoryClient {
      */
     default List<AssigneeCandidate> searchCandidates(String requesterSubject, String query, int limit) {
         throw new ResolutionUnavailableException("assignee candidate search not supported");
+    }
+
+    /**
+     * Display names for Keycloak subjects (gitops#3834), via user-service's
+     * {@code POST /api/users/internal/display-names}. Subjects the directory does not know, or
+     * knows only as erased, are absent from the map. Default (test doubles, lambdas): none known.
+     *
+     * @throws ResolutionUnavailableException when the directory cannot be consulted
+     */
+    default Map<String, String> resolveDisplayNames(Collection<String> subjects) {
+        return Map.of();
     }
 
     /** One assignable person as the directory reports it. */

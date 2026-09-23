@@ -929,6 +929,7 @@ public class MeetingService {
                 a.getEffectiveOrgId(),
                 a.getDescription(),
                 a.getAssigneeSubject(),
+                null,
                 a.getStatus(),
                 a.getDueAt(),
                 a.getCreatedBySubject(),
