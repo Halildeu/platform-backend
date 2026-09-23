@@ -720,6 +720,10 @@ public class AudioGatewayProperties {
          */
         public static class LiveAnalyze {
             private boolean enabled = false;
+            private boolean sentenceTriggered = false;
+
+            public boolean isSentenceTriggered() { return sentenceTriggered; }
+            public void setSentenceTriggered(boolean value) { sentenceTriggered = value; }
             /** Absolute meeting-ai base URL (e.g. https://ai.acik.com). No trailing slash. */
             private String baseUrl = "";
             /** Every N transcript results per meeting trigger a POST. */
