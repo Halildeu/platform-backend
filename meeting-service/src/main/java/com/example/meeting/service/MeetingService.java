@@ -1,6 +1,9 @@
 package com.example.meeting.service;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
+import com.example.meeting.dto.v1.admin.AssigneeCandidateResponse;
+import com.example.meeting.dto.v1.admin.AssigneeCandidateSearchRequest;
+import com.example.meeting.dto.v1.admin.AssigneeCandidateSearchResponse;
 import com.example.meeting.dto.v1.admin.MeetingActionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingActionResponse;
 import com.example.meeting.dto.v1.admin.MyMeetingActionResponse;
@@ -651,6 +654,48 @@ public class MeetingService {
                             HttpStatus.UNPROCESSABLE_ENTITY,
                             "assignee_unresolvable: user %d has no subject binding"
                                     .formatted(assigneeUserId)));
+        } catch (AssigneeDirectoryClient.ResolutionUnavailableException ex) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "assignee directory unavailable", ex);
+        }
+    }
+
+    /** Default page of the people picker; user-service enforces the same bounds. */
+    static final int ASSIGNEE_CANDIDATE_DEFAULT_LIMIT = 10;
+    static final int ASSIGNEE_CANDIDATE_MIN_QUERY = 2;
+
+    /**
+     * "Göreve ata" people picker — Faz 24 (gitops#3834).
+     *
+     * <p>Replaces the UIs' call to the admin user grid ({@code GET /api/v1/users},
+     * {@code USER_READ}), which answered 403 to every non-admin and left the picker silently empty.
+     * The gate is the one for creating/updating an action (controller: module:meeting MANAGER) and
+     * the meeting must be visible to the caller's org (404 otherwise — no existence leak). The
+     * directory answers for the REQUESTER ({@code tenant.subject()}, the token's {@code sub}); its
+     * visibility rule — not this service — decides who is offered.
+     *
+     * <p>Deliberately not {@code @Transactional}: the meeting check is one short read, and no
+     * database connection is held while the directory answers.
+     */
+    public AssigneeCandidateSearchResponse searchAssigneeCandidates(
+            AdminTenantContext tenant, UUID meetingId, AssigneeCandidateSearchRequest request) {
+        requireMeeting(tenant, meetingId);
+        String query = request.query().trim();
+        if (query.length() < ASSIGNEE_CANDIDATE_MIN_QUERY) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "query needs at least " + ASSIGNEE_CANDIDATE_MIN_QUERY + " characters");
+        }
+        int limit = request.limit() == null ? ASSIGNEE_CANDIDATE_DEFAULT_LIMIT : request.limit();
+        try {
+            List<AssigneeCandidateResponse> items = assigneeDirectoryClient
+                    .searchCandidates(tenant.subject(), query, limit).stream()
+                    .map(candidate -> new AssigneeCandidateResponse(
+                            candidate.userId(), candidate.name(), candidate.email()))
+                    .toList();
+            return new AssigneeCandidateSearchResponse(items);
+        } catch (AssigneeDirectoryClient.DirectoryAccessDeniedException ex) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN, "requester is not an active directory member", ex);
         } catch (AssigneeDirectoryClient.ResolutionUnavailableException ex) {
             throw new ResponseStatusException(
                     HttpStatus.SERVICE_UNAVAILABLE, "assignee directory unavailable", ex);
