@@ -1050,6 +1050,9 @@ public class AudioGatewayProperties {
              */
             private String maxDelayMode = "flexible";
 
+            /** Optional provider punctuation tuning; null preserves the vendor default. */
+            private Double punctuationSensitivity;
+
             /** Maximum raw PCM bytes per AddAudio WebSocket frame. */
             private int audioChunkBytes = 32_768;
 
@@ -1078,6 +1081,12 @@ public class AudioGatewayProperties {
                     throw new IllegalStateException(
                             "audio.gateway.direct-stt.speechmatics.max-delay-mode "
                                     + "must be flexible or fixed");
+                }
+                if (punctuationSensitivity != null && (!Double.isFinite(punctuationSensitivity)
+                        || punctuationSensitivity < 0.0d || punctuationSensitivity > 1.0d)) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.speechmatics.punctuation-sensitivity "
+                                    + "must be finite and in [0,1]");
                 }
                 if (audioChunkBytes < 1_024 || audioChunkBytes > 65_535) {
                     throw new IllegalStateException(
@@ -1146,6 +1155,14 @@ public class AudioGatewayProperties {
 
             public void setMaxDelayMode(final String maxDelayMode) {
                 this.maxDelayMode = maxDelayMode;
+            }
+
+            public Double getPunctuationSensitivity() {
+                return punctuationSensitivity;
+            }
+
+            public void setPunctuationSensitivity(final Double punctuationSensitivity) {
+                this.punctuationSensitivity = punctuationSensitivity;
             }
 
             public int getAudioChunkBytes() {
