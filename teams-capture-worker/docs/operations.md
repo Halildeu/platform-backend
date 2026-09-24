@@ -2,8 +2,10 @@
 
 Bu sürüm bot katılımı, çağrı durumu, tekrar isteği koruması, bağlantı bakımı,
 botun çıkışı ve anlık katılımcı listesi içindir. Canlı ses/isimli transkript,
-toplantı sırasında karar/aksiyon, Teams yan paneli ve takvim zamanlayıcısı
-tamamlanmış değildir. Kullanıcının istediği kabul bunları birlikte gerektirir.
+toplantı sırasında karar/aksiyon ve Teams yan paneli tamamlanmış değildir.
+Seçilen Outlook etkinliğine zamanlı katılım kodu kapalı başlangıçla mevcuttur;
+kurum izinleri ve gerçek kabulü ayrıca gerekir: [takvim kurulumu](calendar-scheduling.md).
+Kullanıcının istediği kabul bütün bu işlevleri birlikte gerektirir.
 
 ## Kurum ayarları
 

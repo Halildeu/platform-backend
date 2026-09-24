@@ -18,10 +18,10 @@
 - GitOps #3716 kaydındaki Entra uygulaması `meeting-intelligence-teams-bot-test`,
   uygulama kimliği `cb8dc8da-0168-470d-9d35-908fdfcc3fa3`. Kayıt yalnız
   `Calls.JoinGroupCall.All` onayını bildirir; bu bugünkü tenant sorgusu değildir.
-- Backend PR1171 `codex/teams-calendar-capture` dalına birleştirilmiştir.
-  `main` dalında 22 Eylül okumasında `teams-capture-worker` yoktur.
-  PR1173, 24 Eylül'de çakışması giderilmiş ve testleri geçerek incelemeye açılmıştır.
-  Kaynak hazırlığı, deployment ve tenant kabulü anlamına gelmez.
+- Backend PR1187, 24 Eylül'de 24 kontrolü geçerek `main`'e alınmıştır.
+  Önceki #1173, #1181 ve #1182 kaynakları bu birleşimde yer alır; eski PR'lar
+  kapatılmıştır. #1189 registry yayını ekler. Kaynak/paket yayını deployment ve
+  tenant kabulü anlamına gelmez.
 - Kaynak `serviceHostedMediaConfig` ile katılır; ses soketi açmaz.
 - Backend TEST hedefi `aiserver` / `10.9.10.15`, `k3d-test` / `platform-test`.
   Meeting AI ayrı Denetim GPU bilgisayarında, köprü `10.99.0.2:8300`.
@@ -72,8 +72,11 @@ Parola veya özel anahtar sohbet/mail/repo içine yazılmaz. Gerekli alanlar:
 
 **Hesap dışındaki açık işler:** seçilen canlı medya adaptörünün uygulanması,
 kanonik ses/STT/analiz hattına bağlanması, toplantıya yetkili Teams yan paneli
-ve organizatör takviminden zamanlı katılım akışının bağlanması henüz bitmiş
-değildir. Roster ve kontrol düzlemi testlerinin geçmesi bu işleri tamamlamaz.
+ve organizatör takviminden zamanlı katılımın kullanıcı paneline bağlanması henüz
+bitmiş değildir. Seçilen Outlook etkinliği için kapalı başlayan Graph okuyucu ve
+kalıcı zamanlayıcı kodu vardır; kurum izinleri/gerçek kabul ayrıca açıktır
+([takvim kurulumu](calendar-scheduling.md)). Roster ve kontrol düzlemi testlerinin
+geçmesi bütün canlı ürün işlerini tamamlamaz.
 Kuruma hesap talebi yapmak bu işlerin tek engelinin hesap olduğu anlamına gelmez.
 
 1. Mevcut katılım/kontrol paketi ve gerçek tenant ayarları doğrulanır. Callback

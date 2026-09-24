@@ -30,6 +30,18 @@ public sealed class TeamsCaptureOptions
     // Metadata only. Automatic cleanup remains off until the operator supplies retention.
     public int? CompletedCallRetentionHours { get; init; }
 
+    // Calendar polling is opt-in and restricted locally as well as by Microsoft access policies.
+    public bool CalendarSchedulingEnabled { get; init; }
+    public Guid[] CalendarOrganizerIds { get; init; } = [];
+    public string? CalendarScheduleStateFilePath { get; init; }
+
+    public bool IsReadyForCalendarScheduling() => IsReadyForRegistration() && CalendarSchedulingEnabled
+        && CalendarOrganizerIds is { Length: > 0 and <= 100 } && CalendarOrganizerIds.All(id => id != Guid.Empty)
+        && !string.IsNullOrWhiteSpace(CalendarScheduleStateFilePath) && Path.IsPathFullyQualified(CalendarScheduleStateFilePath)
+        && new[] { CallStateFilePath!, CalendarStateFilePath!, CalendarScheduleStateFilePath! }
+            .SelectMany(path => new[] { Path.GetFullPath(path), Path.GetFullPath(path) + ".sqlite3" })
+            .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal).Count() == 6;
+
     public bool IsReadyForRegistration() => Enabled
         && Guid.TryParse(TenantId, out var tenant) && tenant != Guid.Empty
         && Guid.TryParse(ApplicationId, out var application) && application != Guid.Empty
