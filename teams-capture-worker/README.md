@@ -22,6 +22,11 @@ Gerekli Microsoft tarafı: tenant ve application kimlikleri, HTTPS callback,
 
 ## Kaynak uygulama durumu
 
+Seçilen Outlook etkinliğine zamanlı katılım için kapalı başlayan kalıcı
+zamanlayıcı ve gerçek Graph okuma istemcisi eklendi. İptal/saat değişikliği
+katılımdan önce yeniden doğrulanır. Kurum izinleri ve gerçek TEST kabulü açık;
+yan panelden seçim henüz bağlı değildir. [Kurulum ve API](docs/calendar-scheduling.md).
+
 EntraTeamsAccessTokenProvider, kurum secret yönetiminden sağlanan
 `TeamsCapture__ClientSecret` ile tenant-specific client_credentials akışını
 uygular. Kapsam sabit `https://graph.microsoft.com/.default`; ek Graph izni
@@ -100,9 +105,10 @@ ayırır. `liveAudio`, `liveSpeakerAttribution`, `teamsSidePanel` ve
 ayarlar olmadan katılım hazırlanmış sayılmaz; bu kontrol izin/credential
 geçerliliğini veya callback'in Microsoft'tan erişilebilirliğini kanıtlamaz.
 
-Mevcut tenant onayı Calendars izni içermediğinden worker tenant takvimlerini
-Graph üzerinden taramaz. Takvim bilgisi, toplantıyı zaten bilen yetkili platform
-servisinden gelir; böylece yeni ve geniş bir Microsoft izni gerekmez. Gerçek
+Mevcut tenant onayı Calendars izni içermediğinden seçilen etkinlik zamanlayıcısı
+varsayılan kapalıdır. Elle `/join` akışında takvim bilgisi yetkili platform
+servisinden gelir ve ek takvim izni gerekmez. Zamanlayıcı açılacaksa belgelenen
+dar takvim okuma ve onlineMeeting izinleri ayrıca doğrulanır. Gerçek
 secret sağlama, kalıcı volume, callback alan adı ve Teams manifest aktivasyonu
 GitOps3716 üzerinden yürütülür.
 

@@ -18,6 +18,11 @@ builder.Services.AddSingleton<ITeamsCalendarMeetingResolver>(services =>
     services.GetRequiredService<DurableTeamsCalendarMeetingResolver>());
 builder.Services.AddSingleton<TeamsMeetingPresenceCoordinator>();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<TeamsCalendarScheduleStore>();
+builder.Services.AddHttpClient<ITeamsCalendarClient, GraphTeamsCalendarClient>(client => client.Timeout = TimeSpan.FromSeconds(15))
+    .RemoveAllLoggers() // Graph filter contains a private meeting join URL; never log request URIs.
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddHostedService<TeamsCalendarSchedulingService>();
 builder.Services.AddHttpClient<ITeamsCallLifecycleClient, GraphTeamsCallLifecycleClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(15))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -59,6 +64,7 @@ app.Use(async (context, next) =>
 });
 app.UseAuthentication();
 app.UseAuthorization();
+app.MapTeamsCalendarSchedules(ControlKeyMatches);
 app.MapPost("/api/teams/callback", (JsonElement payload, HttpContext context,
     TeamsCallbackState state, IOptions<TeamsCaptureOptions> settings) =>
 {
@@ -145,6 +151,7 @@ app.MapGet("/api/teams/readiness", (HttpContext context, IOptions<TeamsCaptureOp
         tenantAcceptance = "not-verified-by-configuration",
         mediaMode = "service-hosted-presence-only",
         liveAudio = false, liveSpeakerAttribution = false, teamsSidePanel = false, automaticCalendarScan = false,
+        selectedCalendarSchedulingConfigured = config.IsReadyForCalendarScheduling(),
         completedCallRetentionConfigured = config.CompletedCallRetentionHours is not null,
         requirements = new[] { "tenant-callback-and-calling-registration", "approved-media-host-and-adapter",
             "media-permission-and-recording-status", "canonical-audio-analysis-integration", "authorized-teams-side-panel",
