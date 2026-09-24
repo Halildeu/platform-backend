@@ -64,6 +64,25 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
     Optional<MeetingAnalysisRun> findLatestByMeetingIdVisibleToOrg(
             @Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId);
 
+    /** Same occurrence ordering as the default read, restricted to one session. */
+    @Query("""
+            select r
+            from MeetingAnalysisRun r
+            where r.meetingId = :meetingId
+              and (r.orgId = :orgId or (r.orgId is null and r.tenantId = :orgId))
+              and r.transcriptSessionId = :sessionId
+            order by case when r.finalizedAt is null then 1 else 0 end asc,
+                     r.finalizedAt desc,
+                     r.finalizationVersion desc,
+                     r.generatedAt desc,
+                     r.createdAt desc,
+                     r.analysisRunId desc
+            limit 1
+            """)
+    Optional<MeetingAnalysisRun> findLatestBySessionVisibleToOrg(
+            @Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId,
+            @Param("sessionId") String sessionId);
+
     @Query("""
             select r
             from MeetingAnalysisRun r

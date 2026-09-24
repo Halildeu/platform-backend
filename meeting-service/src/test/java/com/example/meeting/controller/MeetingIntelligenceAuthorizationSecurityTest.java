@@ -120,6 +120,38 @@ class MeetingIntelligenceAuthorizationSecurityTest {
                         new SimpleGrantedAuthority("SCOPE_profile"));
     }
 
+    @Test
+    void sessionSelectorDoesNotBypassAuthenticationOrMeetingScope() throws Exception {
+        mockMvc.perform(get("/api/v1/admin/meetings/{meetingId}/intelligence/result", MEETING_ID)
+                        .param("sessionId", "SES-1"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/v1/admin/meetings/{meetingId}/intelligence/result", MEETING_ID)
+                        .param("sessionId", "SES-1").with(nonAdminUserJwt(SUBJECT)))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(meetingIntelligenceResultService, authzService);
+    }
+
+    @Test
+    void sessionSelectorRequiresViewerGate() throws Exception {
+        when(authzService.check(SUBJECT, MeetingAuthz.VIEWER, "module", MeetingAuthz.MODULE))
+                .thenReturn(false);
+        mockMvc.perform(get("/api/v1/admin/meetings/{meetingId}/intelligence/result", MEETING_ID)
+                        .param("sessionId", "SES-1").with(adminScopeJwt(SUBJECT)))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(meetingIntelligenceResultService);
+    }
+
+    @Test
+    void sessionSelectorUsesExistingAuthorizedViewerPath() throws Exception {
+        when(authzService.check(SUBJECT, MeetingAuthz.VIEWER, "module", MeetingAuthz.MODULE))
+                .thenReturn(true);
+        mockMvc.perform(get("/api/v1/admin/meetings/{meetingId}/intelligence/result", MEETING_ID)
+                        .param("sessionId", "SES-1").with(adminScopeJwt(SUBJECT)))
+                .andExpect(status().isOk());
+        org.mockito.Mockito.verify(meetingIntelligenceResultService).getForSession(any(),
+                org.mockito.ArgumentMatchers.eq(MEETING_ID), org.mockito.ArgumentMatchers.eq("SES-1"));
+    }
+
     private static RequestPostProcessor adminScopeJwt(String subject) {
         return jwt().jwt(j -> j.subject(subject))
                 .authorities(new SimpleGrantedAuthority("SCOPE_meeting"));

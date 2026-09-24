@@ -715,19 +715,23 @@ public class AudioGatewayProperties {
          * {@code segment_seq}. Errors are swallowed (logged + metered): a broken
          * live-analyze relay MUST NOT slow or fail the STT forwarding path.
          *
-         * <p>Time-window fallback (a periodic flush even when the segment count
-         * is below the window) is intentionally deferred to a follow-up slice;
-         * segment-count is the simpler primary trigger and covers the desktop
-         * viewer use case.
+         * <p>Underfilled windows flush after maxWaitMs without requiring more
+         * speech. The existing request cadence and single-flight still apply.
          */
         public static class LiveAnalyze {
             private boolean enabled = false;
+            private boolean sentenceTriggered = false;
+
+            public boolean isSentenceTriggered() { return sentenceTriggered; }
+            public void setSentenceTriggered(boolean value) { sentenceTriggered = value; }
             /** Absolute meeting-ai base URL (e.g. https://ai.acik.com). No trailing slash. */
             private String baseUrl = "";
             /** Every N transcript results per meeting trigger a POST. */
             private int segmentWindow = 5;
             /** Minimum time between live-analysis request starts for one meeting. */
             private int minIntervalMs = 15_000;
+            /** Maximum accumulation wait from the first unflushed fragment. */
+            private int maxWaitMs = 15_000;
             /** WebClient connect + read timeout in ms (default 5s). */
             private int timeoutMs = 5_000;
             /** Optional bearer token; when empty the request goes unauthenticated. */
@@ -770,6 +774,17 @@ public class AudioGatewayProperties {
 
             public int getTimeoutMs() {
                 return timeoutMs;
+            }
+
+            public int getMaxWaitMs() {
+                return maxWaitMs;
+            }
+
+            public void setMaxWaitMs(int maxWaitMs) {
+                if (maxWaitMs < 100 || maxWaitMs > 300_000) {
+                    throw new IllegalArgumentException("live analyze maxWaitMs must be 100..300000");
+                }
+                this.maxWaitMs = maxWaitMs;
             }
 
             public void setTimeoutMs(int timeoutMs) {

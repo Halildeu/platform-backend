@@ -1,5 +1,7 @@
 package com.example.transcript.directstt;
 
+import com.example.common.meeting.events.SpeakerAttribution;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
@@ -26,8 +28,18 @@ public record DirectSttTranscriptResultEvent(
         String correlationId,
         String sha256,
         String textDraft,
-        Double durationSeconds
+        Double durationSeconds,
+        SpeakerAttribution speakerAttribution
 ) {
+
+    public DirectSttTranscriptResultEvent(String entryId, UUID tenantId, String sourceTenantId,
+            String sourceUserId, UUID meetingId, String sourceSessionId, long transportEpoch,
+            long windowSeq, long firstChunkSeq, long lastChunkSeq, long chunkStartedAtMs,
+            String correlationId, String sha256, String textDraft, Double durationSeconds) {
+        this(entryId, tenantId, sourceTenantId, sourceUserId, meetingId, sourceSessionId,
+                transportEpoch, windowSeq, firstChunkSeq, lastChunkSeq, chunkStartedAtMs,
+                correlationId, sha256, textDraft, durationSeconds, null);
+    }
 
     public static final String SCHEMA_VERSION = "audioGateway.directSttTranscriptResult.v1";
     public static final String EVENT_TYPE = "DIRECT_STT_TRANSCRIPT_RESULT";
@@ -54,13 +66,13 @@ public record DirectSttTranscriptResultEvent(
         if (!STATUS_UTTERANCE.equals(status)) {
             return false;
         }
-        requireEquals(fields, "schemaVersion", SCHEMA_VERSION);
+        requireSchema(fields);
         requireEquals(fields, "eventType", EVENT_TYPE);
         return true;
     }
 
     public static DirectSttTranscriptResultEvent parse(Map<String, String> fields, String entryId) {
-        requireEquals(fields, "schemaVersion", SCHEMA_VERSION);
+        requireSchema(fields);
         requireEquals(fields, "eventType", EVENT_TYPE);
         String sourceTenantId = required(fields, "tenantId", MAX_SOURCE_ID_LEN);
         String sourceSessionId = required(fields, "sessionId", MAX_SOURCE_ID_LEN);
@@ -106,7 +118,32 @@ public record DirectSttTranscriptResultEvent(
                 optional(fields, "correlationId", MAX_CORRELATION_ID_LEN),
                 optional(fields, "sha256", MAX_SHA256_LEN),
                 textDraft,
-                durationSeconds);
+                durationSeconds,
+                parseAttribution(fields, sourceTenantId, meetingId, sourceSessionId,
+                        transportEpoch, textDraft, durationSeconds));
+    }
+
+    private static SpeakerAttribution parseAttribution(Map<String, String> fields, String tenant,
+            UUID meeting, String session, long epoch, String text, Double duration) {
+        if (SCHEMA_VERSION.equals(fields.get("schemaVersion"))) {
+            if (fields.containsKey("speakerAttribution")) throw invalid("speaker attribution requires v2");
+            return null;
+        }
+        if (duration == null || duration > Long.MAX_VALUE / 1000d) throw invalid("v2 duration is required");
+        try {
+            return SpeakerAttribution.parse(fields.get("speakerAttribution"),
+                    SpeakerAttribution.scope(tenant, meeting.toString(), session, epoch),
+                    text, Math.round(duration * 1000d));
+        } catch (IllegalArgumentException ex) {
+            throw invalid("invalid anonymous speaker attribution");
+        }
+    }
+
+    private static void requireSchema(Map<String, String> fields) {
+        String schema = required(fields, "schemaVersion", 128);
+        if (!SCHEMA_VERSION.equals(schema) && !SpeakerAttribution.SCHEMA_V2.equals(schema)) {
+            throw invalid("schemaVersion is not supported");
+        }
     }
 
     private static SourceWindow sourceWindow(Map<String, String> fields) {

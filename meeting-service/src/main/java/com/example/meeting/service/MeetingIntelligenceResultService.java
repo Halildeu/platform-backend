@@ -63,12 +63,28 @@ public class MeetingIntelligenceResultService {
     public MeetingIntelligenceResultResponse getLatest(
             AdminTenantContext tenant,
             UUID meetingId) {
+        return getResult(tenant, meetingId, null);
+    }
+
+    @Transactional
+    public MeetingIntelligenceResultResponse getForSession(
+            AdminTenantContext tenant, UUID meetingId, String sessionId) {
+        if (sessionId == null || sessionId.isBlank() || sessionId.length() > 64) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_SESSION_ID");
+        }
+        return getResult(tenant, meetingId, sessionId);
+    }
+
+    private MeetingIntelligenceResultResponse getResult(
+            AdminTenantContext tenant, UUID meetingId, String sessionId) {
         meetingRepository.findVisibleToOrgAndId(tenant.tenantId(), meetingId)
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "MEETING_NOT_FOUND"));
 
-        MeetingAnalysisRun run = runRepository
-                .findLatestByMeetingIdVisibleToOrg(meetingId, tenant.tenantId())
+        // A missing selected session must not disclose a different session's result.
+        MeetingAnalysisRun run = (sessionId == null
+                ? runRepository.findLatestByMeetingIdVisibleToOrg(meetingId, tenant.tenantId())
+                : runRepository.findLatestBySessionVisibleToOrg(meetingId, tenant.tenantId(), sessionId))
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "ANALYSIS_RESULT_NOT_FOUND"));
 
@@ -124,7 +140,8 @@ public class MeetingIntelligenceResultService {
         return new MeetingIntelligenceActionItem(
                 action.getDescription(),
                 action.getAssigneeSubject(),
-                action.getDueAt() == null ? null : action.getDueAt().toString());
+                action.getDueText() != null ? action.getDueText()
+                        : action.getDueAt() == null ? null : action.getDueAt().toString());
     }
 
     private <T> List<T> readEvidence(

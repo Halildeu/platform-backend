@@ -24,6 +24,11 @@
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>common-meeting-events</artifactId>
+            <version>1.0.0</version>
+        </dependency>
         <!-- Spring Cloud Gateway WebFlux (api-gateway pattern reuse) -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>

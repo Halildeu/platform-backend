@@ -23,6 +23,7 @@ import com.example.meeting.repository.MeetingRepository;
 import com.example.meeting.repository.MeetingSessionRepository;
 import com.example.meeting.security.AdminTenantContext;
 import java.util.Optional;
+import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -119,6 +120,29 @@ class MeetingServiceActionAssignmentEventTest {
         when(actionRepository.findByIdAndMeetingIdVisibleToOrg(ACTION_ID, MEETING_ID, TENANT_ID))
                 .thenReturn(Optional.of(action));
         return action;
+    }
+
+    @Test
+    void manualReplacementClearsAiDueTextForExplicitInstantOrNull() {
+        stubMeeting();
+        MeetingAction action = existingAction(null, 3L);
+        action.setDueText("Perşembe günü");
+        stubSaveAndFlush(4L);
+        Instant due = Instant.parse("2026-07-20T09:00:00Z");
+
+        service().updateAction(TENANT, MEETING_ID, ACTION_ID,
+                new MeetingActionUpdateRequest("Raporu hazirla", null, null,
+                        MeetingActionStatus.OPEN, due, 3L));
+        assertThat(action.getDueText()).isNull();
+        assertThat(action.getDueAt()).isEqualTo(due);
+
+        action.setDueText("Cuma günü");
+        service().updateAction(TENANT, MEETING_ID, ACTION_ID,
+                new MeetingActionUpdateRequest("Raporu hazirla", null, null,
+                        MeetingActionStatus.OPEN, null, 4L));
+        assertThat(action.getDueText()).isNull();
+        assertThat(action.getDueAt()).isNull();
+        verify(eventOutboxRepository, never()).save(any());
     }
 
     @Test

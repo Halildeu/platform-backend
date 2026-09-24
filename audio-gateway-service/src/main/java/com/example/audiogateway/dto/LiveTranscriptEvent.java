@@ -3,6 +3,7 @@ package com.example.audiogateway.dto;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.example.audiogateway.service.DirectSttTranscriptResultContext;
+import com.example.common.meeting.events.SpeakerAttribution;
 import java.util.List;
 
 /**
@@ -61,7 +62,8 @@ public record LiveTranscriptEvent(
         /** Sequence space this increment belongs to — first half of the ordering key. */
         long transportEpoch,
         /** Position within that space — second half of the ordering key. */
-        long windowSeq) {
+        long windowSeq,
+        SpeakerAttribution speakerAttribution) {
 
     /** Status of a raw committed chunk, cut on an acoustic boundary. */
     public static final String STATUS_DRAFT = "DRAFT";
@@ -71,6 +73,15 @@ public record LiveTranscriptEvent(
 
     public LiveTranscriptEvent {
         sourceEventIds = sourceEventIds == null ? List.of() : List.copyOf(sourceEventIds);
+    }
+
+    public LiveTranscriptEvent(String eventId, String text, String language, Double languageProbability,
+            Double durationSeconds, Double elapsedMs, String model, String computeType, String device,
+            com.fasterxml.jackson.databind.JsonNode segments, String status, String assemblyReason,
+            List<String> sourceEventIds, long transportEpoch, long windowSeq) {
+        this(eventId, text, language, languageProbability, durationSeconds, elapsedMs, model,
+                computeType, device, segments, status, assemblyReason, sourceEventIds, transportEpoch,
+                windowSeq, null);
     }
 
     /** Build the viewer-facing event from a result and the context that carried it. */
@@ -95,6 +106,7 @@ public record LiveTranscriptEvent(
                 assembly == null ? null : assembly.reason(),
                 assembly == null ? List.of() : assembly.sourceEventIds(),
                 context == null ? 0L : context.transportEpoch(),
-                context == null ? 0L : context.windowSeq());
+                context == null ? 0L : context.windowSeq(),
+                result == null ? null : result.speakerAttribution());
     }
 }

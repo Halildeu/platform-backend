@@ -16,6 +16,95 @@ class SpeechmaticsLiveProtocolAdapterTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
+    void requestsAnonymousDiarizationAndPreservesOverlappingWordAttribution() throws Exception {
+        var adapter = adapter();
+        var config = objectMapper.readTree(adapter.startMessage(16000)).path("transcription_config");
+        assertThat(config.path("diarization").asText()).isEqualTo("speaker");
+        assertThat(config.has("speakers")).isFalse();
+        assertThat(config.has("get_speakers")).isFalse();
+        var event = objectMapper.readTree(adapter.translate("""
+                {"message":"AddTranscript","metadata":{"transcript":"Hello world.","end_time":1},
+                 "results":[
+                  {"type":"word","start_time":0,"end_time":0.7,"alternatives":[{"content":"Hello","speaker":"S1"}]},
+                  {"type":"word","start_time":0.5,"end_time":1,"alternatives":[{"content":"world","speaker":"S2"}]},
+                  {"type":"punctuation","start_time":1,"end_time":1,"alternatives":[{"content":".","speaker":"S2"}]}]}
+                """, 16000).getFirst());
+        assertThat(event.path("text").asText()).isEqualTo("Hello world.");
+        assertThat(event.path("speakerTurns").size()).isEqualTo(3);
+        assertThat(event.path("speakerTurns").path(1).path("speaker").asText()).isEqualTo("S2");
+        assertThat(event.path("speakerTurns").path(1).path("startMs").asLong()).isEqualTo(500);
+        assertThat(event.path("speakerTurns").path(1).path("textStart").asInt()).isEqualTo(6);
+    }
+
+    @Test
+    void quantizesSubMillisecondWordBoundariesInsideTheirSampleWindow() throws Exception {
+        var adapter = adapter();
+        var first = objectMapper.readTree(adapter.translate("""
+                {"message":"AddTranscript","metadata":{"transcript":"Hello","end_time":0.1008},
+                 "results":[{"type":"word","start_time":0,"end_time":0.1008,
+                 "alternatives":[{"content":"Hello","speaker":"S1"}]}]}
+                """, 16000).getFirst());
+        assertThat(first.path("speakerTurns").size()).isEqualTo(1);
+        assertThat(first.path("speakerTurns").path(0).path("endMs").asLong()).isEqualTo(100);
+        var next = objectMapper.readTree(adapter.translate("""
+                {"message":"AddTranscript","metadata":{"transcript":"world","end_time":0.2016},
+                 "results":[{"type":"word","start_time":0.1008,"end_time":0.2016,
+                 "alternatives":[{"content":"world","speaker":"S1"}]}]}
+                """, 16000).getFirst());
+        assertThat(next.path("speakerTurns").size()).isEqualTo(1);
+        assertThat(next.path("speakerTurns").path(0).path("startMs").asLong()).isZero();
+        assertThat(next.path("speakerTurns").path(0).path("endMs").asLong()).isEqualTo(100);
+    }
+
+    @Test
+    void repeatedProviderEndDoesNotDiscardFollowingWordAttribution() throws Exception {
+        var adapter = adapter();
+        adapter.translate("""
+                {"message":"AddTranscript","metadata":{"transcript":"Hello","end_time":0.5},
+                 "results":[{"type":"word","start_time":0,"end_time":0.5,
+                 "alternatives":[{"content":"Hello","speaker":"S1"}]}]}
+                """, 16000);
+        var punctuation = objectMapper.readTree(adapter.translate("""
+                {"message":"AddTranscript","metadata":{"transcript":".","end_time":0.5},
+                 "results":[{"type":"punctuation","start_time":0.5,"end_time":0.5,
+                 "alternatives":[{"content":".","speaker":"S1"}]}]}
+                """, 32000).getFirst());
+        assertThat(punctuation.path("speakerTurns").size()).isEqualTo(1);
+        var following = objectMapper.readTree(adapter.translate("""
+                {"message":"AddTranscript","metadata":{"transcript":"Again","end_time":1.5},
+                 "results":[{"type":"word","start_time":1,"end_time":1.5,
+                 "alternatives":[{"content":"Again","speaker":"S2"}]}]}
+                """, 40000).getFirst());
+        assertThat(following.path("source_start_sample").asLong()).isEqualTo(16000);
+        assertThat(following.path("speakerTurns").path(0).path("speaker").asText()).isEqualTo("S2");
+        assertThat(following.path("speakerTurns").path(0).path("startMs").asLong()).isZero();
+        assertThat(following.path("speakerTurns").path(0).path("endMs").asLong()).isEqualTo(500);
+        assertThat(following.path("text").asText()).isEqualTo("Again");
+    }
+
+    @Test
+    void doesNotClampGenuinelyOutOfWindowSpeakerTimesIntoValidMetadata() throws Exception {
+        var event = objectMapper.readTree(adapter().translate("""
+                {"message":"AddTranscript","metadata":{"transcript":"Hello","end_time":0.1},
+                 "results":[{"type":"word","start_time":0,"end_time":0.15,
+                 "alternatives":[{"content":"Hello","speaker":"S1"}]}]}
+                """, 16000).getFirst());
+        assertThat(event.path("text").asText()).isEqualTo("Hello");
+        assertThat(event.has("speakerTurns")).isFalse();
+    }
+
+    @Test
+    void unalignableProviderWordsNeverReplaceAuthoritativeTextOrGuessSpeakers() throws Exception {
+        var event = objectMapper.readTree(adapter().translate("""
+                {"message":"AddTranscript","metadata":{"transcript":"Keep this.","end_time":1},
+                 "results":[{"type":"word","start_time":0,"end_time":1,
+                 "alternatives":[{"content":"different","speaker":"S1"}]}]}
+                """, 16000).getFirst());
+        assertThat(event.path("text").asText()).isEqualTo("Keep this.");
+        assertThat(event.has("speakerTurns")).isFalse();
+    }
+
+    @Test
     void enablesPartialsAndUsesTheConfiguredFinalizationPolicy() throws Exception {
         final SpeechmaticsLiveProtocolAdapter adapter = adapter();
 

@@ -51,8 +51,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Testcontainers
 class ArchiveServiceIntegrationTest {
 
-    private static final DockerImageName MINIO_IMAGE =
-            DockerImageName.parse("minio/minio:RELEASE.2025-09-07T16-13-09Z");
+    // Same release, pinned multi-platform manifest; Docker Hub no longer serves the fixture.
+    private static final DockerImageName MINIO_IMAGE = DockerImageName.parse(
+            "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
+                    + "@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e");
     private static final String MINIO_USER = "minioadmin";
     private static final String MINIO_PASS = "minioadmin";
 

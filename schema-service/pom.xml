@@ -55,6 +55,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- gitops#3652: the snapshot phase timers need a scrapeable registry;
+             application-k8s.yml already exposes the `prometheus` endpoint, which
+             404'd without this artifact (every other backend service ships it). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

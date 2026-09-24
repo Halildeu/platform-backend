@@ -370,6 +370,9 @@ jobs:
       - name: Pre-install reactor deps (common-auth + common-export — not in Maven Central)
         run: ./mvnw -q -pl common-auth,common-export install -DskipTests
 
+      - name: Pre-install anonymous speaker contract
+        run: ./mvnw -q -pl common-meeting-events install -DskipTests
+
       - name: Run audio-gateway-service tests
         run: ./mvnw -pl audio-gateway-service test
 

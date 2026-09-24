@@ -1,5 +1,7 @@
 package com.example.audiogateway.service;
 
+import com.example.common.meeting.events.SpeakerAttribution;
+
 import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.dto.TranscriptResult;
@@ -16,6 +18,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -67,7 +70,16 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
     private final URI upstreamUri;
     private final ObjectMapper objectMapper;
     private final Scheduler transcriptSinkScheduler;
-    private final Set<String> activeSessions = ConcurrentHashMap.newKeySet();
+    /**
+     * Close code sent to a connection replaced by a newer authenticated one of the
+     * same session owner. Application range (4000-4999), so clients can tell it
+     * apart from a policy rejection.
+     */
+    static final CloseStatus SUPERSEDED = new CloseStatus(4000, "superseded");
+
+    private final ConcurrentHashMap<String, WebSocketSession> activeSessions =
+            new ConcurrentHashMap<>();
+    private final Counter supersededConnections;
     private final Counter acceptedFrames;
     private final Counter duplicateFrames;
     private final Counter rejectedFrames;
@@ -109,7 +121,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 "audio_gateway_live_stream_transcript_results_total", "outcome", "persisted");
         this.transcriptResultFailures = meters.counter(
                 "audio_gateway_live_stream_transcript_results_total", "outcome", "failed");
-        Gauge.builder("audio_gateway_live_stream_connections", activeSessions, Set::size)
+        this.supersededConnections = meters.counter("audio_gateway_live_stream_superseded_total");
+        Gauge.builder("audio_gateway_live_stream_connections", activeSessions, Map::size)
                 .register(meters);
     }
 
@@ -170,10 +183,26 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             || record.channels() != 1) {
                         return clientSession.close(CloseStatus.NOT_ACCEPTABLE);
                     }
-                    if (!activeSessions.add(sessionId)) {
-                        return clientSession.close(CloseStatus.POLICY_VIOLATION);
-                    }
                     final String correlationId = correlationId(clientSession);
+                    // Latest connection of the verified owner wins. A client whose
+                    // network dropped cannot send a close frame, so its old socket
+                    // lingers here until TCP gives up (minutes). Rejecting the
+                    // reconnect in that window left the realtime lane — the only STT
+                    // input for Speechmatics — dead for the rest of the meeting
+                    // (platform-desktop#138). Live relay sequence state lives in the
+                    // registry and survives the swap, so the replay stays
+                    // duplicate-suppressed and contiguous.
+                    final WebSocketSession previous = activeSessions.put(sessionId, clientSession);
+                    if (previous != null && previous != clientSession) {
+                        supersededConnections.increment();
+                        log.info(
+                                "Live STT WebSocket superseded by owner reconnect sessionId={} correlationId={}",
+                                sessionId,
+                                correlationId);
+                        previous.close(SUPERSEDED)
+                                .onErrorResume(error -> Mono.empty())
+                                .subscribe();
+                    }
                     safeAudit(new AuditEvent.TranscriptEventsAccessed(
                             record.sessionId(),
                             record.tenantId(),
@@ -220,7 +249,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                     error -> clientSession.close(CloseStatus.BAD_DATA))
                             .onErrorResume(error -> clientSession.close(CloseStatus.SERVER_ERROR))
                             .doFinally(signal -> {
-                                activeSessions.remove(sessionId);
+                                // Only this connection's own entry: a superseded bridge
+                                // finishing late must not unregister its replacement.
+                                activeSessions.remove(sessionId, clientSession);
                             });
                 });
     }
@@ -672,9 +703,21 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         null,
                         null,
                         null,
-                        null);
+                        null,
+                        finalEvent.speakerTurns() == null ? null : new SpeakerAttribution(
+                                SpeakerAttribution.scope(Long.toString(record.tenantId()), record.meetingId(),
+                                        record.sessionId(), window.epoch()), finalEvent.speakerTurns()));
                 final DirectSttTranscriptResultContext context =
                         liveTranscriptContext(record, correlationId, finalEvent.reason(), window);
+                final String clientEvent;
+                if (result.speakerAttribution() != null) {
+                    final var publicEvent = (com.fasterxml.jackson.databind.node.ObjectNode) readEvent(event);
+                    publicEvent.remove("speakerTurns");
+                    publicEvent.set("speakerAttribution", objectMapper.valueToTree(result.speakerAttribution()));
+                    clientEvent = publicEvent.toString();
+                } else {
+                    clientEvent = event;
+                }
                 return persistLiveTranscriptResult(result, context)
                         .doOnSuccess(ignored -> transcriptResultSuccess.increment())
                         .doOnError(error -> {
@@ -688,7 +731,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                     correlationId);
                         })
                         .thenReturn(new RelayedEvent(
-                                client.textMessage(event), false, false, false));
+                                client.textMessage(clientEvent), false, false, false));
             }
             final boolean drained = parsed instanceof UpstreamEvent.Drained;
             if (drained) {
@@ -870,7 +913,10 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         if (!"final".equals(type)) {
             throw new IllegalArgumentException("live STT emitted unknown event type");
         }
-        requireFieldsWithOptionalTimings(root, Set.of(
+        final JsonNode speakerTurns = root.get("speakerTurns");
+        final JsonNode validationRoot = root.deepCopy();
+        ((com.fasterxml.jackson.databind.node.ObjectNode) validationRoot).remove("speakerTurns");
+        requireFieldsWithOptionalTimings(validationRoot, Set.of(
                 "type", "seq", "text", "reason", "elapsed_ms", "rms",
                 "source_start_sample", "source_end_sample"));
         final JsonNode sequence = root.path("seq");
@@ -904,7 +950,17 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         }
         return new UpstreamEvent.Final(
                 sequence.longValue(), text.textValue(), reason, elapsed.doubleValue(),
-                sourceStart.longValue(), sourceEnd.longValue());
+                sourceStart.longValue(), sourceEnd.longValue(),
+                speakerTurns == null ? null : SpeakerAttribution.parseTurns(speakerTurns, text.textValue(),
+                        (sourceEnd.longValue() - sourceStart.longValue()) / 16));
+    }
+
+    private JsonNode readEvent(String event) {
+        try {
+            return objectMapper.readTree(event);
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("live STT event is not valid JSON");
+        }
     }
 
     private static boolean hasSupportedCapabilities(final JsonNode capabilities) {
@@ -1101,7 +1157,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 String reason,
                 Double elapsedMs,
                 long sourceStartSample,
-                long sourceEndSample)
+                long sourceEndSample,
+                java.util.List<SpeakerAttribution.Turn> speakerTurns)
                 implements UpstreamEvent {
         }
 

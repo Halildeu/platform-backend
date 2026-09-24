@@ -24,7 +24,8 @@ Desktop must not connect directly to platform-ai and must not consume Redis.
 - Separate durable REST and reconnect-stable live relay sequence state
 - First live relay of REST-accepted audio, live duplicate suppression, and
   durable-baseline reconnect jumps
-- One active connection per session
+- One active connection per session; an owner reconnect supersedes the stale one
+  (`4000 superseded`)
 - Strict bounded `{"type":"eof"}` terminal control relay
 - Bounded drain wait with `eof_ack`/`final`/`drained` client relay
 - In-memory PCM16-to-float32 conversion
