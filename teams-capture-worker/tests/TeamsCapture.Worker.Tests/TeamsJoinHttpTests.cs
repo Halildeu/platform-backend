@@ -16,6 +16,39 @@ public sealed class TeamsJoinHttpTests
     private const string ControlKey = "01234567890123456789012345678901";
 
     [Fact]
+    public async Task Conflicting_calendar_ids_for_one_meeting_cannot_fill_durable_capacity()
+    {
+        using var factory = new Factory();
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Teams-Control-Key", ControlKey);
+        var meetingId = Guid.NewGuid();
+        var organizer = Guid.NewGuid().ToString();
+        for (var i = 0; i < 1000; i++)
+        {
+            var response = await client.PostAsJsonAsync($"/api/teams/meetings/{meetingId}/join", new
+            {
+                calendarEventId = $"event-{i}", threadId = "19:meeting@thread.v2", messageId = "0",
+                organizerUserId = organizer, correlationId = "corr-valid"
+            });
+            Assert.Equal(i == 0 ? HttpStatusCode.Accepted : HttpStatusCode.BadRequest, response.StatusCode);
+        }
+        Assert.Equal(1, factory.TeamsClient.Requests);
+        var settings = factory.Services.GetRequiredService<IOptions<TeamsCaptureOptions>>();
+        var restarted = new DurableTeamsCalendarMeetingResolver(settings);
+        Assert.NotNull(await restarted.ResolveAsync("event-0", CancellationToken.None));
+        Assert.Null(await restarted.ResolveAsync("event-999", CancellationToken.None));
+        using var snapshot = System.Text.Json.JsonDocument.Parse(SnapshotTestStorage.Read(settings.Value.CalendarStateFilePath!));
+        Assert.Single(snapshot.RootElement.EnumerateObject());
+        var valid = await client.PostAsJsonAsync($"/api/teams/meetings/{Guid.NewGuid()}/join", new
+        {
+            calendarEventId = "other-meeting", threadId = "19:other@thread.v2", messageId = "0",
+            organizerUserId = organizer, correlationId = "corr-other"
+        });
+        Assert.Equal(HttpStatusCode.Accepted, valid.StatusCode);
+        Assert.Equal(2, factory.TeamsClient.Requests);
+    }
+
+    [Fact]
     public async Task Invalid_correlation_ids_do_not_consume_durable_calendar_capacity()
     {
         using var factory = new Factory();
@@ -111,7 +144,7 @@ public sealed class TeamsJoinHttpTests
         public Task<TeamsJoinReceipt?> JoinAsync(MeetingPresenceCommand command, CancellationToken cancellationToken)
         {
             Requests++;
-            return Task.FromResult<TeamsJoinReceipt?>(new TeamsJoinReceipt("call-1"));
+            return Task.FromResult<TeamsJoinReceipt?>(new TeamsJoinReceipt($"call-{Requests}"));
         }
     }
 }

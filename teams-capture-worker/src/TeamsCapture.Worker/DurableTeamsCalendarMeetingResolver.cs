@@ -45,6 +45,9 @@ public sealed class DurableTeamsCalendarMeetingResolver : ITeamsCalendarMeetingR
         lock (gate)
         {
             if (meetings.TryGetValue(calendarEventId, out var existing)) return existing == proposed;
+            // One canonical meeting has one calendar reference, matching the join
+            // reservation contract. Check under the same lock before adding a row.
+            if (meetings.Values.Any(value => value.MeetingId == meetingId)) return false;
             if (meetings.Count >= 1000) return false;
             var snapshot = new Dictionary<string, CalendarReference>(meetings, StringComparer.Ordinal);
             snapshot.Add(calendarEventId, proposed);

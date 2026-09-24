@@ -21,9 +21,12 @@ public sealed class DurableTeamsCalendarMeetingResolverTests
             Assert.True(first.Register(meetingId, "event-1", meeting));
             Assert.False(first.Register(meetingId, "event-1", meeting with { MessageId = "different" }));
             Assert.False(first.Register(Guid.NewGuid(), "event-1", meeting));
+            Assert.False(first.Register(meetingId, "other-event", meeting));
 
             var restored = new DurableTeamsCalendarMeetingResolver(options);
             Assert.Equal(meeting, await restored.ResolveAsync("event-1", CancellationToken.None));
+            Assert.False(restored.Register(meetingId, "other-event", meeting));
+            Assert.Null(await restored.ResolveAsync("other-event", CancellationToken.None));
         }
         finally
         {
