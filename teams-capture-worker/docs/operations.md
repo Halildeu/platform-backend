@@ -83,10 +83,18 @@ Teams çağrı durumu değildir. İmaj kaynak SHA'sı ve imageID, `smoke.json` i
 
 `teams-worker-container-SHA` artifact'inde `teams-worker-image.tar.gz`,
 `SOURCE_COMMIT`, `smoke.json` ve `SHA256SUMS` vardır. Archive Docker image arşividir;
-`docker load` ile içeri alınabilir. CI registry'ye push veya ortama deploy yapmaz.
-Güvenilen PR CI kaynağı üzerinden SHA256 doğrulandıktan sonra operatör imajı
-kurum registry'sine taşır ve **registry digest** değerini canonical GitOps TEST
-overlay'ine sabitler. Yerel imageID veya arşiv hash'i registry digest yerine geçmez.
+`docker load` ile içeri alınabilir. PR koşusu registry'ye push yapmaz.
+Main'e alınmış kaynak için aynı workflow, test edilen arşivi ayrı yayın işinde
+SHA256, kaynak commit'i, container smoke ve imageID ile tekrar doğrular.
+İmaj yeniden derlenmeden `ghcr.io/halildeu/platform-backend-teams-capture-worker`
+deposuna tam commit SHA'sı ile gönderilir. Registry'den digest ile okunan manifestin
+config digest'i test edilen imageID ile aynı olmalıdır; ardından kaynak attestasyonu
+eklenir. `teams-worker-registry-SHA` artifact'i kaynak/imageID/registry digest
+kanıtını taşır. Manuel çalıştırma yalnız main ve onun tam `expected_source_sha`
+değeriyle kabul edilir; feature branch veya farklı commit yayımlanmaz.
+Yayın ve attestasyon işi başarılı olduktan sonra **registry digest** canonical
+GitOps TEST overlay'ine sabitlenir. Yerel imageID veya arşiv hash'i registry
+digest yerine geçmez. Bu workflow ortama deploy yapmaz.
 PR CI SHA'sı deneme birleşim commit'idir; `github.sha` ile kayda alınır.
 
 GitOps kurulum sözleşmesi: tek replika, `Recreate` stratejisi, kalıcı

@@ -185,6 +185,11 @@ sonrasında salt okunur `scripts/preflight.mjs`, beklenen uygulama/tenant kimli�
 ile callback/control erişimini kontrol eder. Bu hazırlık paketi canlı medya,
 Teams yan paneli veya gerçek toplantı kabulü olarak sunulmaz.
 
+Main koşularında doğrulanan aynı arşiv GHCR'ye yayımlanır, registry manifestinin
+test edilen imageID'yi taşıdığı kontrol edilir ve kaynak attestasyonu eklenir.
+PR koşuları yayın yetkisi almaz. Registry digest ve kaynak commit'i ayrı artifact
+olarak teslim edilir; TEST kurulumu canonical GitOps değişikliği gerektirir.
+
 Çağrı yaşam döngüsü kaynakları:
 - https://learn.microsoft.com/en-us/graph/api/call-keepalive?view=graph-rest-1.0
 - https://learn.microsoft.com/en-us/graph/api/call-delete?view=graph-rest-1.0

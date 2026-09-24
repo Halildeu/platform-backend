@@ -19,6 +19,7 @@ import com.example.meeting.dto.v1.admin.AssigneeCandidateSearchResponse;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.MeetingAuthz;
 import com.example.meeting.security.TenantContextResolver;
+import com.example.meeting.service.ActionAssigneeNames;
 import com.example.meeting.service.MeetingService;
 import java.util.List;
 import java.util.UUID;
@@ -52,6 +53,8 @@ class MeetingAssigneeCandidatesSecurityTest {
     @Autowired private MockMvc mockMvc;
     @MockitoBean private MeetingService meetingService;
     @MockitoBean private TenantContextResolver tenantContextResolver;
+    // gitops#3834: the controller names assignees after the service returns; unused here.
+    @MockitoBean private ActionAssigneeNames assigneeNames;
     @MockitoBean private OpenFgaAuthzService authzService;
 
     @BeforeEach

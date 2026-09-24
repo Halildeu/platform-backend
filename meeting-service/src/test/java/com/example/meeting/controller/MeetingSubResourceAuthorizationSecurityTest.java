@@ -12,6 +12,7 @@ import com.example.meeting.config.SecurityConfig;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.MeetingAuthz;
 import com.example.meeting.security.TenantContextResolver;
+import com.example.meeting.service.ActionAssigneeNames;
 import com.example.meeting.service.MeetingService;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,6 +39,8 @@ class MeetingSubResourceAuthorizationSecurityTest {
     @Autowired private MockMvc mockMvc;
     @MockitoBean private MeetingService meetingService;
     @MockitoBean private TenantContextResolver tenantContextResolver;
+    // gitops#3834: the controller names assignees after the service returns; unused here.
+    @MockitoBean private ActionAssigneeNames assigneeNames;
     @MockitoBean private OpenFgaAuthzService authzService;
 
     @BeforeEach
