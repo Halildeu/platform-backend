@@ -4,11 +4,15 @@ Provider word-final events are transport fragments, not UI paragraphs. The adapt
 keeps the provider transcript authoritative, including punctuation, source timing
 and speaker spans; it never guesses which full stops after names to delete.
 
-`AUDIO_GATEWAY_DIRECT_STT_SPEECHMATICS_PUNCTUATION_SENSITIVITY` optionally sets
+In the Kubernetes profile, `AUDIO_GATEWAY_SPEECHMATICS_PUNCTUATION_SENSITIVITY` optionally sets
 `transcription_config.punctuation_overrides.sensitivity` in StartRecognition.
 It must be finite and between 0 and 1. Unset preserves the provider default (0.5).
 Lower values request fewer marks, but do not guarantee correct grammar or owners.
 All punctuation types remain enabled. This applies only to newly opened sessions.
+The equivalent Spring property is
+`audio.gateway.direct-stt.speechmatics.punctuation-sensitivity`. The explicit
+Kubernetes placeholder is tested: underscores inside hyphenated property names
+must not be assumed to bind through relaxed environment-variable lookup.
 
 Reference: https://docs.speechmatics.com/api-ref/realtime-transcription-websocket
 
