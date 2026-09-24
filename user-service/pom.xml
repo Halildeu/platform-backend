@@ -23,6 +23,11 @@
 
 
     <dependencies>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- D7 (platform-k8s-gitops 2026-04-15): Eureka KALDIRILDI.
              K8s native DNS kullanılır (svc.cluster.local). -->
         <dependency>
