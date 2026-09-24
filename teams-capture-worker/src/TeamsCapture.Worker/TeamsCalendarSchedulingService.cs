@@ -52,6 +52,7 @@ public sealed class TeamsCalendarSchedulingService(TeamsCalendarScheduleStore st
         { Finish(item, "failed", "organizer_not_allowed"); return; }
         var current = await calendar.ReadAsync(item.Selection.OrganizerId, item.Selection.EventId, cancellationToken);
         if (current is null) { Defer(item, "calendar_read_unavailable"); return; }
+        if (current.Missing) { Finish(item, "failed", "calendar_event_not_found"); return; }
         if (current.Cancelled) { Finish(item, "cancelled", null); return; }
         now = clock.GetUtcNow();
         if (current.StartsAt > now)
@@ -66,6 +67,7 @@ public sealed class TeamsCalendarSchedulingService(TeamsCalendarScheduleStore st
         // Re-read after onlineMeeting resolution to catch cancellation/time/link changes during lookup.
         var latest = await calendar.ReadAsync(item.Selection.OrganizerId, item.Selection.EventId, cancellationToken);
         if (latest is null) { Defer(item, "calendar_read_unavailable"); return; }
+        if (latest.Missing) { Finish(item, "failed", "calendar_event_not_found"); return; }
         if (latest.Cancelled) { Finish(item, "cancelled", null); return; }
         if (latest != current || !CanJoin(latest, clock.GetUtcNow())) { Defer(item, "calendar_changed"); return; }
         cancellationToken.ThrowIfCancellationRequested();
@@ -77,11 +79,19 @@ public sealed class TeamsCalendarSchedulingService(TeamsCalendarScheduleStore st
         { Finish(dispatching, "failed", "calendar_reference_conflict"); return; }
         var result = await coordinator.JoinAsync(new(item.Selection.MeetingId, item.Selection.Reference,
             item.Selection.CorrelationId), presence, cancellationToken);
+        if (result.FailureCode is "join_not_created" or "join_not_sent")
+        {
+            // The coordinator only returns these when no remote call was created;
+            // re-read authoritative calendar data on the next attempt, within the join window.
+            store.Replace(dispatching, dispatching with { State = "pending", Failure = result.FailureCode,
+                NextCheckAt = clock.GetUtcNow().AddSeconds(30), UpdatedAt = clock.GetUtcNow() });
+            return;
+        }
         store.Replace(dispatching, dispatching with { State = result.Joined ? "joined" : "failed",
             CallId = result.CallId, Failure = result.FailureCode, UpdatedAt = clock.GetUtcNow() });
     }
 
-    private static bool CanJoin(TeamsCalendarEvent item, DateTimeOffset now) => !item.Cancelled
+    private static bool CanJoin(TeamsCalendarEvent item, DateTimeOffset now) => !item.Missing && !item.Cancelled
         && item.StartsAt <= now && item.EndsAt > now && now - item.StartsAt <= TimeSpan.FromMinutes(5);
     private void Defer(CalendarSchedule item, string reason) => store.Replace(item,
         item with { NextCheckAt = clock.GetUtcNow().AddSeconds(30), Failure = reason, UpdatedAt = clock.GetUtcNow() });

@@ -87,11 +87,19 @@ public sealed class GraphTeamsCalendarClientTests
     [Theory]
     [InlineData(HttpStatusCode.Forbidden)]
     [InlineData(HttpStatusCode.Redirect)]
-    [InlineData(HttpStatusCode.NotFound)]
     [InlineData(HttpStatusCode.TooManyRequests)]
     public async Task Failed_calendar_read_never_becomes_permission_to_join(HttpStatusCode status)
     {
         Assert.Null(await Client(new Handler(Event) { Status = status }).ReadAsync(Organizer, "AAMk+/=", default));
+    }
+
+    [Fact]
+    public async Task Missing_event_is_distinct_from_temporary_lookup_failure()
+    {
+        var result = await Client(new Handler("{}") { Status = HttpStatusCode.NotFound }).ReadAsync(Organizer, "event", default);
+        Assert.NotNull(result);
+        Assert.True(result.Missing);
+        Assert.Null(result.JoinUrl);
     }
 
     [Fact]

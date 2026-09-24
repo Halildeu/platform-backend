@@ -69,9 +69,15 @@ yapılır. Takvim işini silmek, çağrıdan çıkılmış gibi sunulmaz.
   değişikliği ile Microsoft çağrı oluşturma atomik değildir; son okuma sonrası
   eşzamanlı değişiklik veya katılım sonrası takvim iptali otomatik çıkış garantisi
   değildir. Çıkış ayrı kontrol akışıdır.
-- 401/403/404/429, yönlendirme, bozuk/eksik/aşırı büyük yanıt ve geçersiz
+- 401/403/429, yönlendirme, bozuk/eksik/aşırı büyük yanıt ve geçersiz
   onlineMeeting kimliği katılım izni sayılmaz. Graph okuması başarısızsa
-  bekleyen iş ertelenir; hiç okunamayan kayıt operator iptali gerektirebilir.
+  bekleyen iş ertelenir; hiç okunamayan kayıt operatör iptali gerektirebilir.
+  Seçilen etkinlik 404 dönerse `failed/calendar_event_not_found` olur; silinen
+  veya ID'si taşınmayla değişen etkinlik sonsuza kadar kuyrukta beklemez.
+- Katılım isteğinin hiç çağrı oluşturmadığı doğrulanırsa (ör. token alınamaması,
+  Graph'ın kesin 429 reddi) rezervasyon bırakılır; en erken 30 saniye sonra güncel
+  etkinlik ve katılım penceresi tekrar kontrol edilir. Belirsiz POST sonucu bu
+  güvenli yeniden deneme kapsamına alınmaz.
 - Gönderimden önce `dispatching` kalıcı yazılır. Yeniden başlatmada bu durum
   mevcut çağrı makbuzuyla eşleştirilir; belirsiz istek körlemesine tekrarlanmaz.
   `failed/interrupted_join_requires_reconciliation` operatör incelemesi ister.

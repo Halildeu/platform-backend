@@ -22,7 +22,7 @@ public static class TeamsCalendarScheduleEndpoints
             var current = await calendar.ReadAsync(selection.OrganizerId, selection.EventId, token);
             if (current is null) return Results.Problem(statusCode: 502, title: "calendar_read_unavailable");
             var now = clock.GetUtcNow();
-            if (current.Cancelled || current.EndsAt <= now || now - current.StartsAt > TimeSpan.FromMinutes(5)
+            if (current.Missing || current.Cancelled || current.EndsAt <= now || now - current.StartsAt > TimeSpan.FromMinutes(5)
                 || current.StartsAt - now > TimeSpan.FromDays(90))
                 return Results.Conflict(new { code = "event_not_schedulable" });
             token.ThrowIfCancellationRequested();

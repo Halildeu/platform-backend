@@ -5,7 +5,8 @@ using Microsoft.Extensions.Options;
 
 namespace TeamsCapture.Worker;
 
-public sealed record TeamsCalendarEvent(DateTimeOffset StartsAt, DateTimeOffset EndsAt, bool Cancelled, string? JoinUrl);
+public sealed record TeamsCalendarEvent(DateTimeOffset StartsAt, DateTimeOffset EndsAt, bool Cancelled, string? JoinUrl,
+    bool Missing = false);
 
 public interface ITeamsCalendarClient
 {
@@ -20,8 +21,11 @@ public sealed class GraphTeamsCalendarClient(HttpClient client, ITeamsAccessToke
     public async Task<TeamsCalendarEvent?> ReadAsync(Guid organizerId, string eventId, CancellationToken cancellationToken)
     {
         if (!Allowed(organizerId) || !CalendarSelection.ValidEventId(eventId)) return null;
-        using var document = await GetAsync($"users/{organizerId:D}/events/{Uri.EscapeDataString(eventId)}"
+        var response = await GetAsync($"users/{organizerId:D}/events/{Uri.EscapeDataString(eventId)}"
             + "?$select=id,isCancelled,isOnlineMeeting,onlineMeetingProvider,onlineMeeting,start,end,type", cancellationToken);
+        using var document = response.Document;
+        if (response.Status == System.Net.HttpStatusCode.NotFound)
+            return new(DateTimeOffset.MinValue, DateTimeOffset.MinValue, false, null, Missing: true);
         if (document is null) return null;
         var root = document.RootElement;
         if (Text(root, "id") != eventId || Text(root, "type") is not ("singleInstance" or "occurrence" or "exception")) return null;
@@ -40,7 +44,8 @@ public sealed class GraphTeamsCalendarClient(HttpClient client, ITeamsAccessToke
         if (!Allowed(organizerId) || !ValidJoinUrl(joinUrl)) return null;
         // Join URLs are opaque: resolve through Graph instead of parsing legacy URL paths/context.
         var filter = Uri.EscapeDataString("JoinWebUrl eq '" + joinUrl.Replace("'", "''", StringComparison.Ordinal) + "'");
-        using var document = await GetAsync($"users/{organizerId:D}/onlineMeetings?$filter={filter}", cancellationToken);
+        var response = await GetAsync($"users/{organizerId:D}/onlineMeetings?$filter={filter}", cancellationToken);
+        using var document = response.Document;
         if (document is null) return null;
         var root = document.RootElement;
         if (root.TryGetProperty("@odata.nextLink", out _) || !root.TryGetProperty("value", out var values)
@@ -63,27 +68,27 @@ public sealed class GraphTeamsCalendarClient(HttpClient client, ITeamsAccessToke
     private bool Allowed(Guid organizer) => settings.Value.IsReadyForCalendarScheduling()
         && settings.Value.CalendarOrganizerIds.Contains(organizer);
 
-    private async Task<JsonDocument?> GetAsync(string relativeUrl, CancellationToken cancellationToken)
+    private async Task<(System.Net.HttpStatusCode Status, JsonDocument? Document)> GetAsync(string relativeUrl, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(15));
         try
         {
             var token = await tokens.GetAccessTokenAsync(deadline.Token);
-            if (string.IsNullOrWhiteSpace(token)) return null;
+            if (string.IsNullOrWhiteSpace(token)) return (default, null);
             using var request = new HttpRequestMessage(HttpMethod.Get, "https://graph.microsoft.com/v1.0/" + relativeUrl);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Headers.TryAddWithoutValidation("Prefer", "outlook.timezone=\"UTC\"");
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
-            if (response.StatusCode != System.Net.HttpStatusCode.OK) return null;
+            if (response.StatusCode != System.Net.HttpStatusCode.OK) return (response.StatusCode, null);
             await response.Content.LoadIntoBufferAsync(1024 * 1024).WaitAsync(deadline.Token);
             var parsed = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token));
-            if (parsed.RootElement.ValueKind == JsonValueKind.Object) return parsed;
+            if (parsed.RootElement.ValueKind == JsonValueKind.Object) return (response.StatusCode, parsed);
             parsed.Dispose();
-            return null;
+            return (default, null);
         }
-        catch (Exception error) when (error is JsonException or HttpRequestException or IOException) { return null; }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return null; }
+        catch (Exception error) when (error is JsonException or HttpRequestException or IOException) { return (default, null); }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return (default, null); }
     }
 
     private static string? Text(JsonElement element, string name) => element.ValueKind == JsonValueKind.Object

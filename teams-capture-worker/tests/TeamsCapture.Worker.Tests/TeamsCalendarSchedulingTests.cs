@@ -127,6 +127,42 @@ public sealed class TeamsCalendarSchedulingTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task Definitely_not_created_call_is_retried_only_after_rechecking_calendar(bool cancelledBeforeRetry)
+    {
+        using var app = new Factory();
+        var id = await app.Select();
+        app.Clock.Now += TimeSpan.FromMinutes(1);
+        app.Presence.NotCreatedAttempts = 1;
+        await app.Scheduler.TickAsync(default);
+        Assert.Equal("pending", app.Store.Read(id)!.State);
+        Assert.Null(app.Services.GetRequiredService<TeamsCallbackState>().ReadJoin(id));
+        Assert.Equal(1, app.Presence.Count);
+        var reads = app.Calendar.Reads;
+        if (cancelledBeforeRetry) app.Calendar.Current = app.Calendar.Current! with { Cancelled = true };
+        app.Clock.Now += TimeSpan.FromSeconds(30);
+        await app.Scheduler.TickAsync(default);
+        Assert.True(app.Calendar.Reads > reads);
+        Assert.Equal(cancelledBeforeRetry ? 1 : 2, app.Presence.Count);
+        Assert.Equal(cancelledBeforeRetry ? "cancelled" : "joined", app.Store.Read(id)!.State);
+    }
+
+    [Fact]
+    public async Task Missing_event_becomes_terminal_and_can_be_removed_by_retention()
+    {
+        using var app = new Factory();
+        var id = await app.Select();
+        app.Calendar.Current = new(DateTimeOffset.MinValue, DateTimeOffset.MinValue, false, null, Missing: true);
+        await app.Scheduler.TickAsync(default);
+        Assert.Equal("failed", app.Store.Read(id)!.State);
+        Assert.Equal("calendar_event_not_found", app.Store.Read(id)!.Failure);
+        Assert.Equal(0, app.Presence.Count);
+        app.Store.RemoveTerminalBefore(app.Clock.Now.AddHours(1));
+        Assert.Null(app.Store.Read(id));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Interrupted_dispatch_reconciles_durable_receipt_without_creating_another_call(bool hasReceipt)
     {
         using var app = new Factory();
@@ -246,10 +282,12 @@ public sealed class TeamsCalendarSchedulingTests
     {
         public int Count;
         public bool Ambiguous;
+        public int NotCreatedAttempts;
         public Action<MeetingPresenceCommand>? BeforeJoin;
         public Task<TeamsJoinReceipt?> JoinAsync(MeetingPresenceCommand command, CancellationToken cancellationToken)
         {
             Count++; BeforeJoin?.Invoke(command);
+            if (NotCreatedAttempts-- > 0) throw new TeamsJoinNotCreatedException();
             if (Ambiguous) throw new HttpRequestException("synthetic remote timeout");
             return Task.FromResult<TeamsJoinReceipt?>(new("call-scheduled"));
         }
