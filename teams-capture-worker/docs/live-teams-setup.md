@@ -9,15 +9,19 @@
   Kullanıcının kısıtı yeni sunucu/hizmet satın almamaktır; önce mevcut kaynak
   uygunluğu belirlenir. Ortak preview ve TEST runtime bu çalışmayla değiştirilmez.
 
-- `ai@acik.com` test organizatör hesabıdır; botun Entra uygulama kimliğinden
-  ayrıdır. Hesabın Teams/Outlook kullanılabilirliği IT ile canlı doğrulanır.
+- 23 Eylül GitOps #3716 operatör kaydına göre Zeynep'in kurumsal hesabı TEST
+  organizatörleri grubuna eklenmiştir. Kabul toplantısını kendi hesabıyla açar;
+  `ai@acik.com` servis kutusuyla etkileşimli oturum açılmaz. Organizatörün kullanıcı
+  kimliği ile botun Entra uygulama kimliği farklıdır. EXO policy `Granted`
+  sonucu, `Calls.JoinGroupCall.All` iznini bu kullanıcılarla sınırlayan veya botun
+  toplantıya gerçekten katıldığını gösteren bir kanıt değildir.
 - GitOps #3716 kaydındaki Entra uygulaması `meeting-intelligence-teams-bot-test`,
   uygulama kimliği `cb8dc8da-0168-470d-9d35-908fdfcc3fa3`. Kayıt yalnız
   `Calls.JoinGroupCall.All` onayını bildirir; bu bugünkü tenant sorgusu değildir.
 - Backend PR1171 `codex/teams-calendar-capture` dalına birleştirilmiştir.
   `main` dalında 22 Eylül okumasında `teams-capture-worker` yoktur.
-  PR1173 manifest/ikon paketi taslaktır. Merge, deployment ve tenant kabulü
-  bu yerel çalışmanın sonucu değildir.
+  PR1173, 24 Eylül'de çakışması giderilmiş ve testleri geçerek incelemeye açılmıştır.
+  Kaynak hazırlığı, deployment ve tenant kabulü anlamına gelmez.
 - Kaynak `serviceHostedMediaConfig` ile katılır; ses soketi açmaz.
 - Backend TEST hedefi `aiserver` / `10.9.10.15`, `k3d-test` / `platform-test`.
   Meeting AI ayrı Denetim GPU bilgisayarında, köprü `10.99.0.2:8300`.

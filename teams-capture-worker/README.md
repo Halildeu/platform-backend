@@ -161,6 +161,12 @@ Takip: GitOps #3716. Bu değişiklik tenant, DNS, izin veya runtime değiştirme
 Onaylı beş açık yapılandırma alanından kurulacak paket dosyalarını üretme ve
 DEV kontrolü: [İşletim ve teslim kılavuzu](docs/operations.md).
 
+CI ayrıca varsayılan kapalı, root olmayan Linux container'ını çalıştırıp yeniden
+başlatır ve SHA256 kayıtlı Docker image arşivini teslim eder. Tenant hazırlığı
+sonrasında salt okunur `scripts/preflight.mjs`, beklenen uygulama/tenant kimliği
+ile callback/control erişimini kontrol eder. Bu hazırlık paketi canlı medya,
+Teams yan paneli veya gerçek toplantı kabulü olarak sunulmaz.
+
 Çağrı yaşam döngüsü kaynakları:
 - https://learn.microsoft.com/en-us/graph/api/call-keepalive?view=graph-rest-1.0
 - https://learn.microsoft.com/en-us/graph/api/call-delete?view=graph-rest-1.0

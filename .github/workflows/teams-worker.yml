@@ -23,7 +23,7 @@ jobs:
         with:
           node-version: '22'
       - name: Check Teams manifest template and icons
-        run: node --test teams-capture-worker/teams-app-manifest/*.test.mjs
+        run: node --test teams-capture-worker/teams-app-manifest/*.test.mjs teams-capture-worker/scripts/*.test.mjs
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -40,6 +40,32 @@ jobs:
         with:
           name: teams-worker-${{ github.sha }}
           path: worker-package/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Build disabled worker image
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: docker build --build-arg SOURCE_COMMIT="$SOURCE_COMMIT" --tag "teams-worker-ci:$SOURCE_COMMIT" teams-capture-worker
+      - name: Smoke container and persistent volume
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          mkdir container-package
+          node teams-capture-worker/scripts/container-smoke.mjs "teams-worker-ci:$SOURCE_COMMIT" "$SOURCE_COMMIT" container-package/smoke.json
+      - name: Archive verified image and source evidence
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker save "teams-worker-ci:$SOURCE_COMMIT" | gzip > container-package/teams-worker-image.tar.gz
+          printf '%s\n' "$SOURCE_COMMIT" > container-package/SOURCE_COMMIT
+          cd container-package
+          sha256sum SOURCE_COMMIT smoke.json teams-worker-image.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teams-worker-container-${{ github.sha }}
+          path: container-package/
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@v4

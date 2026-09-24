@@ -1,0 +1,6 @@
+**
+!NuGet.Config
+!src/
+!src/TeamsCapture.Worker/
+!src/TeamsCapture.Worker/*.cs
+!src/TeamsCapture.Worker/*.csproj

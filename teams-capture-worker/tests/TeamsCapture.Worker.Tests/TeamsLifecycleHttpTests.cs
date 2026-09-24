@@ -60,6 +60,11 @@ public sealed class TeamsLifecycleHttpTests
         Assert.Contains("\"controlPlaneConfigured\":true", body);
         Assert.Contains("\"liveAudio\":false", body);
         Assert.Contains("\"teamsSidePanel\":false", body);
+        using var document = System.Text.Json.JsonDocument.Parse(body);
+        var identity = document.RootElement.GetProperty("configuredIdentity");
+        Assert.Equal("application-client-credentials", identity.GetProperty("authentication").GetString());
+        Assert.Equal(factory.Settings.TenantId, identity.GetProperty("tenantId").GetString());
+        Assert.Equal(factory.Settings.ApplicationId, identity.GetProperty("applicationId").GetString());
         Assert.DoesNotContain("synthetic-test-credential", body);
         Assert.DoesNotContain(new string('k', 32), body);
         Assert.DoesNotContain(factory.DirectoryPath, body);
@@ -83,6 +88,7 @@ public sealed class TeamsLifecycleHttpTests
     {
         private readonly TeamsOperationalTests.Fixture fixture = new();
         public string DirectoryPath => fixture.DirectoryPath;
+        public TeamsCaptureOptions Settings => fixture.Options.Value;
         public TeamsCallbackState State { get; } = new();
         public TeamsOperationalTests.LifecycleStub Lifecycle { get; } = new();
         protected override void ConfigureWebHost(IWebHostBuilder builder)

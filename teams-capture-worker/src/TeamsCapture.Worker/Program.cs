@@ -133,6 +133,12 @@ app.MapGet("/api/teams/readiness", (HttpContext context, IOptions<TeamsCaptureOp
     return Results.Json(new
     {
         controlPlaneConfigured = config.IsReadyForRegistration(),
+        configuredIdentity = new
+        {
+            authentication = "application-client-credentials",
+            tenantId = Guid.TryParse(config.TenantId, out var tenant) && tenant != Guid.Empty ? tenant.ToString("D") : null,
+            applicationId = Guid.TryParse(config.ApplicationId, out var application) && application != Guid.Empty ? application.ToString("D") : null
+        },
         tenantAcceptance = "not-verified-by-configuration",
         mediaMode = "service-hosted-presence-only",
         liveAudio = false, liveSpeakerAttribution = false, teamsSidePanel = false, automaticCalendarScan = false,
