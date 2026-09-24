@@ -20,6 +20,7 @@ import com.example.meeting.dto.v1.admin.RecordingLifecycleSyncRequest;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.MeetingAuthz;
 import com.example.meeting.security.TenantContextResolver;
+import com.example.meeting.service.ActionAssigneeNames;
 import com.example.meeting.service.MeetingService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -61,12 +62,15 @@ public class MeetingSubResourceController {
 
     private final MeetingService meetingService;
     private final TenantContextResolver tenantContextResolver;
+    private final ActionAssigneeNames assigneeNames;
 
     public MeetingSubResourceController(
             MeetingService meetingService,
-            TenantContextResolver tenantContextResolver) {
+            TenantContextResolver tenantContextResolver,
+            ActionAssigneeNames assigneeNames) {
         this.meetingService = meetingService;
         this.tenantContextResolver = tenantContextResolver;
+        this.assigneeNames = assigneeNames;
     }
 
     // ───────────────────────────── Sessions ─────────────────────────────
@@ -176,7 +180,7 @@ public class MeetingSubResourceController {
     @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.VIEWER)
     public List<MeetingActionResponse> listActions(@PathVariable UUID meetingId) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
-        return meetingService.listActions(tenant, meetingId);
+        return assigneeNames.withNames(meetingService.listActions(tenant, meetingId));
     }
 
     @GetMapping("/actions/{actionId}")
@@ -184,7 +188,7 @@ public class MeetingSubResourceController {
     public MeetingActionResponse getAction(
             @PathVariable UUID meetingId, @PathVariable UUID actionId) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
-        return meetingService.getAction(tenant, meetingId, actionId);
+        return assigneeNames.withName(meetingService.getAction(tenant, meetingId, actionId));
     }
 
     @PostMapping("/actions")
@@ -193,7 +197,8 @@ public class MeetingSubResourceController {
             @PathVariable UUID meetingId,
             @Valid @RequestBody MeetingActionCreateRequest request) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
-        MeetingActionResponse created = meetingService.createAction(tenant, meetingId, request);
+        MeetingActionResponse created =
+                assigneeNames.withName(meetingService.createAction(tenant, meetingId, request));
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
@@ -204,7 +209,7 @@ public class MeetingSubResourceController {
             @PathVariable UUID actionId,
             @Valid @RequestBody MeetingActionUpdateRequest request) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
-        return meetingService.updateAction(tenant, meetingId, actionId, request);
+        return assigneeNames.withName(meetingService.updateAction(tenant, meetingId, actionId, request));
     }
 
     /**
