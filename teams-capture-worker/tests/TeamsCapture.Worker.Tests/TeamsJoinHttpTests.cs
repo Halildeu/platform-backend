@@ -15,6 +15,38 @@ public sealed class TeamsJoinHttpTests
 {
     private const string ControlKey = "01234567890123456789012345678901";
 
+    [Fact]
+    public async Task Invalid_correlation_ids_do_not_consume_durable_calendar_capacity()
+    {
+        using var factory = new Factory();
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Teams-Control-Key", ControlKey);
+        for (var i = 0; i < 1000; i++)
+        {
+            var response = await client.PostAsJsonAsync($"/api/teams/meetings/{Guid.NewGuid()}/join", new
+            {
+                calendarEventId = $"invalid-{i}", threadId = "19:meeting@thread.v2", messageId = "0",
+                organizerUserId = Guid.NewGuid().ToString(), correlationId = (i % 4) switch
+                {
+                    0 => null, 1 => "", 2 => "bad/value", _ => new string('x', 129)
+                }
+            });
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        }
+        Assert.Equal(0, factory.TeamsClient.Requests);
+        Assert.Empty(Directory.GetFiles(factory.DirectoryPath));
+        var settings = factory.Services.GetRequiredService<IOptions<TeamsCaptureOptions>>();
+        var restarted = new DurableTeamsCalendarMeetingResolver(settings);
+        Assert.Null(await restarted.ResolveAsync("invalid-0", CancellationToken.None));
+        var valid = await client.PostAsJsonAsync($"/api/teams/meetings/{Guid.NewGuid()}/join", new
+        {
+            calendarEventId = "valid", threadId = "19:meeting@thread.v2", messageId = "0",
+            organizerUserId = Guid.NewGuid().ToString(), correlationId = "corr-valid"
+        });
+        Assert.Equal(HttpStatusCode.Accepted, valid.StatusCode);
+        Assert.Equal(1, factory.TeamsClient.Requests);
+    }
+
     [Theory]
     [InlineData(null, HttpStatusCode.Unauthorized)]
     [InlineData("wrong", HttpStatusCode.Unauthorized)]
@@ -38,9 +70,12 @@ public sealed class TeamsJoinHttpTests
     private sealed class Factory : WebApplicationFactory<Program>
     {
         private readonly string directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        public string DirectoryPath => directory;
+        public FakeTeamsClient TeamsClient { get; } = new();
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
+            Directory.CreateDirectory(directory);
             builder.UseContentRoot(AppContext.BaseDirectory);
             builder.ConfigureLogging(logging => logging.ClearProviders());
             builder.ConfigureServices(services =>
@@ -59,7 +94,7 @@ public sealed class TeamsJoinHttpTests
                     CalendarStateFilePath = Path.Combine(directory, "calendar.json")
                 }));
                 services.RemoveAll<ITeamsMeetingPresenceClient>();
-                services.AddSingleton<ITeamsMeetingPresenceClient>(new FakeTeamsClient());
+                services.AddSingleton<ITeamsMeetingPresenceClient>(TeamsClient);
             });
         }
 
@@ -72,7 +107,11 @@ public sealed class TeamsJoinHttpTests
 
     private sealed class FakeTeamsClient : ITeamsMeetingPresenceClient
     {
-        public Task<TeamsJoinReceipt?> JoinAsync(MeetingPresenceCommand command, CancellationToken cancellationToken) =>
-            Task.FromResult<TeamsJoinReceipt?>(new TeamsJoinReceipt("call-1"));
+        public int Requests { get; private set; }
+        public Task<TeamsJoinReceipt?> JoinAsync(MeetingPresenceCommand command, CancellationToken cancellationToken)
+        {
+            Requests++;
+            return Task.FromResult<TeamsJoinReceipt?>(new TeamsJoinReceipt("call-1"));
+        }
     }
 }

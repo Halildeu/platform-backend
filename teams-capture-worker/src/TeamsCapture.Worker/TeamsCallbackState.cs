@@ -9,14 +9,17 @@ public sealed class TeamsCallbackState
     private readonly object gate = new();
     private Dictionary<string, CallState> calls = new(StringComparer.Ordinal);
     private Dictionary<Guid, JoinAttempt> joins = new();
-    private readonly string? stateFilePath;
+    private readonly DurableTeamsSnapshot? store;
 
     public TeamsCallbackState() { }
 
     public TeamsCallbackState(IOptions<TeamsCaptureOptions> options)
     {
-        stateFilePath = options.Value.CallStateFilePath;
-        if (!string.IsNullOrWhiteSpace(stateFilePath)) Load();
+        if (!string.IsNullOrWhiteSpace(options.Value.CallStateFilePath))
+        {
+            store = new(options.Value.CallStateFilePath, "calls");
+            Load();
+        }
     }
 
     public bool Register(string id, Guid meetingId = default)
@@ -184,8 +187,9 @@ public sealed class TeamsCallbackState
 
     private void Load()
     {
-        if (!File.Exists(stateFilePath)) return;
-        using var document = JsonDocument.Parse(File.ReadAllText(stateFilePath));
+        var payload = store?.Read();
+        if (payload is null) return;
+        using var document = JsonDocument.Parse(payload);
         Dictionary<string, CallState>? restored;
         if (document.RootElement.TryGetProperty("Calls", out var storedCalls)
             && document.RootElement.TryGetProperty("Joins", out var storedJoins))
@@ -214,12 +218,7 @@ public sealed class TeamsCallbackState
 
     private void Persist(Dictionary<string, CallState> snapshot, Dictionary<Guid, JoinAttempt>? joinSnapshot = null)
     {
-        if (string.IsNullOrWhiteSpace(stateFilePath)) return;
-        var directory = Path.GetDirectoryName(stateFilePath)!;
-        Directory.CreateDirectory(directory);
-        var temporary = stateFilePath + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(new { Calls = snapshot, Joins = joinSnapshot ?? joins }));
-        File.Move(temporary, stateFilePath, true);
+        store?.Write(JsonSerializer.Serialize(new { Calls = snapshot, Joins = joinSnapshot ?? joins }));
     }
 
     private sealed record CallState(Guid MeetingId, string State, DateTimeOffset UpdatedAt);

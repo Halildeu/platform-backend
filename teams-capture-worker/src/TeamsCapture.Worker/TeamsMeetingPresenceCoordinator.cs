@@ -12,10 +12,7 @@ public sealed class TeamsMeetingPresenceCoordinator(TeamsCallbackState state, IT
         ITeamsMeetingPresenceClient teamsClient,
         CancellationToken cancellationToken)
     {
-        if (command.MeetingId == Guid.Empty || string.IsNullOrWhiteSpace(command.CalendarEventId)
-            || command.CalendarEventId.Length > 256
-            || command.CorrelationId is not { Length: > 0 and <= 128 }
-            || command.CorrelationId.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('-' or '_' or '.')))
+        if (!command.IsValid())
         {
             return MeetingPresenceResult.Rejected("invalid_meeting_reference");
         }
@@ -68,7 +65,13 @@ public sealed class TeamsMeetingPresenceCoordinator(TeamsCallbackState state, IT
 public sealed record MeetingPresenceCommand(
     Guid MeetingId,
     string CalendarEventId,
-    string CorrelationId);
+    string CorrelationId)
+{
+    public bool IsValid() => MeetingId != Guid.Empty
+        && DurableTeamsCalendarMeetingResolver.ValidReference(CalendarEventId)
+        && CorrelationId is { Length: > 0 and <= 128 }
+        && CorrelationId.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
+}
 
 public sealed record TeamsJoinReceipt(string CallId);
 

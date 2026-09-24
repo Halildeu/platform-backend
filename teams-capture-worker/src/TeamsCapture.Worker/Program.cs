@@ -82,12 +82,15 @@ app.MapPost("/api/teams/meetings/{meetingId:guid}/join", async (
     var config = settings.Value;
     if (!config.IsReadyForRegistration()) return Results.StatusCode(503);
     if (!ControlKeyMatches(context, config.ControlApiKey!)) return Results.Unauthorized();
+    var command = new MeetingPresenceCommand(meetingId, request.CalendarEventId, request.CorrelationId);
+    if (!command.IsValid()) return Results.BadRequest(new { code = "invalid_meeting_reference" });
+    cancellationToken.ThrowIfCancellationRequested();
     if (!resolver.Register(meetingId, request.CalendarEventId,
             new ScheduledTeamsMeeting(request.ThreadId, request.MessageId, request.OrganizerUserId)))
         return Results.BadRequest(new { code = "invalid_or_conflicting_calendar_reference" });
 
     var result = await coordinator.JoinAsync(
-        new MeetingPresenceCommand(meetingId, request.CalendarEventId, request.CorrelationId),
+        command,
         teamsClient,
         cancellationToken).ConfigureAwait(false);
     return result.Joined

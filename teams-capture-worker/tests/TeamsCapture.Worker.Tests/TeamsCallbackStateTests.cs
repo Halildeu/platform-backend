@@ -41,6 +41,7 @@ public class TeamsCallbackStateTests
         var meetingId = Guid.NewGuid();
         try
         {
+            Directory.CreateDirectory(directory);
             var options = Options.Create(new TeamsCaptureOptions { CallStateFilePath = path });
             var first = new TeamsCallbackState(options);
             Assert.True(first.Register("call-1", meetingId));

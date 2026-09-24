@@ -21,6 +21,7 @@ public sealed class PersistenceFailureTests
             Assert.ThrowsAny<IOException>(() => state.Register(id, "event-1", meeting));
             Assert.Null(await state.ResolveAsync("event-1", CancellationToken.None));
             File.Delete(root);
+            Directory.CreateDirectory(root);
             Assert.True(state.Register(id, "event-1", meeting));
             Assert.Equal(meeting, await new DurableTeamsCalendarMeetingResolver(options).ResolveAsync("event-1", CancellationToken.None));
         }
@@ -41,6 +42,7 @@ public sealed class PersistenceFailureTests
             Assert.Null(state.Read("call-1"));
             Assert.Null(state.ReadMeetingId("call-1"));
             File.Delete(root);
+            Directory.CreateDirectory(root);
             Assert.True(state.Register("call-1", id));
             Assert.Equal(id, new TeamsCallbackState(options).ReadMeetingId("call-1"));
         }
@@ -54,18 +56,19 @@ public sealed class PersistenceFailureTests
         var path = Path.Combine(root, "calls.json");
         try
         {
+            Directory.CreateDirectory(root);
             var options = Options.Create(new TeamsCaptureOptions { CallStateFilePath = path });
             var state = new TeamsCallbackState(options);
             Assert.True(state.Register("call-1", Guid.NewGuid()));
-            // Block the temporary write while preserving the previous durable snapshot.
-            Directory.CreateDirectory(path + ".tmp");
+            // Fail a database update while keeping the last committed snapshot readable.
+            SnapshotTestStorage.BlockWrites(path);
             var payload = JsonSerializer.SerializeToElement(new { value = new[] {
                 new { resourceUrl = "/communications/calls/call-1", resourceData = new { state = "terminated" } }
             } });
-            Assert.ThrowsAny<Exception>(() => state.Apply(payload));
+            Assert.ThrowsAny<IOException>(() => state.Apply(payload));
             Assert.Equal("establishing", state.Read("call-1"));
             Assert.Equal("establishing", new TeamsCallbackState(options).Read("call-1"));
-            Directory.Delete(path + ".tmp");
+            SnapshotTestStorage.AllowWrites(path);
             Assert.True(state.Apply(payload));
             Assert.Equal("terminated", new TeamsCallbackState(options).Read("call-1"));
         }

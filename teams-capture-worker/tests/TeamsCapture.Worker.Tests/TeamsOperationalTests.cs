@@ -51,7 +51,7 @@ public sealed class TeamsOperationalTests
     {
         using var fixture = new Fixture();
         var state = new TeamsCallbackState(fixture.Options);
-        Directory.CreateDirectory(fixture.Options.Value.CallStateFilePath! + ".tmp");
+        Directory.CreateDirectory(fixture.Options.Value.CallStateFilePath! + ".sqlite3");
         var client = new JoinStub();
         await Assert.ThrowsAnyAsync<Exception>(() => new TeamsMeetingPresenceCoordinator(state, new LifecycleStub())
             .JoinAsync(Command(), client, CancellationToken.None));
@@ -97,7 +97,7 @@ public sealed class TeamsOperationalTests
         var command = Command();
         var client = new JoinStub { OnJoin = () =>
         {
-            Directory.CreateDirectory(fixture.Options.Value.CallStateFilePath! + ".tmp");
+            SnapshotTestStorage.BlockWrites(fixture.Options.Value.CallStateFilePath!);
             return Task.CompletedTask;
         }};
         var lifecycle = new LifecycleStub { LeaveResult = cleanup };
@@ -164,7 +164,7 @@ public sealed class TeamsOperationalTests
         if (mixed) updates.Add(new { resourceUrl = "/communications/calls/call-1", resourceData = new { state = "terminated" } });
         Assert.True(state.Apply(JsonSerializer.SerializeToElement(new { value = updates })));
         Assert.Equal(mixed ? "terminated" : "establishing", state.Read("call-1"));
-        Assert.DoesNotContain("PRIVATE-NAME", File.ReadAllText(fixture.Options.Value.CallStateFilePath!));
+        Assert.DoesNotContain("PRIVATE-NAME", SnapshotTestStorage.Read(fixture.Options.Value.CallStateFilePath!));
     }
 
     [Theory]
@@ -269,7 +269,7 @@ public sealed class TeamsOperationalTests
         state.Register("expired", completed);
         state.MarkTerminated("expired");
         state.Register("active", Guid.NewGuid());
-        Directory.CreateDirectory(fixture.Options.Value.CalendarStateFilePath! + ".tmp");
+        SnapshotTestStorage.BlockWrites(fixture.Options.Value.CalendarStateFilePath!);
         var clock = new ManualClock();
         clock.Advance(TimeSpan.FromDays(2));
         var lifecycle = new LifecycleStub();

@@ -24,6 +24,15 @@ ortamına verir; parola/secret mail, GitHub, telefon veya tarayıcıya gönderil
 | `TeamsCapture__CompletedCallRetentionHours` | Kurumun belirlediği 1–2160 saat; yoksa silme kapalı |
 
 Tek replika kullanılır; state dosyaları yerel geçici pod dosyası olmamalıdır.
+İki ayar yolu eski JSON okuma konumunu ve yeni SQLite dosyalarının ön ekini
+belirler: örneğin `calls.json` için güncel depo `calls.json.sqlite3` olur.
+Üst dizin kurulumda oluşturulmuş ve kalıcı olmalıdır; worker dizin oluşturmaz.
+SQLite dosyaları ve varsa işlem günlükleri aynı kalıcı volume üzerinde tutulur.
+`DELETE` günlük modu ve `EXTRA` senkronlama her bağlantıda doğrulanır.
+Volume, SQLite kilitleme/fsync sözleşmesini desteklemelidir; pod diski veya
+bu sözleşmeyi sağlamayan ağ dosya sistemi kalıcı kabul edilmez.
+Bozuk/yarım SQLite deposu eski JSON'a veya boş duruma otomatik dönmez: yeni
+katılım kapalı tutulur, uzaktaki çağrılarla operatör incelemesi yapılır.
 Bu sürüm Linux üzerinde kontrol düzlemi olarak çalışır. Aynı paketi Linux'ta
 çalıştırmak Microsoft ham medya SDK'sını çalıştırmak anlamına gelmez.
 
@@ -114,6 +123,9 @@ Rollback: aktivasyon başarısızsa yeni katılım durdurulur; bilinen aktif ça
 yetkili leave ile çıkış doğrulanır. Önceki onaylı digest/ayar GitOps üzerinden geri
 alınır. PVC ve belirsiz katılım kayıtları silinmez; restart belirsiz katılımı
 sıfırlamaz. Bu kaynak paketi bir canlı rollout veya rollback kabulü değildir.
+Önceki imajın SQLite durum biçimini desteklemesi gerekir. JSON kullanan eski
+imaj, güncel `.sqlite3` rezervasyonlarını okuyamaz; ona doğrudan dönüş yapılmaz.
+Önce çağrıların çıkışı/uzlaştırması ve uyumlu durum taşıma planı doğrulanır.
 
 ### Toplantı kabulü
 

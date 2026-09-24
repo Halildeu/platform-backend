@@ -11,19 +11,24 @@ public sealed class DurableTeamsCalendarMeetingResolver : ITeamsCalendarMeetingR
 {
     private readonly object gate = new();
     private Dictionary<string, CalendarReference> meetings = new(StringComparer.Ordinal);
-    private readonly string? stateFilePath;
+    private readonly DurableTeamsSnapshot? store;
 
     public DurableTeamsCalendarMeetingResolver(IOptions<TeamsCaptureOptions> options)
     {
-        stateFilePath = options.Value.CalendarStateFilePath;
-        if (!string.IsNullOrWhiteSpace(stateFilePath) && File.Exists(stateFilePath))
+        if (!string.IsNullOrWhiteSpace(options.Value.CalendarStateFilePath))
         {
-            var restored = JsonSerializer.Deserialize<Dictionary<string, CalendarReference>>(
-                File.ReadAllText(stateFilePath));
+            store = new(options.Value.CalendarStateFilePath, "calendar");
+            var payload = store.Read();
+            if (payload is null) return;
+            var restored = JsonSerializer.Deserialize<Dictionary<string, CalendarReference>>(payload);
             if (restored is null || restored.Count > 1000) throw new InvalidDataException("Invalid Teams calendar state file.");
             foreach (var item in restored)
-                if (ValidReference(item.Key) && item.Value.MeetingId != Guid.Empty && item.Value.Meeting.IsValid())
-                    meetings[item.Key] = item.Value;
+            {
+                if (!ValidReference(item.Key) || item.Value is null || item.Value.MeetingId == Guid.Empty
+                    || item.Value.Meeting is null || !item.Value.Meeting.IsValid())
+                    throw new InvalidDataException("Invalid Teams calendar state file.");
+                meetings[item.Key] = item.Value;
+            }
         }
     }
 
@@ -62,17 +67,12 @@ public sealed class DurableTeamsCalendarMeetingResolver : ITeamsCalendarMeetingR
         }
     }
 
-    private static bool ValidReference(string value) => value is { Length: > 0 and <= 256 }
+    public static bool ValidReference(string? value) => value is { Length: > 0 and <= 256 }
         && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or ':' or '.');
 
     private void Persist(Dictionary<string, CalendarReference> snapshot)
     {
-        if (string.IsNullOrWhiteSpace(stateFilePath)) return;
-        var directory = Path.GetDirectoryName(stateFilePath)!;
-        Directory.CreateDirectory(directory);
-        var temporary = stateFilePath + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(snapshot));
-        File.Move(temporary, stateFilePath, true);
+        store?.Write(JsonSerializer.Serialize(snapshot));
     }
 
     private sealed record CalendarReference(Guid MeetingId, ScheduledTeamsMeeting Meeting);

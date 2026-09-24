@@ -16,6 +16,7 @@ public sealed class DurableTeamsCalendarMeetingResolverTests
         var meetingId = Guid.NewGuid();
         try
         {
+            Directory.CreateDirectory(directory);
             var first = new DurableTeamsCalendarMeetingResolver(options);
             Assert.True(first.Register(meetingId, "event-1", meeting));
             Assert.False(first.Register(meetingId, "event-1", meeting with { MessageId = "different" }));

@@ -65,12 +65,24 @@ olarak işaretler. `POST /api/teams/calls/{callId}/leave`, yalnız bu worker'ın
 bildiği çağrıdan botu çıkarır; toplantının kendisini sonlandırmaz. 204/404 dışında
 çıkış başarılı sayılmaz. Bu işlemler de `X-Teams-Control-Key` ister.
 
-Çağrı ve takvim eşleştirmeleri en fazla1000 kayıtla sınırlandırılır ve
-`TeamsCapture__CallStateFilePath` ile `TeamsCapture__CalendarStateFilePath`
-yollarına atomik olarak yazılır. Dağıtımda bu yollar kalıcı bir volume üzerinde
-olmalı ve worker tek replika çalışmalıdır. Böylece süreç veya pod yeniden
-başladığında çağrı takibi devam eder. Çok replika için sonraki aşamada ortak
-veritabanı adaptörü gerekir.
+Çağrı ve takvim eşleştirmeleri en fazla 1000 kayıtla sınırlandırılır.
+`TeamsCapture__CallStateFilePath` ve `TeamsCapture__CalendarStateFilePath`
+değerlerinin sonuna `.sqlite3` eklenerek iki yerel SQLite dosyası kullanılır.
+Yazma işlemleri `journal_mode=DELETE`, `synchronous=EXTRA` ile commit edilir;
+katılım rezervasyonunun commit'i tamamlanmadan Microsoft'a istek gönderilmez.
+EXTRA, veriye ek olarak silinen işlem günlüğünün dizinini de senkronlar.
+Depolama sistemi disk senkronlama ve dosya kilitlemeyi doğru desteklemelidir.
+Dağıtım, önceden oluşturulmuş kalıcı dizin üzerinde tek replika olmalıdır;
+worker eksik üst dizini kendisi oluşturmaz. Çok replika için ortak veritabanı
+ve eşzamanlılık tasarımı ayrıca gerekir.
+
+Eski JSON dosyası yalnız SQLite dosyası henüz yokken okunur ve ilk başarılı
+yazmada SQLite'a taşınır; eski dosya değiştirilmez. SQLite mevcutsa bozuk/eksik
+kayıt durumunda eski JSON'a dönülmez, işlem kapalı kalır. Depoyu sıfırlamak veya
+SQLite'ı bilmeyen eski imaja dönmek ikinci bot riski oluşturur; böyle bir geri
+alma ancak uzaktaki çağrılarla kayıtlar uzlaştırılarak yapılabilir.
+Dosya yazma hata testleri ve süreç yeniden başlatma testleri fiziksel elektrik
+kesintisi kabulü değildir. Kaynak: https://www.sqlite.org/pragma.html#pragma_synchronous
 
 `TeamsCapture__CompletedCallRetentionHours` isteğe bağlıdır (1–2160 saat).
 Varsayılan otomatik silme kapalıdır; kurum metadata saklama süresini belirler.
