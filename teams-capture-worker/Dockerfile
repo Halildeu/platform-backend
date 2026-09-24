@@ -4,7 +4,7 @@ WORKDIR /source
 COPY NuGet.Config ./
 COPY src/TeamsCapture.Worker/TeamsCapture.Worker.csproj src/TeamsCapture.Worker/
 RUN dotnet restore src/TeamsCapture.Worker/TeamsCapture.Worker.csproj --configfile NuGet.Config
-COPY src/ ./src/
+COPY src/TeamsCapture.Worker/*.cs src/TeamsCapture.Worker/
 RUN dotnet publish src/TeamsCapture.Worker/TeamsCapture.Worker.csproj -c Release --no-restore -p:UseAppHost=false -o /out
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0-bookworm-slim@sha256:2f202e1169ec507bdc07007cf68c14d0ff3a098110b17c460a60185e1f36a9d1

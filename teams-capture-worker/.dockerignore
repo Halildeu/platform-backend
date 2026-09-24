@@ -1,6 +1,10 @@
 **
 !NuGet.Config
 !src/
+src/**
 !src/TeamsCapture.Worker/
+src/TeamsCapture.Worker/**
 !src/TeamsCapture.Worker/*.cs
 !src/TeamsCapture.Worker/*.csproj
+**/bin/**
+**/obj/**
