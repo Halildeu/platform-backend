@@ -1,6 +1,8 @@
 package com.example.meeting.controller;
 
 import com.example.commonauth.openfga.RequireModule;
+import com.example.meeting.dto.v1.admin.AssigneeCandidateSearchRequest;
+import com.example.meeting.dto.v1.admin.AssigneeCandidateSearchResponse;
 import com.example.meeting.dto.v1.admin.MeetingActionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingActionResponse;
 import com.example.meeting.dto.v1.admin.MeetingActionUpdateRequest;
@@ -44,6 +46,7 @@ import java.util.UUID;
  * .../{meetingId}/sessions/{id} GET PUT DELETE
  * .../{meetingId}/actions       GET(list) POST(create)
  * .../{meetingId}/actions/{id}  GET PUT DELETE
+ * .../{meetingId}/assignee-candidates/search  POST (people picker, gitops#3834)
  * .../{meetingId}/decisions     GET(list) POST(create)
  * .../{meetingId}/decisions/{id} GET PUT DELETE
  * </pre>
@@ -202,6 +205,20 @@ public class MeetingSubResourceController {
             @Valid @RequestBody MeetingActionUpdateRequest request) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
         return meetingService.updateAction(tenant, meetingId, actionId, request);
+    }
+
+    /**
+     * "Göreve ata" people picker — Faz 24 (gitops#3834). Same gate as creating an action: whoever
+     * may assign a task on this meeting may look up whom to assign it to. POST so the typed name
+     * stays out of URLs and access logs.
+     */
+    @PostMapping("/assignee-candidates/search")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
+    public AssigneeCandidateSearchResponse searchAssigneeCandidates(
+            @PathVariable UUID meetingId,
+            @Valid @RequestBody AssigneeCandidateSearchRequest request) {
+        AdminTenantContext tenant = tenantContextResolver.resolveRequired();
+        return meetingService.searchAssigneeCandidates(tenant, meetingId, request);
     }
 
     @DeleteMapping("/actions/{actionId}")

@@ -3,6 +3,7 @@ package com.example.meeting.service;
 import com.example.meeting.config.MeetingAssigneeDirectoryProperties;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
@@ -16,7 +17,8 @@ import org.springframework.web.client.RestClientResponseException;
 
 /**
  * Service-token client for user-service's internal subject resolution
- * ({@code GET /api/users/internal/{id}/impersonation-target}); mirrors
+ * ({@code GET /api/users/internal/{id}/impersonation-target}) and people-picker search
+ * ({@code POST /api/users/internal/assignee-candidates}); mirrors
  * {@code HttpCanonicalTranscriptClient}'s 401-invalidate-retry shape.
  */
 @Component
@@ -99,6 +101,81 @@ public class HttpAssigneeDirectoryClient implements AssigneeDirectoryClient {
         } catch (RestClientException | IllegalStateException ex) {
             throw new ResolutionUnavailableException("assignee directory unavailable");
         }
+    }
+
+    @Override
+    public List<AssigneeCandidate> searchCandidates(String requesterSubject, String query, int limit) {
+        if (!properties.isEnabled()) {
+            throw new ResolutionUnavailableException("assignee directory disabled");
+        }
+        try {
+            return search(requesterSubject, query, limit);
+        } catch (RestClientResponseException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.UNAUTHORIZED.value()) {
+                tokens.invalidate();
+                try {
+                    return search(requesterSubject, query, limit);
+                } catch (RestClientResponseException retry) {
+                    throw mappedSearch(retry);
+                } catch (RestClientException | IllegalStateException retry) {
+                    throw new ResolutionUnavailableException(
+                            "assignee directory unavailable after token refresh");
+                }
+            }
+            throw mappedSearch(ex);
+        } catch (RestClientException | IllegalStateException ex) {
+            throw new ResolutionUnavailableException("assignee directory unavailable");
+        }
+    }
+
+    /**
+     * Only user-service's explicit "requester not in directory" answer is a deny. Any other 403
+     * means THIS service was refused (e.g. its token lost {@code users:internal}) — an outage to
+     * fix on our side, which must not reach the user as "you are not allowed".
+     */
+    private RuntimeException mappedSearch(RestClientResponseException ex) {
+        if (ex.getStatusCode().value() == HttpStatus.FORBIDDEN.value()
+                && ex.getResponseBodyAsString().contains(REQUESTER_NOT_IN_DIRECTORY)) {
+            return new DirectoryAccessDeniedException("requester is not an active directory member");
+        }
+        return new ResolutionUnavailableException(
+                "assignee directory returned " + ex.getStatusCode().value());
+    }
+
+    private List<AssigneeCandidate> search(String requesterSubject, String query, int limit) {
+        CandidatePage page = restClient.post()
+                .uri(properties.getUserServiceBaseUrl() + "/api/users/internal/assignee-candidates")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.token())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(new CandidateSearch(requesterSubject, query, limit))
+                .retrieve()
+                .body(CandidatePage.class);
+        if (page == null || page.items() == null) {
+            return List.of();
+        }
+        return page.items().stream()
+                .filter(row -> row != null && row.userId() != null && row.userId() > 0)
+                .map(row -> new AssigneeCandidate(row.userId(), row.name(), row.email()))
+                .toList();
+    }
+
+    private static final String REQUESTER_NOT_IN_DIRECTORY = "requester_not_in_directory";
+
+    record CandidateSearch(
+            @JsonProperty("requesterSubject") String requesterSubject,
+            @JsonProperty("query") String query,
+            @JsonProperty("limit") int limit) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record CandidatePage(@JsonProperty("items") List<CandidateRow> items) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record CandidateRow(
+            @JsonProperty("userId") Long userId,
+            @JsonProperty("name") String name,
+            @JsonProperty("email") String email) {
     }
 
     private Optional<Long> mappedUser(RestClientResponseException ex) {
