@@ -16,6 +16,7 @@ class MicrosoftIdentityReadTest {
     static final String SUBJECT = "12345678-1111-2222-3333-123456789012";
     static final String TENANT = "12345678-1111-2222-3333-123456789013";
     static final String OBJECT = "12345678-1111-2222-3333-123456789014";
+    static final String ATTRIBUTES = "{\"entra_tid\":[\"" + TENANT + "\"],\"entra_oid\":[\"" + OBJECT + "\"]}";
     static final String USER_PATH = "/admin/realms/platform-test/users/" + SUBJECT;
     WireMockServer server;
     KeycloakAdminClient client;
@@ -29,7 +30,7 @@ class MicrosoftIdentityReadTest {
         client = new KeycloakAdminClient(props, WebClient.builder());
         server.stubFor(post(urlEqualTo("/realms/platform-test/protocol/openid-connect/token"))
                 .willReturn(okJson("{\"access_token\":\"synthetic\",\"expires_in\":300}")));
-        user("{\"entra_tid\":[\"" + TENANT + "\"],\"entra_oid\":[\"" + OBJECT + "\"]}", true, SUBJECT);
+        user(ATTRIBUTES, true, SUBJECT);
         links("[{\"identityProvider\":\"microsoft\",\"userId\":\"opaque-pairwise-broker-sub\"}]");
     }
     @AfterEach void stop() { server.stop(); }
@@ -72,9 +73,9 @@ class MicrosoftIdentityReadTest {
     }
 
     @Test void rejectsDisabledOrWrongKeycloakUser() {
-        user("{}", false, SUBJECT);
+        user(ATTRIBUTES, false, SUBJECT);
         assertThat(client.fetchMicrosoftIdentity(SUBJECT, "microsoft")).isEmpty();
-        user("{}", true, OBJECT);
+        user(ATTRIBUTES, true, OBJECT);
         assertThat(client.fetchMicrosoftIdentity(SUBJECT, "microsoft")).isEmpty();
     }
 
