@@ -1,5 +1,6 @@
 package com.example.meeting.service;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -27,6 +28,31 @@ public interface AssigneeDirectoryClient {
      */
     default Optional<Long> resolveUserId(String issuer, String kcSubject) {
         return Optional.empty();
+    }
+
+    /**
+     * People-picker search on behalf of the signed-in user (gitops#3834), via user-service's
+     * {@code POST /api/users/internal/assignee-candidates}. user-service scopes the answer by the
+     * REQUESTER's directory row (global users + the requester's own company), so the caller passes
+     * the requester's Keycloak subject — never a subject of its own choosing.
+     *
+     * @throws DirectoryAccessDeniedException when the requester is not an active directory member
+     * @throws ResolutionUnavailableException when the directory cannot be consulted; callers must
+     *     surface it, never turn it into an empty list (an empty picker reads as "nobody matches")
+     */
+    default List<AssigneeCandidate> searchCandidates(String requesterSubject, String query, int limit) {
+        throw new ResolutionUnavailableException("assignee candidate search not supported");
+    }
+
+    /** One assignable person as the directory reports it. */
+    record AssigneeCandidate(long userId, String name, String email) {
+    }
+
+    /** The directory knows the requester is not an active member — a deny, not an outage. */
+    class DirectoryAccessDeniedException extends RuntimeException {
+        public DirectoryAccessDeniedException(String message) {
+            super(message);
+        }
     }
 
     class ResolutionUnavailableException extends RuntimeException {
