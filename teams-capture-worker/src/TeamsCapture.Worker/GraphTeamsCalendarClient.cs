@@ -14,10 +14,77 @@ public interface ITeamsCalendarClient
     Task<ScheduledTeamsMeeting?> ResolveMeetingAsync(Guid organizerId, string joinUrl, CancellationToken cancellationToken);
 }
 
-/// <summary>Reads only explicitly selected events in operator-allowed organizer mailboxes.</summary>
+/// <summary>Reads selected events or a bounded selection window in operator-allowed organizer mailboxes.</summary>
 public sealed class GraphTeamsCalendarClient(HttpClient client, ITeamsAccessTokenProvider tokens,
-    IOptions<TeamsCaptureOptions> settings) : ITeamsCalendarClient
+    IOptions<TeamsCaptureOptions> settings) : ITeamsCalendarClient, ITeamsCalendarBrowser
 {
+    public async Task<CalendarEventChoices?> BrowseAsync(Guid organizerId, DateTimeOffset from, DateTimeOffset to,
+        CancellationToken cancellationToken)
+    {
+        if (!Allowed(organizerId) || to <= from || to - from > TimeSpan.FromDays(31)) return null;
+        var path = $"users/{organizerId:D}/calendar/calendarView";
+        var relativeUrl = path + "?startDateTime=" + Uri.EscapeDataString(from.UtcDateTime.ToString("O", CultureInfo.InvariantCulture))
+            + "&endDateTime=" + Uri.EscapeDataString(to.UtcDateTime.ToString("O", CultureInfo.InvariantCulture))
+            + "&$top=100&$select=id,subject,isCancelled,isOnlineMeeting,isOrganizer,onlineMeetingProvider,start,end,type";
+        var items = new List<CalendarEventChoice>();
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var pages = new HashSet<string>(StringComparer.Ordinal);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(20));
+        try
+        {
+            for (var page = 0; page < 5; page++)
+            {
+                if (!pages.Add(relativeUrl)) return null;
+                var response = await GetAsync(relativeUrl, deadline.Token);
+                using var document = response.Document;
+                if (document is null || document.RootElement.ValueKind != JsonValueKind.Object
+                    || !document.RootElement.TryGetProperty("value", out var values)
+                    || values.ValueKind != JsonValueKind.Array || values.GetArrayLength() > 100) return null;
+                foreach (var item in values.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object) return null;
+                    // Attendee copies and non-Teams appointments cannot be scheduled by this organizer.
+                    if (!Bool(item, "isCancelled", out var cancelled) || !Bool(item, "isOnlineMeeting", out var online)
+                        || !Bool(item, "isOrganizer", out var owns)) return null;
+                    if (cancelled || !online || !owns || Text(item, "onlineMeetingProvider") != "teamsForBusiness") continue;
+                    var id = Text(item, "id");
+                    var title = Text(item, "subject");
+                    if (!CalendarSelection.ValidEventId(id!) || !ids.Add(id!) || title is null || title.Length > 1024
+                        || Text(item, "type") is not ("singleInstance" or "occurrence" or "exception")
+                        || !UtcTime(item, "start", out var start) || !UtcTime(item, "end", out var end) || end <= start) return null;
+                    if (start >= from && start < to) items.Add(new(id!, title, start, end));
+                }
+                if (!document.RootElement.TryGetProperty("@odata.nextLink", out var next))
+                    return new(items.OrderBy(i => i.StartsAt).ThenBy(i => i.EventId, StringComparer.Ordinal).ToArray(), false);
+                if (next.ValueKind != JsonValueKind.String || !SafeNextPage(next.GetString(), path, out relativeUrl)) return null;
+                if (page == 4)
+                    return new(items.OrderBy(i => i.StartsAt).ThenBy(i => i.EventId, StringComparer.Ordinal).ToArray(), true);
+            }
+            return null;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return null; }
+    }
+
+    private static bool Bool(JsonElement value, string name, out bool result)
+    {
+        result = false;
+        if (!value.TryGetProperty(name, out var property) || property.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false;
+        result = property.GetBoolean();
+        return true;
+    }
+
+    private static bool SafeNextPage(string? url, string path, out string relative)
+    {
+        relative = "";
+        if (url is not { Length: > 0 and <= 16384 } || url.Any(char.IsControl)
+            || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "https"
+            || uri.Host != "graph.microsoft.com" || uri.Port != 443 || uri.UserInfo.Length != 0 || uri.Fragment.Length != 0
+            || uri.AbsolutePath != "/v1.0/" + path || uri.Query.Length == 0) return false;
+        relative = path + uri.Query;
+        return true;
+    }
+
     public async Task<TeamsCalendarEvent?> ReadAsync(Guid organizerId, string eventId, CancellationToken cancellationToken)
     {
         if (!Allowed(organizerId) || !CalendarSelection.ValidEventId(eventId)) return null;

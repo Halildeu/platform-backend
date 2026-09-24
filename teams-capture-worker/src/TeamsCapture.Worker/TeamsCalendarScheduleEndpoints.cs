@@ -6,6 +6,33 @@ public static class TeamsCalendarScheduleEndpoints
 {
     public static void MapTeamsCalendarSchedules(this WebApplication app, Func<HttpContext, string, bool> authorized)
     {
+        // Owner-bound views for a user-authorized backend proxy; private operator routes below remain available.
+        app.MapGet("/api/teams/organizers/{organizerId:guid}/meetings/{meetingId:guid}/calendar-schedule", (Guid organizerId,
+            Guid meetingId, HttpContext context, IOptions<TeamsCaptureOptions> settings, TeamsCalendarScheduleStore store) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            if (!authorized(context, settings.Value.ControlApiKey ?? "")) return Results.Unauthorized();
+            if (!settings.Value.IsReadyForCalendarScheduling()) return Results.StatusCode(503);
+            if (!settings.Value.CalendarOrganizerIds.Contains(organizerId)) return Results.StatusCode(403);
+            return store.Read(meetingId) is { } item && item.Selection.OrganizerId == organizerId
+                ? Results.Ok(View(item)) : Results.NotFound();
+        });
+
+        app.MapDelete("/api/teams/organizers/{organizerId:guid}/meetings/{meetingId:guid}/calendar-schedule", (Guid organizerId,
+            Guid meetingId, HttpContext context, IOptions<TeamsCaptureOptions> settings, TeamsCalendarScheduleStore store, TimeProvider clock) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            if (!authorized(context, settings.Value.ControlApiKey ?? "")) return Results.Unauthorized();
+            if (!settings.Value.IsReadyForCalendarScheduling()) return Results.StatusCode(503);
+            if (!settings.Value.CalendarOrganizerIds.Contains(organizerId)) return Results.StatusCode(403);
+            var item = store.Read(meetingId);
+            if (item is null || item.Selection.OrganizerId != organizerId) return Results.NotFound();
+            if (item.State == "cancelled") return Results.NoContent();
+            if (item.State != "pending") return Results.Conflict(new { code = "schedule_already_dispatched_or_terminal" });
+            return store.Replace(item, item with { State = "cancelled", UpdatedAt = clock.GetUtcNow(), Failure = null })
+                ? Results.NoContent() : Results.Conflict(new { code = "schedule_changed_retry_read" });
+        });
+
         app.MapPost("/api/teams/meetings/{meetingId:guid}/calendar-schedule", async (Guid meetingId,
             CalendarScheduleRequest request, HttpContext context, IOptions<TeamsCaptureOptions> settings,
             TeamsCalendarScheduleStore store, ITeamsCalendarClient calendar, TimeProvider clock, CancellationToken token) =>

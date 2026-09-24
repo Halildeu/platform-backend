@@ -6,6 +6,9 @@ Microsoft Graph'tan okunur; istemcinin gönderdiği tarih veya bağlantıyla kat
 Mevcut görünür bot katılımını kullanır. Canlı ses, Teams yan panelinden seçim ve
 iki kişili gerçek tenant kabulü ayrı açık işlerdir.
 
+Kullanıcının seçimine hazırlık için aşağıdaki sınırlı takvim listesi vardır.
+Liste okuması hiçbir etkinliği otomatik seçmez veya toplantıya katılmaz.
+
 ## Ön koşullar ve kapalı başlangıç
 
 - Mevcut bot kimliği, callback, `Calls.JoinGroupCall.All` ve kontrol anahtarı.
@@ -58,6 +61,40 @@ yapılır. Takvim işini silmek, çağrıdan çıkılmış gibi sunulmaz.
 
 ## Zaman ve hata davranışı
 
+### Takvim seçimine hazırlık ve seçim sahibi
+
+`POST /api/teams/calendar/events`, aynı özel kontrol anahtarıyla
+`organizerId`, `from`, `to` alır. Kullanıcıya açık backend bu organizatörü
+doğrulanmış Microsoft kimliğinden türetmelidir; tarayıcının serbestçe verdiği
+bir organizatör kabul edilmemelidir. Bu backend bağlantısı henüz bu pakette yoktur.
+
+- Aralık en fazla 31 gün; başlangıç en fazla 5 dakika geçmişte, bitiş en fazla
+  90 gün ileride olabilir. Saat dilimi ofsetleri UTC'ye çevrilir.
+- Yalnız kullanıcının organizatörü olduğu, iptal edilmemiş Teams etkinlikleri
+  ve aralık içinde başlayan belirli tekrar örnekleri sunulur.
+- Çıktı `items` içinde yalnız `eventId`, `title`, `startsAt`, `endsAt` ve ayrıca
+  `truncated` içerir. Gövde, katılımcılar ve katılım bağlantısı döndürülmez.
+- Graph'ın aynı posta kutusundaki sayfaları en fazla 5 x 100 kayıt / toplam
+  20 saniye sınırıyla okunur; sayfa başına 1 MiB yanıt sınırı vardır. Devamı
+  varsa `truncated=true`; kullanıcı aralığı daraltmalıdır. Eksik okuma tam
+  takvim gibi sunulmaz. Yabancı/başka posta kutusu devam adresleri reddedilir.
+- Yetki hatası, bozuk yanıt veya süre aşımı boş takvim sayılmaz (502). Yanıt
+  `no-store` olur. Liste okuması diske yazmaz veya seçimi tetiklemez.
+
+Backend bağlantısı durum ve iptal için organizatöre bağlı özel yolları kullanır:
+
+`GET /api/teams/organizers/{organizerId}/meetings/{meetingId}/calendar-schedule`
+
+`DELETE /api/teams/organizers/{organizerId}/meetings/{meetingId}/calendar-schedule`
+
+Seçimin kayıtlı organizatörü eşleşmezse 404 döner. Anahtar, izinli organizatör
+listesi ve hazır yapılandırma kontrolleri ayrıca uygulanır. İptal yalnız bekleyen
+işi durdurur; `dispatching`/`joined` durumunu çağrıdan çıkış gibi göstermez.
+Bu yollar kullanıcı kimlik doğrulamasının yerine geçmez; çağıran backend
+kanonik toplantı yetkisini ve doğrulanmış kullanıcı kimliğini ayrıca denetler.
+
+### Seçili etkinliğin takibi
+
 - Bekleyen etkinlikler en fazla 30 saniyelik hedef aralıkla kontrol edilir;
   ana zamanlayıcı 5 saniyede bir çalışır. İstek gecikmesi/Graph sınırları bu
   hedefi uzatabilir; kesin saniye garantisi verilmez. Aynı anda en fazla 4 iş.
@@ -96,3 +133,4 @@ Yerel fake-Graph testleri bu tenant kabulünün yerine geçmez.
 Microsoft sözleşmeleri:
 - https://learn.microsoft.com/en-us/graph/api/event-get?view=graph-rest-1.0
 - https://learn.microsoft.com/en-us/graph/api/onlinemeeting-get?view=graph-rest-1.0
+- https://learn.microsoft.com/en-us/graph/api/calendar-list-calendarview?view=graph-rest-1.0

@@ -23,6 +23,9 @@ builder.Services.AddHttpClient<ITeamsCalendarClient, GraphTeamsCalendarClient>(c
     .RemoveAllLoggers() // Graph filter contains a private meeting join URL; never log request URIs.
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHostedService<TeamsCalendarSchedulingService>();
+builder.Services.AddHttpClient<ITeamsCalendarBrowser, GraphTeamsCalendarClient>(client => client.Timeout = TimeSpan.FromSeconds(15))
+    .RemoveAllLoggers()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 builder.Services.AddHttpClient<ITeamsCallLifecycleClient, GraphTeamsCallLifecycleClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(15))
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -65,6 +68,7 @@ app.Use(async (context, next) =>
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapTeamsCalendarSchedules(ControlKeyMatches);
+app.MapTeamsCalendarBrowse(ControlKeyMatches);
 app.MapPost("/api/teams/callback", (JsonElement payload, HttpContext context,
     TeamsCallbackState state, IOptions<TeamsCaptureOptions> settings) =>
 {
