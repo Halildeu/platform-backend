@@ -19,12 +19,14 @@ const checks = [];
 let containerCreated = false;
 let volumeCreated = false;
 let report;
+let stage = 'image-metadata';
 try {
   const metadata = JSON.parse(await docker('image', 'inspect', image))[0];
   assert.equal(metadata.Config.User, '1654:1654');
   assert.equal(metadata.Config.Labels['org.opencontainers.image.revision'], source);
   assert.ok(metadata.Config.Env.includes('TeamsCapture__Enabled=false'));
   checks.push('nonroot-disabled-image-with-matching-source');
+  stage = 'container-start';
   await docker('volume', 'create', volume);
   volumeCreated = true;
   await docker('create', '--name', name, '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
@@ -32,9 +34,12 @@ try {
     '--publish', '127.0.0.1::8080', '--env', `TeamsCapture__ControlApiKey=${key}`, image);
   containerCreated = true;
   await docker('start', name);
-  const binding = await docker('port', name, '8080/tcp');
-  assert.match(binding, /^127\.0\.0\.1:\d+$/);
-  const base = `http://${binding}`;
+  async function currentBase() {
+    const binding = await docker('port', name, '8080/tcp');
+    assert.match(binding, /^127\.0\.0\.1:\d+$/);
+    return `http://${binding}`;
+  }
+  let base = await currentBase();
   async function health() {
     for (let i = 0; i < 40; i++) {
       try {
@@ -50,9 +55,11 @@ try {
     }
     throw new Error('health-not-ready');
   }
+  stage = 'initial-health';
   await health();
   checks.push('health-explicitly-disabled-no-live-audio');
   const response = (path, init = {}) => fetch(`${base}${path}`, { ...init, redirect: 'error', signal: AbortSignal.timeout(5000) });
+  stage = 'private-endpoints';
   assert.equal((await response('/api/teams/readiness')).status, 401);
   assert.equal((await response('/api/teams/callback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"value":[]}' })).status, 401);
   const privateReadiness = await response('/api/teams/readiness', { headers: { 'X-Teams-Control-Key': key } });
@@ -68,17 +75,22 @@ try {
       organizerUserId: '11111111-1111-4111-8111-111111111111', correlationId: 'disabled-container-check' })
   })).status, 503);
   checks.push('anonymous-control-and-callback-rejected', 'disabled-join-refused');
+  stage = 'volume-write';
   // Test the image's real user/volume permissions, not a real meeting state claim.
   await docker('exec', name, 'sh', '-c', 'printf disabled-smoke > /var/lib/teams-capture/.smoke-marker');
   await docker('restart', '--time', '5', name);
+  // Docker can assign a different ephemeral published port on restart.
+  base = await currentBase();
+  stage = 'restart-health';
   await health();
+  stage = 'volume-read-after-restart';
   assert.equal(await docker('exec', name, 'cat', '/var/lib/teams-capture/.smoke-marker'), 'disabled-smoke');
   checks.push('state-volume-writable-and-retained-on-container-restart');
   report = { schemaVersion: 1, sourceCommit: source, imageId: metadata.Id,
     disabledContainerSmokePassed: true, checks, liveMeetingAcceptance: false, liveAudioAcceptance: false };
 } catch {
   // Container logs, inspect output and exception bodies are deliberately not copied into evidence.
-  console.error('Disabled container smoke failed. No live Teams acceptance claimed.');
+  console.error(`Disabled container smoke failed at ${stage}; completed checks: ${checks.join(', ')}. No live Teams acceptance claimed.`);
   process.exitCode = 1;
 } finally {
   try {
