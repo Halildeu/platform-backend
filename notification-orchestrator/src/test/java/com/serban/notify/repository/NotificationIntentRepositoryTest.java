@@ -2,6 +2,7 @@ package com.serban.notify.repository;
 
 import com.serban.notify.AbstractPostgresTest;
 import com.serban.notify.domain.NotificationIntent;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -27,6 +28,9 @@ class NotificationIntentRepositoryTest extends AbstractPostgresTest {
     @Autowired
     NotificationIntentRepository repo;
 
+    @Autowired
+    EntityManager entityManager;
+
     @Test
     void persistAndRetrieveIntent() {
         NotificationIntent intent = newIntent();
@@ -36,6 +40,8 @@ class NotificationIntentRepositoryTest extends AbstractPostgresTest {
         assertThat(saved.getCreatedAt()).isNotNull();
         assertThat(saved.getStatus()).isEqualTo(NotificationIntent.Status.PENDING);
 
+        entityManager.flush();
+        entityManager.clear();
         Optional<NotificationIntent> found = repo.findByIntentId(intent.getIntentId());
         assertThat(found).isPresent();
         assertThat(found.get().getOrgId()).isEqualTo("default");
