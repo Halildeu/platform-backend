@@ -165,6 +165,17 @@ public class MeetingService {
         return requireRecordingAccess(tenant, id, meeting);
     }
 
+    /** New Teams selections require an active aggregate; status/cancel retain the recording-access gate. */
+    @Transactional(readOnly = true)
+    public MeetingRecordingAccessResponse requireTeamsSchedulingAccess(AdminTenantContext tenant, UUID id) {
+        Meeting meeting = requireMeeting(tenant, id);
+        MeetingRecordingAccessResponse access = requireRecordingAccess(tenant, id, meeting);
+        if (meeting.getStatus() != MeetingStatus.SCHEDULED && meeting.getStatus() != MeetingStatus.IN_PROGRESS) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Meeting cannot accept a Teams schedule.");
+        }
+        return access;
+    }
+
     private MeetingRecordingAccessResponse requireRecordingAccess(
             AdminTenantContext tenant, UUID id, Meeting meeting) {
         String stablePrincipalRef = toUserPrincipalRef(tenant.subject());
