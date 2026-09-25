@@ -15,17 +15,19 @@ public sealed class GraphTeamsMeetingPresenceClient : ITeamsMeetingPresenceClien
     private readonly ITeamsCalendarMeetingResolver calendarResolver;
     private readonly ITeamsAccessTokenProvider tokenProvider;
     private readonly HttpClient httpClient;
+    private readonly ITeamsScheduleDispatchGuard dispatchGuard;
 
     public GraphTeamsMeetingPresenceClient(
         IOptions<TeamsCaptureOptions> options,
         ITeamsCalendarMeetingResolver calendarResolver,
         ITeamsAccessTokenProvider tokenProvider,
-        HttpClient httpClient)
+        HttpClient httpClient, ITeamsScheduleDispatchGuard dispatchGuard)
     {
         this.options = options.Value;
         this.calendarResolver = calendarResolver;
         this.tokenProvider = tokenProvider;
         this.httpClient = httpClient;
+        this.dispatchGuard = dispatchGuard;
     }
 
     public async Task<TeamsJoinReceipt?> JoinAsync(
@@ -60,6 +62,10 @@ public sealed class GraphTeamsMeetingPresenceClient : ITeamsMeetingPresenceClien
             Encoding.UTF8,
             "application/json");
 
+        try {
+            await dispatchGuard.ValidateAsync(command, meeting, deadline.Token).ConfigureAwait(false);
+            deadline.Token.ThrowIfCancellationRequested();
+        } catch (OperationCanceledException) { throw new TeamsJoinNotCreatedException(); }
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
         // These responses explicitly reject creation. 408, 5xx, redirects and malformed
         // success responses stay ambiguous: a caller must not blindly create another call.

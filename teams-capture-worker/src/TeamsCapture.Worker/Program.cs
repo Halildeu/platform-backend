@@ -19,6 +19,11 @@ builder.Services.AddSingleton<ITeamsCalendarMeetingResolver>(services =>
 builder.Services.AddSingleton<TeamsMeetingPresenceCoordinator>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<TeamsCalendarScheduleStore>();
+builder.Services.Configure<TeamsScheduleAuthorizationOptions>(builder.Configuration.GetSection("TeamsScheduleAuthorization"));
+builder.Services.AddHttpClient<ITeamsScheduleAuthorizer, HttpTeamsScheduleAuthorizer>(client => client.Timeout = TimeSpan.FromSeconds(25))
+    .RemoveAllLoggers()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddTransient<ITeamsScheduleDispatchGuard, TeamsScheduleDispatchGuard>();
 builder.Services.AddHttpClient<ITeamsCalendarClient, GraphTeamsCalendarClient>(client => client.Timeout = TimeSpan.FromSeconds(15))
     .RemoveAllLoggers() // Graph filter contains a private meeting join URL; never log request URIs.
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
@@ -138,7 +143,7 @@ app.MapPost("/api/teams/calls/{callId}/leave", async (
     return Results.NoContent();
 });
 
-app.MapGet("/api/teams/readiness", (HttpContext context, IOptions<TeamsCaptureOptions> settings) =>
+app.MapGet("/api/teams/readiness", (HttpContext context, IOptions<TeamsCaptureOptions> settings, ITeamsScheduleAuthorizer authorizer) =>
 {
     context.Response.Headers.CacheControl = "no-store";
     var config = settings.Value;
@@ -155,7 +160,8 @@ app.MapGet("/api/teams/readiness", (HttpContext context, IOptions<TeamsCaptureOp
         tenantAcceptance = "not-verified-by-configuration",
         mediaMode = "service-hosted-presence-only",
         liveAudio = false, liveSpeakerAttribution = false, teamsSidePanel = false, automaticCalendarScan = false,
-        selectedCalendarSchedulingConfigured = config.IsReadyForCalendarScheduling(),
+        selectedCalendarSchedulingConfigured = config.IsReadyForCalendarScheduling() && authorizer.IsConfigured,
+        scheduleAuthorizationConfigured = authorizer.IsConfigured,
         completedCallRetentionConfigured = config.CompletedCallRetentionHours is not null,
         requirements = new[] { "tenant-callback-and-calling-registration", "approved-media-host-and-adapter",
             "media-permission-and-recording-status", "canonical-audio-analysis-integration", "authorized-teams-side-panel",

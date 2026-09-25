@@ -168,8 +168,18 @@ public class MeetingService {
     /** New Teams selections require an active aggregate; status/cancel retain the recording-access gate. */
     @Transactional(readOnly = true)
     public MeetingRecordingAccessResponse requireTeamsSchedulingAccess(AdminTenantContext tenant, UUID id) {
+        return requireTeamsSchedulingAccess(tenant, id, false);
+    }
+
+    /** Scheduled dispatch must not reuse an authorization decision from selection time or either cache. */
+    @Transactional(readOnly = true)
+    public MeetingRecordingAccessResponse requireTeamsDispatchAccess(AdminTenantContext tenant, UUID id) {
+        return requireTeamsSchedulingAccess(tenant, id, true);
+    }
+
+    private MeetingRecordingAccessResponse requireTeamsSchedulingAccess(AdminTenantContext tenant, UUID id, boolean fresh) {
         Meeting meeting = requireMeeting(tenant, id);
-        MeetingRecordingAccessResponse access = requireRecordingAccess(tenant, id, meeting);
+        MeetingRecordingAccessResponse access = requireRecordingAccess(tenant, id, meeting, fresh);
         if (meeting.getStatus() != MeetingStatus.SCHEDULED && meeting.getStatus() != MeetingStatus.IN_PROGRESS) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Meeting cannot accept a Teams schedule.");
         }
@@ -178,6 +188,11 @@ public class MeetingService {
 
     private MeetingRecordingAccessResponse requireRecordingAccess(
             AdminTenantContext tenant, UUID id, Meeting meeting) {
+        return requireRecordingAccess(tenant, id, meeting, false);
+    }
+
+    private MeetingRecordingAccessResponse requireRecordingAccess(
+            AdminTenantContext tenant, UUID id, Meeting meeting, boolean fresh) {
         String stablePrincipalRef = toUserPrincipalRef(tenant.subject());
 
         OpenFgaAuthzService authz = authzServiceProvider.getIfAvailable();
@@ -187,7 +202,7 @@ public class MeetingService {
                     "Meeting recording authorization is unavailable.");
         }
 
-        boolean allowed = authz.checkPrincipal(
+        boolean allowed = recordingPermission(authz, fresh,
                 stablePrincipalRef,
                 MeetingAuthz.CAN_RECORD,
                 MeetingAuthz.OBJECT_TYPE,
@@ -202,12 +217,12 @@ public class MeetingService {
             // claim for the same stable OIDC subject that created this meeting.
             String legacyPrincipalRef = toUserPrincipalRef(tenant.authzPrincipal());
             if (!legacyPrincipalRef.equals(stablePrincipalRef)) {
-                boolean stablePrincipalBlocked = authz.checkPrincipal(
+                boolean stablePrincipalBlocked = recordingPermission(authz, fresh,
                         stablePrincipalRef,
                         MeetingAuthz.BLOCKED,
                         MeetingAuthz.OBJECT_TYPE,
                         id.toString());
-                if (!stablePrincipalBlocked && authz.checkPrincipal(
+                if (!stablePrincipalBlocked && recordingPermission(authz, fresh,
                         legacyPrincipalRef,
                         MeetingAuthz.CAN_RECORD,
                         MeetingAuthz.OBJECT_TYPE,
@@ -217,6 +232,15 @@ public class MeetingService {
             }
         }
         throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Meeting recording access denied.");
+    }
+
+    private static boolean recordingPermission(OpenFgaAuthzService authz, boolean fresh, String principal,
+            String relation, String type, String id) {
+        if (!fresh) return authz.checkPrincipal(principal, relation, type, id);
+        var result = authz.checkPrincipalFreshResult(principal, relation, type, id);
+        if (result == null || !("granted".equals(result.reason()) || "no_relation".equals(result.reason())))
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Meeting recording authorization is unavailable.");
+        return result.allowed();
     }
 
     private static MeetingRecordingAccessResponse recordingAccessResponse(Meeting meeting) {

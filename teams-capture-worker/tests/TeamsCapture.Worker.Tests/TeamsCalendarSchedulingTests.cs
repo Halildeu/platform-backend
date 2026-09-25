@@ -15,6 +15,27 @@ namespace TeamsCapture.Worker.Tests;
 public sealed class TeamsCalendarSchedulingTests
 {
     [Fact]
+    public async Task New_selection_requires_bound_actor_and_configured_dispatch_authorization()
+    {
+        using var app = new Factory(); using var client = app.AuthorizedClient();
+        var path = $"/api/teams/meetings/{Guid.NewGuid()}/calendar-schedule";
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync(path, app.Request() with { Actor = null })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync(path, app.Request() with {
+            Actor = app.Request().Actor! with { MicrosoftTenantId = Guid.NewGuid() } })).StatusCode);
+        app.Authorization.Configured = false;
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.PostAsJsonAsync(path, app.Request())).StatusCode);
+        Assert.Equal(0, app.Calendar.Reads);
+    }
+
+    [Fact]
+    public async Task Retrying_selection_with_another_actor_cannot_take_over_schedule()
+    {
+        using var app = new Factory(); var id = await app.Select(); using var client = app.AuthorizedClient();
+        var request = app.Request() with { Actor = app.Request().Actor! with { Subject = "other", AuthzPrincipal = "other" } };
+        Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync($"/api/teams/meetings/{id}/calendar-schedule", request)).StatusCode);
+        Assert.Equal("subject", app.Store.Read(id)!.Selection.Actor!.Subject);
+    }
+    [Fact]
     public async Task Owner_scoped_schedule_view_and_cancel_do_not_expose_another_organizers_selection()
     {
         var other = Guid.NewGuid();
@@ -271,6 +292,7 @@ public sealed class TeamsCalendarSchedulingTests
         public string DirectoryPath { get; } = Path.Combine(Path.GetTempPath(), "teams-schedule-" + Guid.NewGuid().ToString("N"));
         public readonly Clock Clock = new();
         public readonly Presence Presence = new();
+        public readonly Authorizer Authorization = new();
         public readonly Calendar Calendar;
         public readonly TeamsCaptureOptions Settings;
         public TeamsCalendarScheduleStore Store => Services.GetRequiredService<TeamsCalendarScheduleStore>();
@@ -284,7 +306,9 @@ public sealed class TeamsCalendarSchedulingTests
                 CalendarSchedulingEnabled = true, CalendarOrganizerIds = additionalOrganizer is { } other ? [Guid.NewGuid(), other] : [Guid.NewGuid()],
                 CalendarScheduleStateFilePath = Path.Combine(DirectoryPath, "schedules") };
         }
-        public CalendarScheduleRequest Request() => new(Settings.CalendarOrganizerIds[0], "AAMk+/=", "corr-test");
+        private readonly Guid organization = Guid.NewGuid();
+        public CalendarScheduleRequest Request() => new(Settings.CalendarOrganizerIds[0], "AAMk+/=", "corr-test",
+            new(1, "https://issuer.example/realms/platform", "subject", organization, Guid.Parse(Settings.TenantId!), "subject", 7, 35));
         public HttpClient AuthorizedClient() { var client = CreateClient(); client.DefaultRequestHeaders.Add("X-Teams-Control-Key", Settings.ControlApiKey); return client; }
         public async Task<Guid> Select()
         {
@@ -305,6 +329,7 @@ public sealed class TeamsCalendarSchedulingTests
                 services.RemoveAll<ITeamsCalendarClient>(); services.AddSingleton<ITeamsCalendarClient>(Calendar);
                 services.RemoveAll<ITeamsCalendarBrowser>(); services.AddSingleton<ITeamsCalendarBrowser>(Calendar);
                 services.RemoveAll<ITeamsMeetingPresenceClient>(); services.AddSingleton<ITeamsMeetingPresenceClient>(Presence);
+                services.RemoveAll<ITeamsScheduleAuthorizer>(); services.AddSingleton<ITeamsScheduleAuthorizer>(Authorization);
                 services.AddSingleton<TeamsCalendarSchedulingService>();
             });
         }
@@ -314,6 +339,12 @@ public sealed class TeamsCalendarSchedulingTests
             if (Directory.Exists(DirectoryPath) && Path.GetFullPath(DirectoryPath).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase))
                 Directory.Delete(DirectoryPath, true);
         }
+    }
+    private sealed class Authorizer : ITeamsScheduleAuthorizer
+    {
+        public bool Configured = true;
+        public bool IsConfigured => Configured;
+        public Task<ScheduleAuthorization> AuthorizeAsync(CalendarSelection selection, CancellationToken token) => Task.FromResult(ScheduleAuthorization.Allowed);
     }
     private sealed class Clock : TimeProvider
     {

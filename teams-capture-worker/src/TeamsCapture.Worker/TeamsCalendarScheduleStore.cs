@@ -5,12 +5,12 @@ using Microsoft.Extensions.Options;
 
 namespace TeamsCapture.Worker;
 
-public sealed record CalendarSelection(Guid MeetingId, Guid OrganizerId, string EventId, string CorrelationId)
+public sealed record CalendarSelection(Guid MeetingId, Guid OrganizerId, string EventId, string CorrelationId, TeamsScheduleActor? Actor = null)
 {
     public string Reference => "outlook-" + Convert.ToHexString(SHA256.HashData(
         Encoding.UTF8.GetBytes(OrganizerId.ToString("D") + "\0" + EventId))).ToLowerInvariant();
     public bool IsValid() => MeetingId != Guid.Empty && OrganizerId != Guid.Empty && ValidEventId(EventId)
-        && new MeetingPresenceCommand(MeetingId, Reference, CorrelationId).IsValid();
+        && new MeetingPresenceCommand(MeetingId, Reference, CorrelationId).IsValid() && (Actor is null || Actor.IsValid());
     public static bool ValidEventId(string? id) => id is { Length: > 0 and <= 2048 }
         && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '+' or '/' or '=');
 }
@@ -55,7 +55,7 @@ public sealed class TeamsCalendarScheduleStore
 
     public bool Add(CalendarSchedule proposed)
     {
-        if (!proposed.Selection.IsValid() || proposed.State != "pending" || proposed.EndsAt <= proposed.StartsAt) return false;
+        if (!proposed.Selection.IsValid() || proposed.Selection.Actor is null || proposed.State != "pending" || proposed.EndsAt <= proposed.StartsAt) return false;
         lock (gate)
         {
             if (schedules.TryGetValue(proposed.Selection.MeetingId, out var old)) return old.Selection == proposed.Selection;

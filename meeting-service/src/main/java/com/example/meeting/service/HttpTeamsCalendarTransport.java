@@ -64,10 +64,11 @@ public class HttpTeamsCalendarTransport implements TeamsCalendarTransport {
     @Override public Choices browse(UUID organizer, OffsetDateTime from, OffsetDateTime to) {
         return worker(HttpMethod.POST, "/api/teams/calendar/events", Map.of("organizerId", organizer, "from", from, "to", to), Choices.class);
     }
-    @Override public Schedule select(UUID organizer, UUID meeting, String eventId) {
+    @Override public Schedule select(UUID organizer, UUID meeting, String eventId, TeamsScheduleActor actor) {
+        if (actor == null || !actor.isValid()) throw unavailable();
         // Stable correlation allows a client to read/retry the same selection after an uncertain response.
         return worker(HttpMethod.POST, "/api/teams/meetings/" + meeting + "/calendar-schedule",
-                Map.of("organizerId", organizer, "eventId", eventId, "correlationId", "teams-calendar-" + meeting), Schedule.class);
+                Map.of("organizerId", organizer, "eventId", eventId, "correlationId", "teams-calendar-" + meeting, "actor", actor), Schedule.class);
     }
     @Override public Schedule status(UUID organizer, UUID meeting) {
         return worker(HttpMethod.GET, ownedPath(organizer, meeting), null, Schedule.class);

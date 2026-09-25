@@ -112,6 +112,13 @@ dar takvim okuma ve onlineMeeting izinleri ayrıca doğrulanır. Gerçek
 secret sağlama, kalıcı volume, callback alan adı ve Teams manifest aktivasyonu
 GitOps3716 üzerinden yürütülür.
 
+Kullanıcının seçtiği takvim kaydı için kalıcı platform aktörü ve katılım anında
+güncel yetki doğrulaması zorunludur. `TeamsScheduleAuthorization` ayarları ve
+ayrı worker servis kimliği yokken yeni seçim kabul edilmez. Yetki reddi Graph'a
+katılım isteği göndermez; doğrulama servisi ulaşılamıyorsa zaman penceresinde
+yeniden denenir. Eski aktörsüz bekleyen kayıtlar otomatik katılmaz. Ayarlar,
+güvenli sürüm sırası ve sınırlar: [Takvim yetkilendirmesi](../meeting-service/docs/teams-calendar.md#dispatch-time-authorization).
+
 ## Katılımcı ve ses kaynağı bilgisi
 
 `GET /api/teams/calls/{callId}/participants`, kurum içi `X-Teams-Control-Key`

@@ -29,6 +29,11 @@ public sealed class TeamsMeetingPresenceCoordinator(TeamsCallbackState state, IT
 
         TeamsJoinReceipt? result;
         try { result = await teamsClient.JoinAsync(command, cancellationToken).ConfigureAwait(false); }
+        catch (TeamsScheduleNotAuthorizedException error)
+        {
+            state.ReleaseUnsentJoin(command.MeetingId);
+            return MeetingPresenceResult.Rejected(error.Code);
+        }
         catch (TeamsJoinNotCreatedException)
         {
             state.ReleaseUnsentJoin(command.MeetingId);

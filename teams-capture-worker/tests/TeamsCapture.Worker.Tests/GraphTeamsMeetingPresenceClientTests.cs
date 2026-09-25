@@ -41,7 +41,7 @@ public sealed class GraphTeamsMeetingPresenceClientTests
             Options.Create(options),
             new CalendarResolver(),
             new AccessTokenProvider(),
-            new HttpClient(handler));
+            new HttpClient(handler), new OperatorGuard());
 
     [Fact]
     public async Task Token_outage_does_not_lock_meeting_and_retry_creates_exactly_one_call()
@@ -49,7 +49,7 @@ public sealed class GraphTeamsMeetingPresenceClientTests
         using var fixture = new TeamsOperationalTests.Fixture();
         var tokens = new RecoveringTokenProvider();
         var handler = new CapturingHandler("{\"id\":\"call-1\"}");
-        var client = new GraphTeamsMeetingPresenceClient(fixture.Options, new CalendarResolver(), tokens, new HttpClient(handler));
+        var client = new GraphTeamsMeetingPresenceClient(fixture.Options, new CalendarResolver(), tokens, new HttpClient(handler), new OperatorGuard());
         var state = new TeamsCallbackState(fixture.Options);
         var coordinator = new TeamsMeetingPresenceCoordinator(state, new TeamsOperationalTests.LifecycleStub());
         var command = Command();
@@ -60,6 +60,10 @@ public sealed class GraphTeamsMeetingPresenceClientTests
         Assert.True(handler.WasCalled);
     }
 
+    private sealed class OperatorGuard : ITeamsScheduleDispatchGuard
+    {
+        public Task ValidateAsync(MeetingPresenceCommand command, ScheduledTeamsMeeting meeting, CancellationToken token) => Task.CompletedTask;
+    }
     private sealed class RecoveringTokenProvider : ITeamsAccessTokenProvider
     {
         private int attempts;

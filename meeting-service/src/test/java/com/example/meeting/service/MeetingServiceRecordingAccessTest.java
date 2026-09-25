@@ -85,6 +85,34 @@ class MeetingServiceRecordingAccessTest {
                 false, userId -> java.util.Optional.empty());
     }
 
+    @Test void teamsDispatchRejectsRevokedPermissionEvenWhenOrdinaryRecordingHasCachedAllow() {
+        Meeting meeting = meetingCreatedBy("stable-sub-3"); meeting.setStatus(MeetingStatus.SCHEDULED);
+        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID)).thenReturn(Optional.of(meeting));
+        when(authzProvider.getIfAvailable()).thenReturn(authzService); when(authzService.isEnabled()).thenReturn(true);
+        when(authzService.checkPrincipal("user:stable-sub-3", MeetingAuthz.CAN_RECORD, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString())).thenReturn(true);
+        meetingService.requireRecordingAccess(TENANT, MEETING_ID);
+        when(authzService.checkPrincipalFreshResult("user:stable-sub-3", MeetingAuthz.CAN_RECORD, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString()))
+                .thenReturn(new OpenFgaAuthzService.CheckResult(false, "no_relation"));
+        assertThatThrownBy(() -> meetingService.requireTeamsDispatchAccess(TENANT, MEETING_ID))
+                .isInstanceOfSatisfying(ResponseStatusException.class, error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN));
+    }
+
+    @Test void teamsDispatchNeverTreatsUnavailableBlockedCheckAsPermissionToUseLegacyAlias() {
+        meetingService = new MeetingService(meetingRepository, sessionRepository, actionRepository, agendaItemRepository,
+                decisionRepository, eventOutboxRepository, analysisRunRepository, sessionErasureService, authzProvider,
+                true, false, userId -> Optional.empty());
+        Meeting meeting = meetingCreatedBy("stable-sub-3"); meeting.setStatus(MeetingStatus.SCHEDULED);
+        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID)).thenReturn(Optional.of(meeting));
+        when(authzProvider.getIfAvailable()).thenReturn(authzService); when(authzService.isEnabled()).thenReturn(true);
+        when(authzService.checkPrincipalFreshResult("user:stable-sub-3", MeetingAuthz.CAN_RECORD, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString()))
+                .thenReturn(new OpenFgaAuthzService.CheckResult(false, "no_relation"));
+        when(authzService.checkPrincipalFreshResult("user:stable-sub-3", MeetingAuthz.BLOCKED, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString()))
+                .thenReturn(new OpenFgaAuthzService.CheckResult(false, "unavailable"));
+        assertThatThrownBy(() -> meetingService.requireTeamsDispatchAccess(TENANT, MEETING_ID))
+                .isInstanceOfSatisfying(ResponseStatusException.class, error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+        verify(authzService, never()).checkPrincipalFreshResult("user:legacy-user-3", MeetingAuthz.CAN_RECORD, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString());
+    }
+
     @Test
     void requireRecordingAccessAllowsWhenCanRecordRelationAllows() {
         when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))

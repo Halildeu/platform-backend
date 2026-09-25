@@ -142,4 +142,28 @@ class OpenFgaAuthzServiceNoCacheTest {
         assertFalse(out.get(0).allowed(), "circuit-open batch must DENY (fail-closed)");
         verify(client, never()).batchCheck(any(ClientBatchCheckRequest.class));
     }
+    @Test void dispatchIgnoresCachedAllowAndRequestsHigherConsistency() throws Exception {
+        var allowed = mock(ClientCheckResponse.class); when(allowed.getAllowed()).thenReturn(true);
+        var denied = mock(ClientCheckResponse.class); when(denied.getAllowed()).thenReturn(false);
+        when(client.check(any(ClientCheckRequest.class))).thenReturn(CompletableFuture.completedFuture(allowed));
+        when(client.check(any(ClientCheckRequest.class), any(dev.openfga.sdk.api.configuration.ClientCheckOptions.class)))
+                .thenReturn(CompletableFuture.completedFuture(denied));
+        assertTrue(service.check("u1", "can_record", "meeting", "m1"));
+        assertFalse(service.checkPrincipalFreshResult("user:u1", "can_record", "meeting", "m1").allowed());
+        assertFalse(service.checkPrincipalFreshResult("user:u1", "can_record", "meeting", "m1").allowed());
+        var options = org.mockito.ArgumentCaptor.forClass(dev.openfga.sdk.api.configuration.ClientCheckOptions.class);
+        verify(client, times(2)).check(any(ClientCheckRequest.class), options.capture());
+        assertEquals(dev.openfga.sdk.api.model.ConsistencyPreference.HIGHER_CONSISTENCY, options.getValue().getConsistency());
+    }
+    @Test void disabledDispatchFailsClosedUnlikeLegacyDevelopmentChecks() {
+        var props = new OpenFgaProperties(); props.setEnabled(false);
+        var disabled = new OpenFgaAuthzService(client, props);
+        assertEquals("unavailable", disabled.checkPrincipalFreshResult("user:u1", "can_record", "meeting", "m1").reason());
+        org.mockito.Mockito.verifyNoInteractions(client);
+    }
+    @Test void dispatchDistinguishesNetworkFailureFromRevocation() throws Exception {
+        when(client.check(any(ClientCheckRequest.class), any(dev.openfga.sdk.api.configuration.ClientCheckOptions.class)))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("outage")));
+        assertEquals("unavailable", service.checkPrincipalFreshResult("user:u1", "blocked", "meeting", "m1").reason());
+    }
 }
