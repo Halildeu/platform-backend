@@ -3,8 +3,10 @@
 Bu özellik kurum içi kontrol istemcisinin **açıkça seçtiği** Outlook etkinliğini
 izler. Posta kutusundaki bütün etkinlikleri taramaz. Takvim saati ve iptal bilgisi
 Microsoft Graph'tan okunur; istemcinin gönderdiği tarih veya bağlantıyla katılmaz.
-Mevcut görünür bot katılımını kullanır. Canlı ses, Teams yan panelinden seçim ve
-iki kişili gerçek tenant kabulü ayrı açık işlerdir.
+Mevcut görünür bot katılımını kullanır. Teams yan panelinden seçim köprüsü
+backend #1195/#1196 ve web #1198 ile kaynakta bağlandı; TEST kurulumu, canlı ses
+ve iki kişili gerçek tenant kabulü açıktır.
+[Güncel teslim durumu](test-delivery-status-20260925.md).
 
 Kullanıcının seçimine hazırlık için aşağıdaki sınırlı takvim listesi vardır.
 Liste okuması hiçbir etkinliği otomatik seçmez veya toplantıya katılmaz.

@@ -1,5 +1,8 @@
 # Teams canlı ses ve konuşmacı bağlantısı — 22 Eylül 2026
 
+25 Eylül kaynak/paket durumu ve Halil Bey / IT için açık kararlar:
+[TEST teslim durumu](test-delivery-status-20260925.md).
+
 ## Doğrulanmış başlangıç
 
 - 22 Eylül kişisel SSH kontrolü: `devai.acik.com` / `10.9.10.53`, Ubuntu
@@ -71,10 +74,11 @@ Parola veya özel anahtar sohbet/mail/repo içine yazılmaz. Gerekli alanlar:
 ## Uygulama sırası ve kabul
 
 **Hesap dışındaki açık işler:** seçilen canlı medya adaptörünün uygulanması,
-kanonik ses/STT/analiz hattına bağlanması, toplantıya yetkili Teams yan paneli
-ve organizatör takviminden zamanlı katılımın kullanıcı paneline bağlanması henüz
-bitmiş değildir. Seçilen Outlook etkinliği için kapalı başlayan Graph okuyucu ve
-kalıcı zamanlayıcı kodu vardır; kurum izinleri/gerçek kabul ayrıca açıktır
+kanonik ses/STT/analiz hattına bağlanması ve zamana bağlı konuşmacı eşleştirmesi.
+Yetkili Teams yan paneli ve takvim seçim köprüsü kaynakta tamamlandı
+(backend #1195/#1196, web #1198); TEST kurulumu ve gerçek Teams kabulü yapılmadı.
+Seçilen Outlook etkinliği için kapalı başlayan Graph okuyucu ve kalıcı
+zamanlayıcı kodu vardır; kurum izinleri/gerçek kabul ayrıca açıktır
 ([takvim kurulumu](calendar-scheduling.md)). Roster ve kontrol düzlemi testlerinin
 geçmesi bütün canlı ürün işlerini tamamlamaz.
 Kuruma hesap talebi yapmak bu işlerin tek engelinin hesap olduğu anlamına gelmez.
