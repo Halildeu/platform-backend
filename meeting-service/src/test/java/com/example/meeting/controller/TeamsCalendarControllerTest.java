@@ -99,12 +99,12 @@ class TeamsCalendarControllerTest {
         verifyNoInteractions(transport);
     }
     @Test void bodyOrganizerAndTimeCannotOverrideVerifiedIdentityOrGraphEvent() throws Exception {
-        when(transport.select(ORGANIZER, MEETING, "AAMk+/=")).thenReturn(schedule(MEETING));
+        when(transport.select(ORGANIZER, MEETING, "AAMk+/=", new TeamsScheduleActor(1, ISSUER, SUBJECT, ORG, MS_TENANT, SUBJECT, 7, 35))).thenReturn(schedule(MEETING));
         mvc.perform(post(ROOT + "/schedule").with(user()).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"eventId\":\"AAMk+/=\",\"organizerId\":\"someone-else\",\"startsAt\":\"tomorrow\",\"joinUrl\":\"https://evil.example\"}"))
                 .andExpect(status().isAccepted()).andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("$.meetingId").value(MEETING.toString())).andExpect(jsonPath("$.organizerId").doesNotExist());
-        verify(transport).select(ORGANIZER, MEETING, "AAMk+/=");
+        verify(transport).select(ORGANIZER, MEETING, "AAMk+/=", new TeamsScheduleActor(1, ISSUER, SUBJECT, ORG, MS_TENANT, SUBJECT, 7, 35));
     }
     @Test void statusAndCancelUseResolvedOwner() throws Exception {
         when(transport.status(ORGANIZER, MEETING)).thenReturn(schedule(MEETING));
@@ -145,7 +145,7 @@ class TeamsCalendarControllerTest {
                 .content("{\"from\":\"" + from + "\",\"to\":\"" + to + "\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.truncated").value(true))
                 .andExpect(jsonPath("$.items[0].title").value("Müşteri sunumu"));
-        verify(transport, never()).select(any(), any(), any());
+        verify(transport, never()).select(any(), any(), any(), any());
     }
     @Test void overlongWindowNeverReachesWorker() throws Exception {
         mvc.perform(post(ROOT + "/events").with(user()).contentType(MediaType.APPLICATION_JSON)
@@ -156,6 +156,6 @@ class TeamsCalendarControllerTest {
     @Test void pathLikeEventNeverReachesWorker() throws Exception {
         mvc.perform(post(ROOT + "/schedule").with(user()).contentType(MediaType.APPLICATION_JSON).content("{\"eventId\":\"../path\"}"))
                 .andExpect(status().isBadRequest());
-        verify(transport, never()).select(any(), any(), any());
+        verify(transport, never()).select(any(), any(), any(), any());
     }
 }

@@ -50,6 +50,8 @@ public sealed class TeamsCalendarSchedulingService(TeamsCalendarScheduleStore st
         }
         if (!settings.Value.CalendarOrganizerIds.Contains(item.Selection.OrganizerId))
         { Finish(item, "failed", "organizer_not_allowed"); return; }
+        if (item.Selection.Actor is null)
+        { Finish(item, "failed", "actor_missing_requires_reselection"); return; }
         var current = await calendar.ReadAsync(item.Selection.OrganizerId, item.Selection.EventId, cancellationToken);
         if (current is null) { Defer(item, "calendar_read_unavailable"); return; }
         if (current.Missing) { Finish(item, "failed", "calendar_event_not_found"); return; }
@@ -79,7 +81,7 @@ public sealed class TeamsCalendarSchedulingService(TeamsCalendarScheduleStore st
         { Finish(dispatching, "failed", "calendar_reference_conflict"); return; }
         var result = await coordinator.JoinAsync(new(item.Selection.MeetingId, item.Selection.Reference,
             item.Selection.CorrelationId), presence, cancellationToken);
-        if (result.FailureCode is "join_not_created" or "join_not_sent")
+        if (result.FailureCode is "join_not_created" or "join_not_sent" or "schedule_authorization_unavailable")
         {
             // The coordinator only returns these when no remote call was created;
             // re-read authoritative calendar data on the next attempt, within the join window.

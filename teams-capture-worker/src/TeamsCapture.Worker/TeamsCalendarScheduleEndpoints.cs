@@ -35,13 +35,17 @@ public static class TeamsCalendarScheduleEndpoints
 
         app.MapPost("/api/teams/meetings/{meetingId:guid}/calendar-schedule", async (Guid meetingId,
             CalendarScheduleRequest request, HttpContext context, IOptions<TeamsCaptureOptions> settings,
-            TeamsCalendarScheduleStore store, ITeamsCalendarClient calendar, TimeProvider clock, CancellationToken token) =>
+            TeamsCalendarScheduleStore store, ITeamsCalendarClient calendar, ITeamsScheduleAuthorizer authorizer,
+            TimeProvider clock, CancellationToken token) =>
         {
             context.Response.Headers.CacheControl = "no-store";
             if (!authorized(context, settings.Value.ControlApiKey ?? "")) return Results.Unauthorized();
             if (!settings.Value.IsReadyForCalendarScheduling()) return Results.StatusCode(503);
-            var selection = new CalendarSelection(meetingId, request.OrganizerId, request.EventId, request.CorrelationId);
-            if (!selection.IsValid()) return Results.BadRequest(new { code = "invalid_calendar_selection" });
+            if (!authorizer.IsConfigured) return Results.StatusCode(503);
+            var selection = new CalendarSelection(meetingId, request.OrganizerId, request.EventId, request.CorrelationId, request.Actor);
+            if (!selection.IsValid() || selection.Actor is null) return Results.BadRequest(new { code = "invalid_calendar_selection" });
+            if (!Guid.TryParse(settings.Value.TenantId, out var tenant) || selection.Actor.MicrosoftTenantId != tenant)
+                return Results.StatusCode(403);
             if (!settings.Value.CalendarOrganizerIds.Contains(selection.OrganizerId)) return Results.StatusCode(403);
             if (store.Read(meetingId) is { } existing)
                 return existing.Selection == selection ? Results.Ok(View(existing))
@@ -87,4 +91,4 @@ public static class TeamsCalendarScheduleEndpoints
     { meetingId = item.Selection.MeetingId, item.State, item.StartsAt, item.EndsAt, item.CallId, item.Failure };
 }
 
-public sealed record CalendarScheduleRequest(Guid OrganizerId, string EventId, string CorrelationId);
+public sealed record CalendarScheduleRequest(Guid OrganizerId, string EventId, string CorrelationId, TeamsScheduleActor? Actor = null);

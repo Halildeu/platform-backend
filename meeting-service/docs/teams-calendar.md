@@ -64,17 +64,69 @@ The identity client reuses the exact `users:internal` service-token implementati
 with a separate bounded, no-redirect transport/cache. No new user password,
 public worker route, global broker setting or Graph consent is introduced.
 
+## Dispatch-time authorization
+
+The backend persists a versioned identity binding with each selection: original
+issuer/subject, canonical organization UUID, protected Microsoft tenant, stable
+or directory-bound module principal, directory user and company IDs. The worker
+stores no user bearer/password. The actor participates in immutable selection
+equality. A new request cannot take over an existing schedule by changing actor.
+
+After acquiring its Microsoft token and immediately before sending the Graph
+create-call request, the worker calls
+`POST /api/v1/internal/meetings/{meetingId}/teams-calendar/authorize` with an
+auth-service SERVICE token. Audience is only `meeting-service`, client_id and
+subject must both equal `teams-capture-worker`, and the exact permission is
+`meeting:teams-schedule:authorize`. Other trusted services and admin user JWTs
+cannot authorize this endpoint. It is not registered in local/dev profiles.
+
+The endpoint freshly resolves the directory/Keycloak identity and requires its
+subject, company, user, Microsoft tenant and organizer to still match selection.
+It reads the meeting in its original canonical org, requires an active lifecycle,
+and checks current module can_manage and meeting CAN_RECORD. These checks bypass
+the local allow cache and request OpenFGA HIGHER_CONSISTENCY. Disabled/unavailable
+policy service is not allow; an unavailable BLOCKED check cannot enable fallback.
+Existing recorder checks retain their original behavior.
+
+Worker prerequisites (secret values come only from the institution's secret store):
+
+- `TeamsScheduleAuthorization__Enabled=true`
+- `TeamsScheduleAuthorization__AuthServiceBaseUrl` (default `http://auth-service:8088`)
+- `TeamsScheduleAuthorization__MeetingServiceBaseUrl` (default `http://meeting-service:8097`)
+- `TeamsScheduleAuthorization__ClientSecret`: separate worker credential, 32+ characters.
+- Auth-service `SERVICE_CLIENT_TEAMS_CAPTURE_WORKER_SECRET` with the same credential.
+  The checked-in registration is blank/disabled until provisioned and grants only
+  the explicit audience/permission above. Runtime global mint permission overrides
+  must also include `meeting:teams-schedule:authorize`.
+- Meeting-service service JWKS/issuer/audience configured and
+  `MEETING_INTERNAL_SERVICE_JWT_CLIENT_IDS` extended with `teams-capture-worker`,
+  preserving the existing authorized callers. Do not replace the existing list.
+
+Both private service origins are operator-controlled; HTTP requires the approved
+private service network. No redirects or unbounded responses are accepted. Token
+minting and authorization share a 25-second deadline and never log credentials.
+Explicit denial ends the schedule; unavailable service defers within the join
+window. These pre-send outcomes release the unsent reservation. Once Graph POST
+begins, ambiguous failures retain the reservation and never blindly retry.
+The time window is rechecked after authorization. Pending actorless old snapshots
+are retained and marked `actor_missing_requires_reselection`; dispatching old
+snapshots retain reconciliation, without another create-call request.
+
+The check is not an atomic transaction with remote Microsoft Graph, nor does it
+automatically eject an already-joined bot after a later permission change.
+Deploy compatible meeting-service/auth-service before this worker; enable the
+user feature only after actual service-token and revocation smoke tests. Do not
+roll back to a worker that lacks this guard while leaving scheduling enabled.
+
 ## Acceptance still outstanding
 
 Local tests cover the actual MVC security/module chain with mocked directory,
 worker and recording service, plus HTTP contracts and existing recording
 authorization tests. They do not prove real Keycloak/Graph connectivity.
 
-Panel event-picker integration, future dispatch-time recording-right revalidation,
-and tenant end-to-end acceptance must be completed before user activation.
-The worker currently persists the selected organizer/event; it does not yet
-persist and revalidate the platform actor's recording grant at dispatch time.
-Do not represent this request-time authorization as future revocation support.
+Panel event-picker integration is in platform-web #1198. Dispatch authorization
+has controlled local tests; real service-token provisioning, TEST deployment and
+tenant end-to-end acceptance must still be completed before user activation.
 
 TEST deployment, Azure Bot/calling setup, native Teams live audio, temporal
 named-speaker mapping and during-meeting analysis acceptance remain separate

@@ -6,6 +6,7 @@ import com.example.meeting.security.MeetingAuthz;
 import com.example.meeting.security.TenantContextResolver;
 import com.example.meeting.service.MeetingService;
 import com.example.meeting.service.TeamsCalendarTransport;
+import com.example.meeting.service.TeamsScheduleActor;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.OffsetDateTime;
@@ -65,9 +66,10 @@ public class TeamsCalendarController {
     @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
     public ResponseEntity<TeamsCalendarTransport.Schedule> select(@PathVariable UUID meetingId, @AuthenticationPrincipal Jwt jwt,
             @RequestBody SelectRequest request) {
-        UUID organizer = authorizedOrganizer(meetingId, jwt, true);
+        var selection = authorizedSelection(meetingId, jwt, true);
         if (request == null || !validEvent(request.eventId())) throw badRequest();
-        return ResponseEntity.accepted().cacheControl(CacheControl.noStore()).body(checked(transport.select(organizer, meetingId, request.eventId()), meetingId));
+        return ResponseEntity.accepted().cacheControl(CacheControl.noStore()).body(checked(
+                transport.select(selection.organizer(), meetingId, request.eventId(), selection.actor()), meetingId));
     }
 
     @GetMapping("/schedule")
@@ -84,10 +86,11 @@ public class TeamsCalendarController {
     }
 
     private UUID authorizedOrganizer(UUID meetingId, Jwt jwt) {
-        return authorizedOrganizer(meetingId, jwt, false);
+        return authorizedSelection(meetingId, jwt, false).organizer();
     }
 
-    private UUID authorizedOrganizer(UUID meetingId, Jwt jwt, boolean scheduling) {
+    private record AuthorizedSelection(UUID organizer, TeamsScheduleActor actor) {}
+    private AuthorizedSelection authorizedSelection(UUID meetingId, Jwt jwt, boolean scheduling) {
         if (jwt == null || jwt.getIssuer() == null || jwt.getSubject() == null || jwt.getSubject().isBlank())
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "user_token_required");
         if (!properties.isConfigured()) throw unavailable();
@@ -107,7 +110,10 @@ public class TeamsCalendarController {
             Object company = jwt.getClaim(alias);
             if (company != null && !String.valueOf(organizer.companyId()).equals(company.toString())) throw forbidden();
         }
-        return organizer.organizerId();
+        var actor = new TeamsScheduleActor(1, jwt.getIssuer().toString(), jwt.getSubject(), access.orgId(),
+                organizer.tenantId(), tenant.authzPrincipal(), organizer.userId(), organizer.companyId());
+        if (!actor.isValid()) throw forbidden();
+        return new AuthorizedSelection(organizer.organizerId(), actor);
     }
 
     private static TeamsCalendarTransport.Schedule checked(TeamsCalendarTransport.Schedule result, UUID meetingId) {

@@ -45,9 +45,10 @@ class HttpTeamsCalendarTransportTest {
         for (int i = 0; i < 2; i++) server.expect(requestTo(properties.getWorkerBaseUrl() + "/api/teams/meetings/" + meeting + "/calendar-schedule"))
                 .andExpect(header("X-Teams-Control-Key", properties.getControlKey())).andExpect(headerDoesNotExist("Authorization"))
                 .andExpect(jsonPath("$.organizerId").value(organizer.toString())).andExpect(jsonPath("$.eventId").value("AAMk+/="))
+                .andExpect(jsonPath("$.actor.organizationId").value(meeting.toString())).andExpect(jsonPath("$.actor.subject").value("subject"))
                 .andExpect(jsonPath("$.correlationId").value("teams-calendar-" + meeting)).andRespond(withSuccess(result, MediaType.APPLICATION_JSON));
-        assertThat(client.select(organizer, meeting, "AAMk+/=").meetingId()).isEqualTo(meeting);
-        client.select(organizer, meeting, "AAMk+/="); server.verify();
+        assertThat(client.select(organizer, meeting, "AAMk+/=", new TeamsScheduleActor(1, "https://issuer.example", "subject", meeting, organizer, "subject", 7, 35)).meetingId()).isEqualTo(meeting);
+        client.select(organizer, meeting, "AAMk+/=", new TeamsScheduleActor(1, "https://issuer.example", "subject", meeting, organizer, "subject", 7, 35)); server.verify();
     }
     @Test void cancelUsesOwnerScopedRouteAndRequiresNoContent() {
         server.expect(requestTo(ownedPath())).andExpect(method(HttpMethod.DELETE)).andRespond(withNoContent());

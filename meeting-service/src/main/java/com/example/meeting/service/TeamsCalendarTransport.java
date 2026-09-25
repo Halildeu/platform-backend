@@ -9,7 +9,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 public interface TeamsCalendarTransport {
     Organizer resolve(String issuer, String subject);
     Choices browse(UUID organizer, OffsetDateTime from, OffsetDateTime to);
-    Schedule select(UUID organizer, UUID meeting, String eventId);
+    Schedule select(UUID organizer, UUID meeting, String eventId, TeamsScheduleActor actor);
     Schedule status(UUID organizer, UUID meeting);
     void cancel(UUID organizer, UUID meeting);
 
