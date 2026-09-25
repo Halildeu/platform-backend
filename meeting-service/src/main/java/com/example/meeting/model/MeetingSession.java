@@ -64,6 +64,12 @@ public class MeetingSession {
     @Column(name = "ended_at")
     private Instant endedAt;
 
+    @Column(name = "recording_incomplete", nullable = false)
+    private boolean recordingIncomplete;
+
+    public boolean isRecordingIncomplete() { return recordingIncomplete; }
+    public void markRecordingIncomplete() { recordingIncomplete = true; }
+
     @Column(name = "recording_uri", length = 2048)
     private String recordingUri;
 

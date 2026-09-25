@@ -866,6 +866,8 @@ public class AudioSessionController {
             case FinishOutcome.AlreadyFinished af -> ResponseEntity.ok(new FinishResponse(
                     af.record().sessionId(), corrId,
                     af.record().state().name(), af.record().finishedAtMs(), true));
+            case FinishOutcome.InvalidState invalid -> ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(ErrorResponse.of("AUDIO_GATEWAY_INVALID_TRANSITION", "Recording was abandoned", corrId, false));
             case FinishOutcome.NotFound nf -> ResponseEntity
                     .status(HttpStatus.NOT_FOUND)
                     .body(ErrorResponse.of(
@@ -892,6 +894,35 @@ public class AudioSessionController {
                                     + props.getBounds().getMaxSessionMinutes(),
                             corrId, false));
         });
+    }
+
+    @PostMapping("/sessions/{sessionId}/abandon")
+    public Mono<ResponseEntity<?>> abandon(@PathVariable String sessionId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key,
+            @AuthenticationPrincipal Jwt jwt, ServerWebExchange exchange) {
+        String corrId = correlationId(exchange);
+        ResponseEntity<?> keyError = validateIdempotencyKey(key, corrId);
+        if (keyError != null) return Mono.just(keyError);
+        ResponseEntity<?> authError = validateAuth(jwt, corrId);
+        if (authError != null) return Mono.just(authError);
+        Long tenantId = claimAsLong(jwt, props.getJwt().getTenantClaim());
+        Long userId = claimAsLong(jwt, props.getJwt().getUserClaim());
+        if (tenantId == null || userId == null) return Mono.just(forbidden("owner", corrId));
+        return Mono.<ResponseEntity<?>>fromCallable(() -> {
+            var outcome = registry.abandon(sessionId, key, tenantId, userId, Instant.now().toEpochMilli(), corrId, dispatcher);
+            return switch (outcome) {
+                case AudioSessionRegistry.AbandonOutcome.Abandoned a -> ResponseEntity.ok(new FinishResponse(
+                        sessionId, corrId, "ABANDONED", a.record().finishedAtMs(), a.replayed()));
+                case AudioSessionRegistry.AbandonOutcome.NotFound n -> ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(ErrorResponse.of(ErrorResponse.CODE_SESSION_NOT_FOUND, "Session not found", corrId, false));
+                case AudioSessionRegistry.AbandonOutcome.OwnerMismatch o -> ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(ErrorResponse.of(ErrorResponse.CODE_MEETING_FORBIDDEN, "Session owner mismatch", corrId, false));
+                case AudioSessionRegistry.AbandonOutcome.Conflict c -> ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(ErrorResponse.of("AUDIO_GATEWAY_INVALID_TRANSITION", "Terminal recording conflicts with abandonment", corrId, false));
+                case AudioSessionRegistry.AbandonOutcome.CleanupFailed f -> ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                        .body(ErrorResponse.of("AUDIO_GATEWAY_CLEANUP_PENDING", "Cleanup is pending; retry the same abandonment", corrId, true));
+            };
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     private void notifyDispatcherFinished(final SessionFinishCommand command) {

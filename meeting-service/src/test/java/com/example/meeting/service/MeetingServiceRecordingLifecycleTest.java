@@ -156,14 +156,15 @@ class MeetingServiceRecordingLifecycleTest {
         when(sessionRepository.findByExternalSessionIdVisibleToOrg(MEETING_ID, "SES-1", TENANT_ID))
                 .thenReturn(Optional.of(session));
 
-        RecordingLifecycleResponse replayedStart = service.syncRecordingLifecycle(
-                TENANT, MEETING_ID, new RecordingLifecycleSyncRequest("SES-1", STARTED_AT.minusSeconds(5), null));
-        RecordingLifecycleResponse replayedFinish = service.syncRecordingLifecycle(
+        assertThatThrownBy(() -> service.syncRecordingLifecycle(
+                TENANT, MEETING_ID, new RecordingLifecycleSyncRequest("SES-1", STARTED_AT.minusSeconds(5), null)))
+                .isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> service.syncRecordingLifecycle(
                 TENANT, MEETING_ID,
-                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT.plusSeconds(30)));
-
-        assertThat(replayedStart.meetingStatus()).isEqualTo(MeetingStatus.COMPLETED);
-        assertThat(replayedFinish.endedAt()).isEqualTo(ENDED_AT);
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT.plusSeconds(30))))
+                .isInstanceOf(ResponseStatusException.class);
+        assertThat(service.syncRecordingLifecycle(TENANT, MEETING_ID,
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT)).endedAt()).isEqualTo(ENDED_AT);
         assertThat(session.getStartedAt()).isEqualTo(STARTED_AT);
         assertThat(session.getEndedAt()).isEqualTo(ENDED_AT);
         verify(eventOutboxRepository, never()).saveAndFlush(any());
@@ -462,6 +463,60 @@ class MeetingServiceRecordingLifecycleTest {
 
         verify(sessionErasureService, org.mockito.Mockito.times(2))
                 .request(TENANT, MEETING_ID, SESSION_ID);
+    }
+
+    @Test
+    void incompleteCloseIsIdempotentAndNeverEmitsFinish() {
+        MeetingSession session = session(null);
+        when(sessionRepository.findByExternalSessionIdVisibleToOrg(MEETING_ID, "SES-1", TENANT_ID)).thenReturn(Optional.of(session));
+        var command = new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT);
+        var result = service.abandonRecording(TENANT, MEETING_ID, command);
+        assertThat(result.recordingIncomplete()).isTrue();
+        assertThat(result.transcriptStatus()).isEqualTo(TranscriptStatus.FAILED);
+        assertThat(service.abandonRecording(TENANT, MEETING_ID, command)).isEqualTo(result);
+        verify(sessionRepository).saveAndFlush(session);
+        verify(eventOutboxRepository, org.mockito.Mockito.never()).saveAndFlush(any());
+        assertThatThrownBy(() -> service.syncRecordingLifecycle(TENANT, MEETING_ID, command)).isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> service.abandonRecording(TENANT, MEETING_ID,
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT.plusSeconds(1)))).isInstanceOf(ResponseStatusException.class);
+    }
+
+    @Test
+    void abandonDoesNotChangeACompletedRecording() {
+        MeetingSession session = session(ENDED_AT);
+        when(sessionRepository.findByExternalSessionIdVisibleToOrg(MEETING_ID, "SES-1", TENANT_ID)).thenReturn(Optional.of(session));
+        assertThatThrownBy(() -> service.abandonRecording(TENANT, MEETING_ID,
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT))).isInstanceOf(ResponseStatusException.class);
+        assertThat(session.isRecordingIncomplete()).isFalse();
+        verify(sessionRepository, org.mockito.Mockito.never()).saveAndFlush(any());
+    }
+
+    @Test
+    void ownerAndStartMismatchCannotCloseOrReadAnotherRecording() {
+        MeetingSession session = session(null);
+        when(sessionRepository.findByExternalSessionIdVisibleToOrg(MEETING_ID, "SES-1", TENANT_ID)).thenReturn(Optional.of(session));
+        assertThatThrownBy(() -> service.abandonRecording(TENANT, MEETING_ID,
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT.plusSeconds(1), ENDED_AT))).isInstanceOf(ResponseStatusException.class);
+        session.setCreatedBySubject("someone-else");
+        assertThatThrownBy(() -> service.syncRecordingLifecycle(TENANT, MEETING_ID,
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT))).isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> service.abandonRecording(TENANT, MEETING_ID,
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT))).isInstanceOf(ResponseStatusException.class);
+        lenient().when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID)).thenReturn(Optional.of(meeting));
+        assertThatThrownBy(() -> service.recordingLifecycle(TENANT, MEETING_ID, "SES-1")).isInstanceOf(ResponseStatusException.class);
+        verify(sessionRepository, org.mockito.Mockito.never()).saveAndFlush(any());
+    }
+
+    @Test
+    void incompleteSessionDoesNotStopAnotherActiveSession() {
+        MeetingSession session = session(null);
+        MeetingSession other = session(null);
+        ReflectionTestUtils.setField(other, "id", UUID.randomUUID());
+        when(sessionRepository.findByExternalSessionIdVisibleToOrg(MEETING_ID, "SES-1", TENANT_ID)).thenReturn(Optional.of(session));
+        when(sessionRepository.findByMeetingIdVisibleToOrg(MEETING_ID, TENANT_ID)).thenReturn(List.of(session, other));
+        assertThat(service.abandonRecording(TENANT, MEETING_ID,
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT)).meetingStatus()).isEqualTo(MeetingStatus.IN_PROGRESS);
+        assertThat(other.getEndedAt()).isNull();
     }
 
     private static Meeting meeting(MeetingStatus status) {

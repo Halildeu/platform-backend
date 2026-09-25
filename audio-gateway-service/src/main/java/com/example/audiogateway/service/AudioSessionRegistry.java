@@ -31,6 +31,21 @@ public interface AudioSessionRegistry {
      */
     CreateOutcome create(SessionCreateCommand cmd);
 
+    /** Admission closes before cleanup; failed cleanup is retried with the same key. */
+    AbandonOutcome abandon(String sessionId, String key, Long tenantId, Long userId,
+            long nowMs, String correlationId, AudioChunkDispatcher dispatcher);
+
+    /** Subscribed by live bridges; completion cancels both sides without sending EOF. */
+    default reactor.core.publisher.Mono<Void> abandonment(String sessionId) { return reactor.core.publisher.Mono.never(); }
+
+    sealed interface AbandonOutcome {
+        record Abandoned(SessionRecord record, boolean replayed) implements AbandonOutcome {}
+        record NotFound() implements AbandonOutcome {}
+        record OwnerMismatch() implements AbandonOutcome {}
+        record Conflict() implements AbandonOutcome {}
+        record CleanupFailed() implements AbandonOutcome {}
+    }
+
     /** Read-only snapshot by id. */
     Optional<SessionRecord> get(String sessionId);
 
@@ -268,6 +283,7 @@ public interface AudioSessionRegistry {
     // ----- Finish outcome --------------------------------------------------
 
     sealed interface FinishOutcome {
+        record InvalidState() implements FinishOutcome {}
         record Finished(SessionRecord record) implements FinishOutcome {
         }
 

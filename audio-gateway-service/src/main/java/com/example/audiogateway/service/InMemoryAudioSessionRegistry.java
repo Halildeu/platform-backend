@@ -48,6 +48,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
     private final ConcurrentMap<String, SessionRecord> sessions = new ConcurrentHashMap<>();
     private final Map<String, Long> lastRelayedLiveSequences = new HashMap<>();
     private final Map<String, IdempotencyEntry> startReplay;
+    private final Map<String, reactor.core.publisher.Sinks.Empty<Void>> abandonmentSignals = new HashMap<>();
 
     public InMemoryAudioSessionRegistry(final AudioGatewayProperties props) {
         this.props = props;
@@ -94,10 +95,44 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
                 null, 0L, cmd.sessionStartMs());
 
         sessions.put(sessionId, rec);
+        abandonmentSignals.put(sessionId, reactor.core.publisher.Sinks.empty());
         lastRelayedLiveSequences.put(sessionId, -1L);
         startReplay.put(idempKey, new IdempotencyEntry(sessionId, signature));
 
         return new CreateOutcome.Created(rec);
+    }
+
+    @Override
+    public synchronized reactor.core.publisher.Mono<Void> abandonment(String id) {
+        SessionRecord record = sessions.get(id);
+        if (record == null || record.state() == SessionState.ABANDONING || record.state() == SessionState.ABANDONED) {
+            return reactor.core.publisher.Mono.empty();
+        }
+        return abandonmentSignals.get(id).asMono();
+    }
+
+    @Override
+    public synchronized AbandonOutcome abandon(String id, String key, Long tenantId, Long userId,
+            long nowMs, String correlationId, AudioChunkDispatcher dispatcher) {
+        SessionRecord record = sessions.get(id);
+        if (record == null) return new AbandonOutcome.NotFound();
+        if (!Objects.equals(record.tenantId(), tenantId) || !Objects.equals(record.userId(), userId)) return new AbandonOutcome.OwnerMismatch();
+        if (record.state() == SessionState.FINISHED || record.state() == SessionState.FINISHING) return new AbandonOutcome.Conflict();
+        boolean retry = record.state() == SessionState.ABANDONING || record.state() == SessionState.ABANDONED;
+        if (retry && !Objects.equals(record.finishIdempotencyKey(), key)) return new AbandonOutcome.Conflict();
+        if (record.state() == SessionState.ABANDONED) return new AbandonOutcome.Abandoned(record, true);
+        if (!retry) {
+            record = record.withFinish(key, nowMs).withState(SessionState.ABANDONING, nowMs);
+            sessions.put(id, record);
+            abandonmentSignals.get(id).tryEmitEmpty();
+        }
+        try {
+            dispatcher.discardSession(new AudioChunkDispatcher.SessionDiscardCommand(id, tenantId, userId, correlationId));
+        } catch (RuntimeException error) { return new AbandonOutcome.CleanupFailed(); }
+        SessionRecord abandoned = record.withState(SessionState.ABANDONED, nowMs);
+        sessions.put(id, abandoned);
+        lastRelayedLiveSequences.remove(id);
+        return new AbandonOutcome.Abandoned(abandoned, retry);
     }
 
     @Override
@@ -239,6 +274,9 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
                 || !Objects.equals(existing.userId(), userId)) {
             return new FinishOutcome.OwnerMismatch();
         }
+        if (existing.state() == SessionState.ABANDONING || existing.state() == SessionState.ABANDONED) {
+            return new FinishOutcome.InvalidState();
+        }
         if (existing.state() == SessionState.FINISHED) {
             lastRelayedLiveSequences.remove(sessionId);
             if (Objects.equals(existing.finishIdempotencyKey(), finishIdempotencyKey)) {
@@ -344,6 +382,8 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
         }
 
         sessions.remove(sessionId);
+        var signal = abandonmentSignals.remove(sessionId);
+        if (signal != null) signal.tryEmitEmpty();
         lastRelayedLiveSequences.remove(sessionId);
         return new ExpiryOutcome.Expired(existing);
     }
@@ -353,7 +393,8 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
     }
 
     private static boolean isActive(final SessionRecord record) {
-        return record.state() == SessionState.STARTED || record.state() == SessionState.STREAMING;
+        return record.state() == SessionState.STARTED || record.state() == SessionState.STREAMING
+                || record.state() == SessionState.ABANDONING || record.state() == SessionState.ABANDONED;
     }
 
     private static boolean isDue(

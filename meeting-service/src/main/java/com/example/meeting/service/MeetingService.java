@@ -395,6 +395,10 @@ public class MeetingService {
                     HttpStatus.CONFLICT,
                     "Recording end is immutable; use the recording lifecycle endpoint.");
         }
+        if (session.isRecordingIncomplete() && (request.transcriptStatus() != TranscriptStatus.FAILED
+                || !Objects.equals(request.startedAt(), session.getStartedAt()))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Incomplete recording is immutable.");
+        }
         session.setSessionLabel(request.sessionLabel());
         session.setStartedAt(request.startedAt());
         session.setRecordingUri(request.recordingUri());
@@ -420,6 +424,18 @@ public class MeetingService {
                 meetingId, request.externalSessionId(), tenant.tenantId());
         MeetingSession session = existingSession
                 .orElseGet(() -> newRecordingSession(tenant, meeting, request));
+        if (existingSession.isPresent()) {
+            if (!Objects.equals(session.getCreatedBySubject(), tenant.subject())) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "RECORDING_NOT_FOUND");
+            }
+            if (!Objects.equals(session.getStartedAt(), request.startedAt())
+                    || (session.getEndedAt() != null && !Objects.equals(session.getEndedAt(), request.endedAt()))) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Recording identity or times differ.");
+            }
+        }
+        if (session.isRecordingIncomplete()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Recording was closed incomplete.");
+        }
         boolean sessionChanged = existingSession.isEmpty();
 
         if (session.getStartedAt() == null) {
@@ -484,6 +500,62 @@ public class MeetingService {
                 savedSession.getTranscriptStatus(),
                 savedSession.getStartedAt(),
                 savedSession.getEndedAt());
+    }
+
+    /** Reads only the owner's receipt; no lifecycle transition or event is produced. */
+    @Transactional(readOnly = true)
+    public RecordingLifecycleResponse recordingLifecycle(AdminTenantContext tenant, UUID meetingId, String externalId) {
+        Meeting meeting = requireMeeting(tenant, meetingId);
+        requireRecordingAccess(tenant, meetingId, meeting);
+        MeetingSession session = ownedRecording(tenant, meetingId, externalId);
+        return lifecycleResponse(meeting, session);
+    }
+
+    /** Same meeting lock as finish: exactly one terminal outcome wins, with no finish event on abandon. */
+    @Transactional
+    public RecordingLifecycleResponse abandonRecording(AdminTenantContext tenant, UUID meetingId, RecordingLifecycleSyncRequest request) {
+        Meeting meeting = requireMeetingForUpdate(tenant, meetingId);
+        requireRecordingAccess(tenant, meetingId, meeting);
+        sessionErasureService.assertSourceNotErased(tenant.tenantId(), meetingId, request.externalSessionId());
+        MeetingSession session = ownedRecording(tenant, meetingId, request.externalSessionId());
+        if (request.endedAt() == null || !Objects.equals(request.startedAt(), session.getStartedAt())
+                || request.endedAt().isBefore(session.getStartedAt())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Recording identity or times differ.");
+        }
+        if (session.isRecordingIncomplete()) {
+            if (!request.endedAt().equals(session.getEndedAt())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Recording end differs.");
+            }
+            return lifecycleResponse(meeting, session);
+        }
+        if (session.getEndedAt() != null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Recording already closed; reconcile its existing result.");
+        }
+        session.markRecordingIncomplete();
+        session.setEndedAt(request.endedAt());
+        session.setTranscriptStatus(TranscriptStatus.FAILED);
+        session.setLastUpdatedBySubject(tenant.subject());
+        sessionRepository.saveAndFlush(session);
+        boolean otherActive = sessionRepository.findByMeetingIdVisibleToOrg(meetingId, tenant.tenantId()).stream()
+                .anyMatch(other -> !other.getId().equals(session.getId()) && other.getStartedAt() != null && other.getEndedAt() == null);
+        // COMPLETED describes meeting activity, not successful audio delivery; session outcome is separate.
+        if (meeting.getStatus() != MeetingStatus.CANCELLED) {
+            meeting.setStatus(otherActive ? MeetingStatus.IN_PROGRESS : MeetingStatus.COMPLETED);
+            meeting.setLastUpdatedBySubject(tenant.subject());
+            meetingRepository.saveAndFlush(meeting);
+        }
+        return lifecycleResponse(meeting, session);
+    }
+
+    private MeetingSession ownedRecording(AdminTenantContext tenant, UUID meetingId, String externalId) {
+        return sessionRepository.findByExternalSessionIdVisibleToOrg(meetingId, externalId, tenant.tenantId())
+                .filter(session -> Objects.equals(session.getCreatedBySubject(), tenant.subject()))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "RECORDING_NOT_FOUND"));
+    }
+
+    private RecordingLifecycleResponse lifecycleResponse(Meeting meeting, MeetingSession session) {
+        return new RecordingLifecycleResponse(meeting.getId(), session.getId(), session.getExternalSessionId(),
+                meeting.getStatus(), session.getTranscriptStatus(), session.getStartedAt(), session.getEndedAt(), session.isRecordingIncomplete());
     }
 
     private MeetingSession newRecordingSession(
