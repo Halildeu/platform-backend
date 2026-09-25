@@ -14,6 +14,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.dto.v1.admin.MeetingCreateRequest;
 import com.example.meeting.model.Meeting;
+import com.example.meeting.model.MeetingStatus;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import com.example.meeting.repository.MeetingActionRepository;
 import com.example.meeting.repository.MeetingAgendaItemRepository;
 import com.example.meeting.repository.MeetingAnalysisRunRepository;
@@ -96,6 +99,26 @@ class MeetingServiceRecordingAccessTest {
 
         verify(authzService).checkPrincipal(
                 "user:stable-sub-3", MeetingAuthz.CAN_RECORD, MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString());
+    }
+
+    @ParameterizedTest
+    @EnumSource(MeetingStatus.class)
+    void teamsSchedulingRequiresActiveMeetingWithoutChangingRecorderContract(MeetingStatus status) {
+        Meeting meeting = meetingCreatedBy("stable-sub-3");
+        meeting.setStatus(status);
+        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID)).thenReturn(Optional.of(meeting));
+        when(authzProvider.getIfAvailable()).thenReturn(authzService);
+        when(authzService.isEnabled()).thenReturn(true);
+        when(authzService.checkPrincipal("user:stable-sub-3", MeetingAuthz.CAN_RECORD,
+                MeetingAuthz.OBJECT_TYPE, MEETING_ID.toString())).thenReturn(true);
+        if (status == MeetingStatus.CANCELLED || status == MeetingStatus.COMPLETED) {
+            assertThatThrownBy(() -> meetingService.requireTeamsSchedulingAccess(TENANT, MEETING_ID))
+                    .isInstanceOfSatisfying(ResponseStatusException.class, error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.CONFLICT));
+        } else {
+            assertThat(meetingService.requireTeamsSchedulingAccess(TENANT, MEETING_ID)).isNotNull();
+        }
+        // Existing recorder preflight remains unchanged by this Teams-only admission rule.
+        assertThat(meetingService.requireRecordingAccess(TENANT, MEETING_ID)).isNotNull();
     }
 
     @Test

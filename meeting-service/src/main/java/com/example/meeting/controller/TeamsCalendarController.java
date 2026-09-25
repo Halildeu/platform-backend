@@ -65,7 +65,7 @@ public class TeamsCalendarController {
     @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
     public ResponseEntity<TeamsCalendarTransport.Schedule> select(@PathVariable UUID meetingId, @AuthenticationPrincipal Jwt jwt,
             @RequestBody SelectRequest request) {
-        UUID organizer = authorizedOrganizer(meetingId, jwt);
+        UUID organizer = authorizedOrganizer(meetingId, jwt, true);
         if (request == null || !validEvent(request.eventId())) throw badRequest();
         return ResponseEntity.accepted().cacheControl(CacheControl.noStore()).body(checked(transport.select(organizer, meetingId, request.eventId()), meetingId));
     }
@@ -84,6 +84,10 @@ public class TeamsCalendarController {
     }
 
     private UUID authorizedOrganizer(UUID meetingId, Jwt jwt) {
+        return authorizedOrganizer(meetingId, jwt, false);
+    }
+
+    private UUID authorizedOrganizer(UUID meetingId, Jwt jwt, boolean scheduling) {
         if (jwt == null || jwt.getIssuer() == null || jwt.getSubject() == null || jwt.getSubject().isBlank())
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "user_token_required");
         if (!properties.isConfigured()) throw unavailable();
@@ -91,7 +95,8 @@ public class TeamsCalendarController {
         var tenant = tenants.resolveRequired();
         if (!jwt.getSubject().equals(tenant.subject())) throw forbidden();
         // Existing service enforces tenant/org scope and object-level CAN_RECORD, not merely read permission.
-        var access = meetings.requireRecordingAccess(tenant, meetingId);
+        var access = scheduling ? meetings.requireTeamsSchedulingAccess(tenant, meetingId)
+                : meetings.requireRecordingAccess(tenant, meetingId);
         if (access == null || !meetingId.equals(access.meetingId())) throw forbidden();
         var organizer = transport.resolve(jwt.getIssuer().toString(), jwt.getSubject());
         if (organizer == null || !jwt.getSubject().equals(organizer.subject()) || organizer.userId() <= 0 || organizer.companyId() <= 0

@@ -14,6 +14,9 @@ check are required for every request (including status and cancellation).
 Read-only meeting access is insufficient. Unknown or foreign canonical meetings
 retain the existing service's 404 behavior. Impersonation-broker/actor tokens
 are refused. No caller-provided email, company, organizer or join URL grants access.
+New selections additionally require a `SCHEDULED` or `IN_PROGRESS` canonical
+meeting. `CANCELLED`/`COMPLETED` meetings cannot receive new selections; reading
+or cancelling an already-owned schedule retains the normal permission check.
 
 - `POST /events` body: `{ "from": "<ISO offset timestamp>", "to": "<ISO offset timestamp>" }`.
   Lists the user's organized Teams events within a maximum 31-day window and

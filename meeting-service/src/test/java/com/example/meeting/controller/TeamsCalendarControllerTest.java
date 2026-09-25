@@ -52,6 +52,7 @@ class TeamsCalendarControllerTest {
         when(authz.check(SUBJECT, MeetingAuthz.MANAGER, "module", MeetingAuthz.MODULE)).thenReturn(true);
         when(tenants.resolveRequired()).thenReturn(CONTEXT);
         when(meetings.requireRecordingAccess(CONTEXT, MEETING)).thenReturn(new MeetingRecordingAccessResponse(MEETING, ORG, ORG, List.of()));
+        when(meetings.requireTeamsSchedulingAccess(CONTEXT, MEETING)).thenReturn(new MeetingRecordingAccessResponse(MEETING, ORG, ORG, List.of()));
         when(transport.resolve(ISSUER, SUBJECT)).thenReturn(identity(SUBJECT, MS_TENANT, 35));
     }
     private TeamsCalendarTransport.Organizer identity(String subject, UUID tenant, long company) {
@@ -89,6 +90,12 @@ class TeamsCalendarControllerTest {
     @Test void disabledIsUnavailableNotAnEmptyCalendar() throws Exception {
         properties.setEnabled(false);
         mvc.perform(get(ROOT + "/schedule").with(user())).andExpect(status().isServiceUnavailable());
+        verifyNoInteractions(transport);
+    }
+    @Test void cancelledOrCompletedMeetingCannotReceiveNewSelection() throws Exception {
+        when(meetings.requireTeamsSchedulingAccess(CONTEXT, MEETING)).thenThrow(new ResponseStatusException(HttpStatus.CONFLICT));
+        mvc.perform(post(ROOT + "/schedule").with(user()).contentType(MediaType.APPLICATION_JSON).content("{\"eventId\":\"AAMk\"}"))
+                .andExpect(status().isConflict());
         verifyNoInteractions(transport);
     }
     @Test void bodyOrganizerAndTimeCannotOverrideVerifiedIdentityOrGraphEvent() throws Exception {
