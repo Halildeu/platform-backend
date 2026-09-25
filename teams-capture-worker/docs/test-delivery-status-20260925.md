@@ -3,7 +3,8 @@
 25 Eylül 2026 durum kaydı. Halil Bey / IT incelemesi içindir.
 
 **Katılım, takvim ve yan panel kaynakları ana sürüme alındı; TEST kurulumu ve
-gerçek Teams kabulü tamamlanmadı. Canlı ses adaptörü henüz uygulanmadı. Bu nedenle
+gerçek Teams kabulü tamamlanmadı. Ayrı SDK ses alıcısı ve zamana bağlı konuşmacı
+eşleştirmesi #1198'de incelemeye açıldı; çalışan bot akışına henüz bağlanmadı. Bu nedenle
 “yalnız hesap kaldı” aşamasında değiliz.**
 
 ## Hazırlanan kaynak ve paketler
@@ -15,6 +16,7 @@ gerçek Teams kabulü tamamlanmadı. Canlı ses adaptörü henüz uygulanmadı. 
 | Organizatör kimliği, yetkili takvim listesi, seçim, durum ve iptal | [backend #1193](https://github.com/Halildeu/platform-backend/pull/1193), [#1194](https://github.com/Halildeu/platform-backend/pull/1194), [#1195](https://github.com/Halildeu/platform-backend/pull/1195) | Kullanıcı şifresi veya iç kontrol anahtarı tarayıcıya verilmez. |
 | Katılmadan hemen önce güncel kimlik ve toplantı yetkisi denetimi | [backend #1196](https://github.com/Halildeu/platform-backend/pull/1196) | Kaynak `212fac600f7ca930319241c258a9d216d0068ffd`; TEST'e kurulmadı. |
 | Yetkili Teams yan paneli ve Outlook seçim ekranı | [web #1197](https://github.com/Halildeu/platform-web/pull/1197), [#1198](https://github.com/Halildeu/platform-web/pull/1198) | Kaynak `e16e0784776dcfc74316187d35245e47e4216250`; gerçek Teams oturumu ve kurulum açık. |
+| SDK ses alıcısı, PCM yaşam döngüsü ve zamana bağlı konuşmacı eşleştirmesi | [backend #1198](https://github.com/Halildeu/platform-backend/pull/1198) | Ayrı kütüphane; 27/27 yerel test ve bağımsız kaynak incelemesi geçti. PR açık; native host, SDK katılımcı aboneliği ve STT aktarımı entegre değil. |
 
 Güncel worker paketi:
 
@@ -77,11 +79,15 @@ IT yanıtı gelmediğini teyit etti.
 - Gerçek callback adresini her yerde aynı tanımlamak:
   `https://testai.acik.com/api/teams/callback`. Dışarıya worker'ın kontrol
   yolları açılmamalı. Gerçek Microsoft bildirimleriyle doğrulama yapılmalı.
-- Onaylanan yönteme göre Teams canlı ses adaptörünü geliştirmek. Mevcut
-  `serviceHostedMediaConfig` katılımı ham sesi sağlamaz.
+- Onaylanan yönteme göre native medya hostunu ve application-hosted katılımı
+  geliştirmek; #1198'deki ayrı ses alıcısını bağlamak. Mevcut
+  `serviceHostedMediaConfig` katılımı ham sesi sağlamaz. Kütüphanenin test edilmiş
+  olması çalışan bir medya hostu veya gerçek ses kabulü anlamına gelmez.
 - Aynı çağrı ve ses zamanı içinde ses kaynağını Teams katılımcısıyla
   eşleştirmek; yeniden katılma ve kaynak değişimlerini izlemek. Belirsiz
-  kaynağa kişi adı atanmamalı. Katılımcı listesini okumak tek başına bunu çözmez.
+  kaynağa kişi adı atanmamalı. #1198 zaman ve kaynak yeniden kullanımı denetimini
+  içerir; gerçek SDK katılımcı değişikliklerinin bu haritaya bağlanması açıktır.
+  Katılımcı listesini okumak tek başına bunu çözmez.
 - Gelen sesi mevcut STT/analiz hattına bağlamak; yetkili panelde metin,
   **karar ve aksiyonları toplantı sürerken** göstermek.
 - İki kişiyle zamanlı katılım, gerçek callback, isimli metin, canlı analiz,
