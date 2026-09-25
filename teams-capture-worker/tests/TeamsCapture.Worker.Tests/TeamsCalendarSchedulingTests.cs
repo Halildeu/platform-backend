@@ -15,6 +15,57 @@ namespace TeamsCapture.Worker.Tests;
 public sealed class TeamsCalendarSchedulingTests
 {
     [Fact]
+    public async Task Owner_scoped_schedule_view_and_cancel_do_not_expose_another_organizers_selection()
+    {
+        var other = Guid.NewGuid();
+        using var app = new Factory(other);
+        var id = await app.Select();
+        using var client = app.AuthorizedClient();
+        var ownPath = $"/api/teams/organizers/{app.Request().OrganizerId}/meetings/{id}/calendar-schedule";
+        var otherPath = $"/api/teams/organizers/{other}/meetings/{id}/calendar-schedule";
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(otherPath)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync(otherPath)).StatusCode);
+        Assert.Equal("pending", app.Store.Read(id)!.State);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync(ownPath)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync(ownPath)).StatusCode);
+        Assert.Equal("cancelled", app.Store.Read(id)!.State);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync(ownPath)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Owner_scoped_routes_still_require_control_key_and_cannot_cancel_dispatched_call()
+    {
+        using var app = new Factory();
+        var id = await app.Select();
+        var path = $"/api/teams/organizers/{app.Request().OrganizerId}/meetings/{id}/calendar-schedule";
+        using var anonymous = app.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.DeleteAsync(path)).StatusCode);
+        var item = app.Store.Read(id)!;
+        Assert.True(app.Store.Replace(item, item with { State = "dispatching" }));
+        using var client = app.AuthorizedClient();
+        Assert.Equal(HttpStatusCode.Conflict, (await client.DeleteAsync(path)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Calendar_browse_is_private_bounded_and_read_only()
+    {
+        using var app = new Factory();
+        var request = new CalendarBrowseRequest(app.Request().OrganizerId, app.Clock.Now, app.Clock.Now.AddDays(7));
+        using var anonymous = app.CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.PostAsJsonAsync("/api/teams/calendar/events", request)).StatusCode);
+        using var client = app.AuthorizedClient();
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/api/teams/calendar/events", request with { OrganizerId = Guid.NewGuid() })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/teams/calendar/events", request with { To = app.Clock.Now.AddDays(32) })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/teams/calendar/events", request with { From = app.Clock.Now.AddDays(-1) })).StatusCode);
+        Assert.Equal(0, app.Calendar.Browses);
+        var response = await client.PostAsJsonAsync("/api/teams/calendar/events", request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode); Assert.True(response.Headers.CacheControl!.NoStore);
+        Assert.Equal(1, app.Calendar.Browses); Assert.Equal(0, app.Presence.Count); Assert.Equal(0, app.Calendar.Reads);
+        Assert.Empty(Directory.GetFiles(app.DirectoryPath));
+    }
+
+    [Fact]
     public async Task Scheduled_event_waits_until_start_then_joins_once_with_canonical_meeting_and_survives_reload()
     {
         using var app = new Factory();
@@ -224,13 +275,13 @@ public sealed class TeamsCalendarSchedulingTests
         public readonly TeamsCaptureOptions Settings;
         public TeamsCalendarScheduleStore Store => Services.GetRequiredService<TeamsCalendarScheduleStore>();
         public TeamsCalendarSchedulingService Scheduler => Services.GetRequiredService<TeamsCalendarSchedulingService>();
-        public Factory()
+        public Factory(Guid? additionalOrganizer = null)
         {
             Calendar = new(Clock.Now);
             Settings = new() { Enabled = true, TenantId = Guid.NewGuid().ToString(), ApplicationId = Guid.NewGuid().ToString(),
                 ClientSecret = "synthetic", ControlApiKey = new string('x', 32), PublicCallbackBaseUrl = "https://bot.test.example",
                 CallStateFilePath = Path.Combine(DirectoryPath, "calls"), CalendarStateFilePath = Path.Combine(DirectoryPath, "calendar"),
-                CalendarSchedulingEnabled = true, CalendarOrganizerIds = [Guid.NewGuid()],
+                CalendarSchedulingEnabled = true, CalendarOrganizerIds = additionalOrganizer is { } other ? [Guid.NewGuid(), other] : [Guid.NewGuid()],
                 CalendarScheduleStateFilePath = Path.Combine(DirectoryPath, "schedules") };
         }
         public CalendarScheduleRequest Request() => new(Settings.CalendarOrganizerIds[0], "AAMk+/=", "corr-test");
@@ -252,6 +303,7 @@ public sealed class TeamsCalendarSchedulingTests
                 services.RemoveAll<IOptions<TeamsCaptureOptions>>(); services.AddSingleton(Options.Create(Settings));
                 services.RemoveAll<TimeProvider>(); services.AddSingleton<TimeProvider>(Clock);
                 services.RemoveAll<ITeamsCalendarClient>(); services.AddSingleton<ITeamsCalendarClient>(Calendar);
+                services.RemoveAll<ITeamsCalendarBrowser>(); services.AddSingleton<ITeamsCalendarBrowser>(Calendar);
                 services.RemoveAll<ITeamsMeetingPresenceClient>(); services.AddSingleton<ITeamsMeetingPresenceClient>(Presence);
                 services.AddSingleton<TeamsCalendarSchedulingService>();
             });
@@ -268,8 +320,11 @@ public sealed class TeamsCalendarSchedulingTests
         public DateTimeOffset Now = DateTimeOffset.Parse("2026-09-24T12:00:00Z");
         public override DateTimeOffset GetUtcNow() => Now;
     }
-    private sealed class Calendar(DateTimeOffset now) : ITeamsCalendarClient
+    private sealed class Calendar(DateTimeOffset now) : ITeamsCalendarClient, ITeamsCalendarBrowser
     {
+        public int Browses;
+        public Task<CalendarEventChoices?> BrowseAsync(Guid organizerId, DateTimeOffset from, DateTimeOffset to, CancellationToken token)
+        { Browses++; return Task.FromResult<CalendarEventChoices?>(new([new("AAMk+/=", "synthetic", from.AddMinutes(1), to)], false)); }
         public TeamsCalendarEvent? Current = new(now.AddMinutes(1), now.AddHours(1), false, "https://teams.microsoft.com/meet/123");
         public int Reads;
         public Func<Task>? DuringResolve;
