@@ -65,9 +65,7 @@ public class MeetingCanonicalTranscriptService {
 
     public CanonicalMeetingTranscriptResponse read(
             AdminTenantContext tenant, UUID meetingId, UUID analysisRunId) {
-        Meeting meeting = meetings.findVisibleToOrgAndId(tenant.tenantId(), meetingId)
-                .orElseThrow(() -> status(HttpStatus.NOT_FOUND, "MEETING_NOT_FOUND"));
-        requireOwner(tenant, meeting);
+        requireOwnerAccess(tenant, meetingId);
 
         MeetingAnalysisRun run = analysisRuns.findVisibleExactRun(
                         analysisRunId, meetingId, tenant.tenantId())
@@ -111,6 +109,13 @@ public class MeetingCanonicalTranscriptService {
                 segments);
         auditService.recordCanonicalTranscriptRead(tenant, meetingId, analysisRunId);
         return response;
+    }
+
+    /** Shared owner gate; callers invoke this before starting any locked transaction. */
+    public void requireOwnerAccess(AdminTenantContext tenant, UUID meetingId) {
+        Meeting meeting = meetings.findVisibleToOrgAndId(tenant.tenantId(), meetingId)
+                .orElseThrow(() -> status(HttpStatus.NOT_FOUND, "MEETING_NOT_FOUND"));
+        requireOwner(tenant, meeting);
     }
 
     private void requireOwner(AdminTenantContext tenant, Meeting meeting) {

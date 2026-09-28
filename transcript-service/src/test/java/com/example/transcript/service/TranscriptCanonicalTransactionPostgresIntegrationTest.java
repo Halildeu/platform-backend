@@ -76,6 +76,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         TranscriptFinalizationStateMachine.class,
         FinalizedTranscriptSnapshotCodec.class,
         TranscriptSnapshotHasher.class,
+        TranscriptSourceStatusService.class,
+        TranscriptAccessAuditService.class,
         com.fasterxml.jackson.databind.ObjectMapper.class,
         com.example.transcript.config.TranscriptFinalizationConfig.class
 })
@@ -109,6 +111,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     }
 
     @Autowired private TranscriptFinalizationService finalizationService;
+    @Autowired private TranscriptSourceStatusService sourceStatus;
     @Autowired private RecordingFinishedEventProcessor recordingFinishedEventProcessor;
     @Autowired private TranscriptQuiescentFinalizationProcessor quiescentFinalizationProcessor;
     @Autowired private TranscriptSessionAssociationStore associationStore;
@@ -127,6 +130,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
 
     @BeforeEach
     void clean() {
+        jdbc.update("DELETE FROM " + SCHEMA + ".transcript_access_audit");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_erasure_audit");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_erasure_tombstones");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_source_retention_fences");
@@ -135,6 +139,134 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_finalizations");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_segments");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_associations");
+    }
+
+    @Test
+    void sourceStatusScopesUnknownAndPersistsGenuineSessionAuditWithoutAnalysisRun() {
+        insertResolvedAssociation();
+        assertThat(sourceStatus.read(TENANT, MEETING, SESSION, TENANT, "meeting-service").state().name())
+                .isEqualTo("AWAITING_CLOSURE");
+        UUID otherTenant = UUID.randomUUID();
+        assertThat(sourceStatus.read(otherTenant, MEETING, SESSION, otherTenant, "meeting-service").state().name())
+                .isEqualTo("UNKNOWN");
+        assertThat(sourceStatus.read(TENANT, MEETING, UUID.randomUUID(), TENANT, "meeting-service").state().name())
+                .isEqualTo("UNKNOWN");
+        var row = jdbc.queryForMap("SELECT * FROM " + SCHEMA
+                + ".transcript_access_audit WHERE tenant_id=? AND session_id=?", TENANT, SESSION);
+        assertThat(row.get("access_type")).isEqualTo("STATUS");
+        assertThat(row.get("accessor_subject")).isEqualTo("meeting-service");
+        assertThat(row.get("meeting_id")).isEqualTo(MEETING);
+        assertThat(row.get("org_id")).isEqualTo(TENANT);
+        assertThat(row.get("segment_id")).isNull();
+        assertThat(row.get("result_count")).isNull();
+    }
+
+    @Test
+    void sourceStatusFailureIsCycleLocalAndLateContentClearsIt() {
+        UUID associationId = insertQuiescingAssociation(true);
+        assertThat(quiescentFinalizationProcessor.process(associationId))
+                .isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.FAILED);
+        var failed = sourceStatus.read(TENANT, MEETING, SESSION, TENANT, "meeting-service");
+        assertThat(failed.state().name()).isEqualTo("FAILED");
+        assertThat(failed.failureCode().name()).isEqualTo("NO_VALID_SEGMENTS_BEFORE_DEADLINE");
+        var event = new DirectSttTranscriptResultEvent("late-source", TENANT, TENANT.toString(),
+                "7", MEETING, "SES-quiescent", 1L, 1L, 1L, 1L, 1000L, "late-correlation",
+                "b".repeat(64), "late content", 1d);
+        directSttIngestion.upsert(event, SESSION);
+        var reopened = sourceStatus.read(TENANT, MEETING, SESSION, TENANT, "meeting-service");
+        assertThat(reopened.state().name()).isEqualTo("QUIESCING");
+        assertThat(reopened.cycleVersion()).isGreaterThan(failed.cycleVersion());
+        assertThat(reopened.observationRevision()).isGreaterThan(failed.observationRevision());
+        assertThat(reopened.failureCode()).isNull();
+        assertThat(reopened.finalizedOccurrence()).isNull();
+    }
+
+    @Test
+    void sourceStatusRetainsMatchingOccurrenceUntilReadCommitThenObservesRetentionAbsence() {
+        UUID associationId = insertQuiescingAssociation(false);
+        saveSegment(TENANT, MEETING, SESSION, "SES-quiescent", 1L, TranscriptSegmentStatus.DRAFT, null);
+        assertThat(quiescentFinalizationProcessor.process(associationId))
+                .isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.READY);
+        UUID snapshotId = finalizations.findAll().getFirst().getId();
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            new TransactionTemplate(transactionManager).execute(status -> {
+                var observed = sourceStatus.read(TENANT, MEETING, SESSION, TENANT, "meeting-service");
+                assertThat(observed.state().name()).isEqualTo("FINALIZED");
+                assertThat(observed.finalizedOccurrence().analysisRunId()).isNotNull();
+                var deletion = executor.submit(() -> new TransactionTemplate(transactionManager).execute(other -> {
+                    jdbc.execute("SET LOCAL lock_timeout = '250ms'");
+                    return finalizations.deleteByIdIn(List.of(snapshotId));
+                }));
+                assertDatabaseLockTimeout(deletion);
+                return null;
+            });
+        }
+        new TransactionTemplate(transactionManager).execute(status -> finalizations.deleteByIdIn(List.of(snapshotId)));
+        var afterRetention = sourceStatus.read(TENANT, MEETING, SESSION, TENANT, "meeting-service");
+        assertThat(afterRetention.state().name()).isEqualTo("UNKNOWN");
+        assertThat(afterRetention.cycleVersion()).isEqualTo(1);
+        assertThat(afterRetention.finalizedOccurrence()).isNull();
+    }
+
+    @Test
+    void sourceStatusFencesErasureDuringReadAndReturnsGoneAfterErasureCommit() {
+        insertResolvedAssociation();
+        try (var executor = Executors.newSingleThreadExecutor()) {
+            new TransactionTemplate(transactionManager).execute(status -> {
+                assertThat(sourceStatus.read(TENANT, MEETING, SESSION, TENANT, "meeting-service").state().name())
+                        .isEqualTo("AWAITING_CLOSURE");
+                var erasure = executor.submit(() -> new TransactionTemplate(transactionManager).execute(other -> {
+                    jdbc.execute("SET LOCAL lock_timeout = '250ms'");
+                    return erasureService.erase(TENANT, MEETING, SESSION, "SES-42");
+                }));
+                assertDatabaseLockTimeout(erasure);
+                return null;
+            });
+        }
+        erasureService.erase(TENANT, MEETING, SESSION, "SES-42");
+        assertThatThrownBy(() -> sourceStatus.read(TENANT, MEETING, SESSION, TENANT, "meeting-service"))
+                .isInstanceOf(ResponseStatusException.class).hasMessageContaining("410");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA + ".transcript_access_audit", Long.class))
+                .isEqualTo(1);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = com.example.transcript.model.TranscriptSessionErasureStatus.class,
+            names = {"READY", "HELD"})
+    void sourceStatusRejectsPendingAndHeldErasure(com.example.transcript.model.TranscriptSessionErasureStatus status) {
+        insertResolvedAssociation();
+        erasureService.prepare(TENANT, MEETING, SESSION, "SES-42");
+        var tombstone = erasureTombstones.findByTenantIdAndMeetingIdAndSessionId(TENANT, MEETING, SESSION).orElseThrow();
+        tombstone.setStatus(status);
+        erasureTombstones.saveAndFlush(tombstone);
+        assertThatThrownBy(() -> sourceStatus.read(TENANT, MEETING, SESSION, TENANT, "meeting-service"))
+                .isInstanceOf(ResponseStatusException.class).hasMessageContaining("423");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA + ".transcript_access_audit", Long.class))
+                .isZero();
+    }
+
+    @Test
+    void editorialStatusAwaitsClosureThenReportsExistingImmutableOccurrenceAfterFinish() {
+        insertResolvedAssociation();
+        saveSegment(TENANT, MEETING, SESSION, "SES-42", 1L, TranscriptSegmentStatus.FINALIZED, "first text");
+        finalizationService.finalizeTranscript(context(TENANT), MEETING, SESSION, 1L);
+        var editorial = sourceStatus.read(TENANT, MEETING, SESSION, TENANT, "meeting-service");
+        assertThat(editorial.state().name()).isEqualTo("AWAITING_CLOSURE");
+        assertThat(editorial.finalizedOccurrence()).isNull();
+        recordingFinishedEventProcessor.process(new RecordingFinishedEvent(
+                "meeting.recording|" + SESSION + "|meeting.recording.finished|1",
+                "a".repeat(64), TENANT, MEETING, SESSION, "SES-42", Instant.now()));
+        var completed = sourceStatus.read(TENANT, MEETING, SESSION, TENANT, "meeting-service");
+        assertThat(completed.state().name()).isEqualTo("FINALIZED");
+        assertThat(completed.recordingOutcome().name()).isEqualTo("FINISHED");
+        assertThat(completed.finalizedOccurrence().finalizationVersion()).isEqualTo(1);
+        assertThat(completed.finalizedOccurrence().recordingOutcome().name()).isEqualTo("UNKNOWN");
+    }
+
+    private void assertDatabaseLockTimeout(Future<?> blocked) {
+        assertThatThrownBy(() -> blocked.get(5, TimeUnit.SECONDS))
+                .rootCause().isInstanceOf(SQLException.class)
+                .extracting("SQLState").isEqualTo("55P03");
     }
 
     @Test

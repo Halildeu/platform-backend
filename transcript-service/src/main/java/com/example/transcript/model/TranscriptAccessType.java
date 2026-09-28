@@ -18,5 +18,7 @@ public enum TranscriptAccessType {
     READ,
     LIST,
     SEARCH,
-    EXPORT
+    EXPORT,
+    /** Metadata-only exact-session source status, including UNKNOWN observations. */
+    STATUS
 }
