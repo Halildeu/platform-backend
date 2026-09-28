@@ -33,6 +33,12 @@ public class MeetingIntelligenceResultAccessAuditService {
                 MeetingIntelligenceResultAccessType.CANONICAL_RESULT_READ);
     }
 
+    public MeetingIntelligenceResultAccessAudit recordProcessingStatus(
+            AdminTenantContext context, UUID meetingId, UUID sessionId) {
+        return record(context, meetingId, null,
+                MeetingIntelligenceResultAccessType.SESSION_PROCESSING_STATUS_READ, sessionId);
+    }
+
     public MeetingIntelligenceResultAccessAudit recordCanonicalTranscriptRead(
             AdminTenantContext context,
             UUID meetingId,
@@ -46,6 +52,12 @@ public class MeetingIntelligenceResultAccessAuditService {
             UUID meetingId,
             UUID analysisRunId,
             MeetingIntelligenceResultAccessType accessType) {
+        return record(context, meetingId, analysisRunId, accessType, null);
+    }
+
+    private MeetingIntelligenceResultAccessAudit record(
+            AdminTenantContext context, UUID meetingId, UUID analysisRunId,
+            MeetingIntelligenceResultAccessType accessType, UUID sessionId) {
         UUID effectiveOrgId = context.tenantId();
         MeetingIntelligenceResultAccessAudit audit = new MeetingIntelligenceResultAccessAudit();
         // The resolved context is authoritative even for legacy parent rows with org_id NULL.
@@ -54,6 +66,7 @@ public class MeetingIntelligenceResultAccessAuditService {
         audit.setAccessorSubject(context.subject());
         audit.setMeetingId(meetingId);
         audit.setAnalysisRunId(analysisRunId);
+        audit.setSessionId(sessionId);
         audit.setAccessType(accessType);
         audit.setResultCount(1);
         audit.setTraceId(allowlistedTraceId(MDC.get("traceId")));

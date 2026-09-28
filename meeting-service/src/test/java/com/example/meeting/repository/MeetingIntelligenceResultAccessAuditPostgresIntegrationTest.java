@@ -83,7 +83,7 @@ class MeetingIntelligenceResultAccessAuditPostgresIntegrationTest {
 
         assertThat(columns).containsExactly(
                 "id", "tenant_id", "org_id", "accessor_subject", "meeting_id",
-                "analysis_run_id", "access_type", "result_count", "trace_id", "accessed_at");
+                "analysis_run_id", "access_type", "result_count", "trace_id", "accessed_at", "session_id");
         assertThat(jdbc.queryForObject("""
                 SELECT count(*)
                 FROM pg_indexes

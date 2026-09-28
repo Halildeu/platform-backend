@@ -62,6 +62,21 @@ class MeetingIntelligenceResultAccessAuditServiceTest {
     }
 
     @Test
+    void sessionStatusAuditHasNoInventedAnalysisRunIdentity() {
+        UUID session = UUID.randomUUID();
+        new MeetingIntelligenceResultAccessAuditService(repository).recordProcessingStatus(
+                new AdminTenantContext(ORG_ID, "stable-subject", "module-user"), MEETING_ID, session);
+        var captor = ArgumentCaptor.forClass(MeetingIntelligenceResultAccessAudit.class);
+        verify(repository).saveAndFlush(captor.capture());
+        var audit = captor.getValue();
+        assertThat(audit.getSessionId()).isEqualTo(session);
+        assertThat(audit.getAnalysisRunId()).isNull();
+        assertThat(audit.getAccessorSubject()).isEqualTo("stable-subject");
+        assertThat(audit.getAccessType()).isEqualTo(MeetingIntelligenceResultAccessType.SESSION_PROCESSING_STATUS_READ);
+        assertThat(audit.getResultCount()).isEqualTo(1);
+    }
+
+    @Test
     void allowlistedTraceId_discardsMalformedOptionalMetadata() {
         assertThat(MeetingIntelligenceResultAccessAuditService.allowlistedTraceId(
                 "not-a-trace;drop table")).isNull();

@@ -21,6 +21,7 @@ class MeetingIntelligenceResultAccessAuditContractTest {
             "accessor_subject",
             "meeting_id",
             "analysis_run_id",
+            "session_id",
             "access_type",
             "result_count",
             "trace_id",
