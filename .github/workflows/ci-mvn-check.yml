@@ -40,6 +40,11 @@ jobs:
       - name: Verify full reactor (12 modules, no tests)
         run: ./mvnw -q -DskipTests verify
 
+      - name: Verify real transcript issuer to meeting verifier recording contract
+        run: |
+          ./mvnw -q -pl meeting-service,transcript-service -am test-compile dependency:build-classpath -DskipTests -DincludeScope=runtime -Dmdep.outputFile=target/recording-capability-classpath.txt
+          python3 scripts/contracts/verify-recording-capability.py
+
   schema-service-build:
     name: schema-service standalone build (Faz 19.4+19.5)
     runs-on: ubuntu-latest

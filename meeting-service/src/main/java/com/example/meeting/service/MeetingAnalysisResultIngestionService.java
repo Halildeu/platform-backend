@@ -154,7 +154,9 @@ public class MeetingAnalysisResultIngestionService {
             AnalysisJobCapabilityVerifier.JobBinding binding) {
         boolean sameTarget = run.getMeetingId().equals(meetingId)
                 && run.getTenantId().equals(tenantId)
-                && run.getPayloadHash().equals(payloadHash);
+                && run.getPayloadHash().equals(payloadHash)
+                && run.getRecordingOutcome() == binding.recordingOutcome()
+                && java.util.Objects.equals(run.getRecordingIncompleteReason(), binding.recordingIncompleteReason());
         if (sameTarget) {
             if (binding.capabilityId().equals(run.getJobCapabilityId())) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "JOB_CAPABILITY_REPLAY");

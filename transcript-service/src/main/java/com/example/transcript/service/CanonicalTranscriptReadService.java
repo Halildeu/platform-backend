@@ -108,7 +108,7 @@ public class CanonicalTranscriptReadService {
                 storedSnapshot.transcript(),
                 storedSnapshot.transcriptSha256(),
                 responseSegments.size(),
-                responseSegments);
+                responseSegments, finalization.getRecordingOutcome(), finalization.getRecordingIncompleteReason());
         // #824: service-to-service audit → subject == authzPrincipal because
         // the caller is a machine principal, not a user with a userId claim.
         accessAuditService.recordList(
@@ -160,7 +160,7 @@ public class CanonicalTranscriptReadService {
                         finalization.getFinalizedAt(),
                         storedSnapshot.transcriptSha256(),
                         analysisRunId,
-                        analysisSpecVersion));
+                        analysisSpecVersion, finalization.getRecordingOutcome(), finalization.getRecordingIncompleteReason()));
     }
 
     private FinalizedTranscriptSnapshotCodec.StoredSnapshot restoreChecked(

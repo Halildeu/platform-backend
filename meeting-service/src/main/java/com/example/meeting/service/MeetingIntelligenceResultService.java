@@ -127,7 +127,8 @@ public class MeetingIntelligenceResultService {
                 run.getGeneratedAt(),
                 run.getSupersedesAnalysisRunId(),
                 true,
-                STORAGE_MODE, sessionRepository.countIncomplete(meetingId, tenant.tenantId()));
+                STORAGE_MODE, sessionRepository.countIncomplete(meetingId, tenant.tenantId()),
+                run.getRecordingOutcome(), run.getRecordingIncompleteReason());
         // Audit only after the full canonical payload has passed semantic validation.
         // saveAndFlush failures propagate, roll back this transaction, and prevent disclosure.
         accessAuditService.recordCanonicalRead(tenant, meetingId, run.getAnalysisRunId());

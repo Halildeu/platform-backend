@@ -1,5 +1,7 @@
 package com.example.transcript.dto;
 
+import com.example.common.meeting.events.RecordingOutcome;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -15,4 +17,10 @@ public record CanonicalTranscriptSnapshotDto(
         String transcript,
         String transcriptSha256,
         int segmentCount,
-        List<CanonicalTranscriptSegmentDto> segments) { }
+        List<CanonicalTranscriptSegmentDto> segments,
+        RecordingOutcome recordingOutcome,
+        String recordingIncompleteReason) {
+    public CanonicalTranscriptSnapshotDto {
+        java.util.Objects.requireNonNull(recordingOutcome).validateReason(recordingIncompleteReason);
+    }
+}

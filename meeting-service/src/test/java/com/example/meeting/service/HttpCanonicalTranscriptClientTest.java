@@ -62,6 +62,34 @@ class HttpCanonicalTranscriptClientTest {
 
         assertThat(snapshot.meetingId()).isEqualTo(MEETING);
         assertThat(snapshot.transcript()).isEqualTo("canonical text");
+        assertThat(snapshot.recordingOutcome()).isEqualTo(com.example.common.meeting.events.RecordingOutcome.UNKNOWN);
+        assertThat(snapshot.recordingIncompleteReason()).isNull();
+        server.verify();
+    }
+
+    @Test
+    void signedOccurrenceClosureIsRetainedByHttpReader() {
+        String body = json().replace("\"state\":\"FINALIZED\",", "\"state\":\"FINALIZED\","
+                + "\"recordingOutcome\":\"INCOMPLETE\",\"recordingIncompleteReason\":\"CLOSURE_UNCONFIRMED\",");
+        server.expect(once(), requestTo(URL)).andRespond(withSuccess(body, MediaType.APPLICATION_JSON));
+        var snapshot = client.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC);
+        assertThat(snapshot.recordingOutcome()).isEqualTo(com.example.common.meeting.events.RecordingOutcome.INCOMPLETE);
+        assertThat(snapshot.recordingIncompleteReason()).isEqualTo("CLOSURE_UNCONFIRMED");
+        server.verify();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "\"recordingOutcome\":\"INCOMPLETE\",",
+            "\"recordingOutcome\":\"FINISHED\",\"recordingIncompleteReason\":\"CLOSURE_UNCONFIRMED\",",
+            "\"recordingOutcome\":\"COMPLETE\",",
+            "\"recordingOutcome\":1,",
+            "\"recordingOutcome\":\"1\",",
+            "\"recordingIncompleteReason\":\"CLOSURE_UNCONFIRMED\","})
+    void malformedClosureNeverReturnsUsableContent(String fields) {
+        String body = json().replace("\"state\":\"FINALIZED\",", "\"state\":\"FINALIZED\"," + fields);
+        server.expect(once(), requestTo(URL)).andRespond(withSuccess(body, MediaType.APPLICATION_JSON));
+        assertFailure(CanonicalTranscriptClient.Failure.UNAVAILABLE);
         server.verify();
     }
 

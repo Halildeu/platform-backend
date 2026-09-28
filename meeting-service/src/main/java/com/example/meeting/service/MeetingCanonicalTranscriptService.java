@@ -108,7 +108,7 @@ public class MeetingCanonicalTranscriptService {
                 snapshot.transcript(),
                 snapshot.transcriptSha256(),
                 snapshot.segmentCount(),
-                segments);
+                segments, run.getRecordingOutcome(), run.getRecordingIncompleteReason());
         auditService.recordCanonicalTranscriptRead(tenant, meetingId, analysisRunId);
         return response;
     }
@@ -197,6 +197,8 @@ public class MeetingCanonicalTranscriptService {
                 && run.getFinalizationVersion() == snapshot.finalizationVersion()
                 && run.getFinalizedAt().equals(snapshot.finalizedAt())
                 && STATES.contains(snapshot.state())
+                && run.getRecordingOutcome() == snapshot.recordingOutcome()
+                && java.util.Objects.equals(run.getRecordingIncompleteReason(), snapshot.recordingIncompleteReason())
                 && snapshot.transcript() != null
                 && snapshot.segments() != null
                 && snapshot.segmentCount() == snapshot.segments().size()

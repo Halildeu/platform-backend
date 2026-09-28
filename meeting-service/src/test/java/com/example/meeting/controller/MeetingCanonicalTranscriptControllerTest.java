@@ -45,7 +45,8 @@ class MeetingCanonicalTranscriptControllerTest {
         when(service.read(tenant, MEETING, RUN)).thenReturn(new CanonicalMeetingTranscriptResponse(
                 RUN, MEETING, SESSION, 7L, Instant.parse("2026-07-18T12:00:00Z"),
                 "FINALIZED", "canonical text", "a".repeat(64), 1,
-                List.of(new CanonicalMeetingTranscriptSegment("canonical text", 0.0, 1.0))));
+                List.of(new CanonicalMeetingTranscriptSegment("canonical text", 0.0, 1.0)),
+                com.example.common.meeting.events.RecordingOutcome.UNKNOWN, null));
 
         mockMvc.perform(get(
                         "/api/v1/admin/meetings/{meetingId}/intelligence/results/{analysisRunId}/transcript",

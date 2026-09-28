@@ -76,12 +76,17 @@ class CanonicalTranscriptReadServiceTest {
                 erasureFence);
     }
 
-    @Test
-    void read_returnsExactIntegrityCheckedOccurrenceAndMetadataOnlyAudit() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(com.example.common.meeting.events.RecordingOutcome.class)
+    void read_returnsExactIntegrityCheckedOccurrenceAndMetadataOnlyAudit(
+            com.example.common.meeting.events.RecordingOutcome outcome) {
         List<TranscriptSegment> segments = List.of(
                 segment("Merhaba", 0.0, 1.2),
                 segment("Dünya", 1.3, 2.0));
         TranscriptFinalization finalization = finalization(segments, false, true);
+        String reason = outcome == com.example.common.meeting.events.RecordingOutcome.INCOMPLETE
+                ? "CLOSURE_UNCONFIRMED" : null;
+        finalization.setRecordingClosure(outcome, reason);
         when(finalizationRepository.findVisibleAnalysisOccurrence(
                 TENANT_ID, MEETING_ID, SESSION_ID, 3L, RUN_ID))
                 .thenReturn(Optional.of(finalization));
@@ -96,6 +101,8 @@ class CanonicalTranscriptReadServiceTest {
         assertThat(result.finalizationVersion()).isEqualTo(3L);
         assertThat(result.finalizedAt()).isEqualTo(FINALIZED_AT);
         assertThat(result.state()).isEqualTo("FINALIZED");
+        assertThat(result.recordingOutcome()).isEqualTo(outcome);
+        assertThat(result.recordingIncompleteReason()).isEqualTo(reason);
         assertThat(result.transcript()).isEqualTo("Merhaba\nDünya");
         assertThat(result.transcriptSha256()).matches("^[0-9a-f]{64}$");
         assertThat(result.segmentCount()).isEqualTo(2);
@@ -112,6 +119,7 @@ class CanonicalTranscriptReadServiceTest {
     void issueCapability_requiresPersistedProducerRunAndAllowedSpec() {
         List<TranscriptSegment> segments = List.of(segment("Merhaba", 0.0, 1.2));
         TranscriptFinalization finalization = finalization(segments, false, true);
+        finalization.setRecordingClosure(com.example.common.meeting.events.RecordingOutcome.INCOMPLETE, "CLOSURE_UNCONFIRMED");
         Instant expiresAt = Instant.parse("2026-07-18T03:10:00Z");
         when(finalizationRepository.findVisibleAnalysisOccurrence(
                 TENANT_ID, MEETING_ID, SESSION_ID, 3L, RUN_ID))
@@ -135,6 +143,8 @@ class CanonicalTranscriptReadServiceTest {
         assertThat(binding.getValue().finalizationVersion()).isEqualTo(3L);
         assertThat(binding.getValue().analysisRunId()).isEqualTo(RUN_ID);
         assertThat(binding.getValue().analysisSpecVersion()).isEqualTo("meeting-intelligence-v1");
+        assertThat(binding.getValue().recordingOutcome()).isEqualTo(com.example.common.meeting.events.RecordingOutcome.INCOMPLETE);
+        assertThat(binding.getValue().recordingIncompleteReason()).isEqualTo("CLOSURE_UNCONFIRMED");
         verify(accessAuditService, never()).recordList(any(), any(), any(), anyInt());
     }
 
