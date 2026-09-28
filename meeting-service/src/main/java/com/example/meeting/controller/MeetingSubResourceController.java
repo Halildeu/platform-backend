@@ -109,6 +109,19 @@ public class MeetingSubResourceController {
         return meetingService.syncRecordingLifecycle(tenant, meetingId, request);
     }
 
+    @GetMapping("/recording-lifecycle/{externalSessionId}")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
+    public RecordingLifecycleResponse recordingLifecycle(@PathVariable UUID meetingId, @PathVariable String externalSessionId) {
+        return meetingService.recordingLifecycle(tenantContextResolver.resolveRequired(), meetingId, externalSessionId);
+    }
+
+    @PutMapping("/recording-lifecycle/abandon")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
+    public RecordingLifecycleResponse abandonRecording(@PathVariable UUID meetingId,
+            @Valid @RequestBody RecordingLifecycleSyncRequest request) {
+        return meetingService.abandonRecording(tenantContextResolver.resolveRequired(), meetingId, request);
+    }
+
     @PutMapping("/sessions/{sessionId}")
     @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
     public MeetingSessionResponse updateSession(

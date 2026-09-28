@@ -98,6 +98,24 @@ class AnalysisJobCapabilityIssuerTest {
                 .hasMessageContaining("5 minutes");
     }
 
+    @Test
+    void issuerSignsIncompleteProvenanceAndRejectsInvalidPair() throws Exception {
+        var binding = new AnalysisJobCapabilityIssuer.JobBinding(
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), 1, NOW,
+                "a".repeat(64), UUID.randomUUID(), "analysis-v1",
+                com.example.common.meeting.events.RecordingOutcome.INCOMPLETE, "CLOSURE_UNCONFIRMED");
+        var issued = issuer(ENCODED_SECRET).issue(binding);
+        var jwt = com.nimbusds.jwt.SignedJWT.parse(issued.token());
+        assertThat(jwt.verify(new com.nimbusds.jose.crypto.MACVerifier(java.util.Base64.getDecoder().decode(ENCODED_SECRET)))).isTrue();
+        assertThat(jwt.getJWTClaimsSet().getStringClaim("recording_outcome")).isEqualTo("INCOMPLETE");
+        assertThat(jwt.getJWTClaimsSet().getStringClaim("recording_incomplete_reason")).isEqualTo("CLOSURE_UNCONFIRMED");
+        assertThatThrownBy(() -> new AnalysisJobCapabilityIssuer.JobBinding(
+                binding.tenantId(), binding.meetingId(), binding.sessionId(), 1, NOW,
+                binding.transcriptSha256(), binding.analysisRunId(), "analysis-v1",
+                com.example.common.meeting.events.RecordingOutcome.INCOMPLETE, null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     private static AnalysisJobCapabilityIssuer issuer(String secret) {
         return new AnalysisJobCapabilityIssuer(
                 secret,

@@ -27,5 +27,7 @@ public enum SessionState {
     STARTED,
     STREAMING,
     FINISHING,
-    FINISHED
+    FINISHED,
+    ABANDONING,
+    ABANDONED
 }

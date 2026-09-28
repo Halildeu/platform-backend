@@ -51,6 +51,7 @@ class LiveSttWebSocketProxyHandlerTest {
     @BeforeEach
     void setUp() {
         sessions = mock(AudioSessionRegistry.class);
+        org.mockito.Mockito.lenient().when(sessions.abandonment(any())).thenReturn(Mono.never());
         auditSink = mock(AudioGatewayAuditSink.class);
         upstreamClient = mock(WebSocketClient.class);
         speechmaticsClient = mock(WebSocketClient.class);
@@ -121,6 +122,33 @@ class LiveSttWebSocketProxyHandlerTest {
                 eq(URI.create("ws://live-stt:8200/ws/stream?protocol=source-ranges-v1")),
                 any(WebSocketHandler.class));
         verify(client, never()).close(CloseStatus.POLICY_VIOLATION);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = SessionState.class, names = {"ABANDONING", "ABANDONED"})
+    void abandonmentCancelsSubscribedBridgeAndRejectsReconnectEvenDuringCleanupFailure(SessionState terminal) {
+        final var current = new java.util.concurrent.atomic.AtomicReference<>(session(1L, 4L, SessionState.STARTED));
+        when(sessions.get("session-1")).thenAnswer(call -> Optional.of(current.get()));
+        final Sinks.Empty<Void> abandon = Sinks.empty();
+        when(sessions.abandonment("session-1")).thenReturn(abandon.asMono());
+        final var cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        when(upstreamClient.execute(any(URI.class), any(WebSocketHandler.class)))
+                .thenReturn(Mono.<Void>never().doOnCancel(() -> cancelled.set(true)));
+        final WebSocketSession client = clientSession(jwt(true, true));
+        final var completed = new java.util.concurrent.atomic.AtomicBoolean();
+        final var subscription = handler.handle(client).subscribe(null, error -> { throw new AssertionError(error); }, () -> completed.set(true));
+        org.assertj.core.api.Assertions.assertThat(cancelled).isFalse();
+        current.set(session(1L, 4L, terminal));
+        abandon.tryEmitEmpty();
+        org.assertj.core.api.Assertions.assertThat(cancelled).isTrue();
+        org.assertj.core.api.Assertions.assertThat(completed).isTrue();
+        verify(client).close(CloseStatus.POLICY_VIOLATION);
+        final WebSocketSession reconnect = clientSession(jwt(true, true));
+        handler.handle(reconnect).block();
+        verify(reconnect).close(CloseStatus.POLICY_VIOLATION);
+        verify(upstreamClient, org.mockito.Mockito.times(1)).execute(any(URI.class), any(WebSocketHandler.class));
+        verify(sessions, never()).finish(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyLong(), any(), any());
+        subscription.dispose();
     }
 
     @Test

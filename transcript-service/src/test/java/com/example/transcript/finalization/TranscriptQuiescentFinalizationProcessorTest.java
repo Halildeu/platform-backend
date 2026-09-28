@@ -187,6 +187,24 @@ class TranscriptQuiescentFinalizationProcessorTest {
         verify(finalizations, never()).save(any());
     }
 
+    @Test
+    void retainedIncompleteContentProducesReadyWithoutUpgradingClosure() {
+        var association = dueAssociation(NOW.plusSeconds(60));
+        association.setRecordingClosure(com.example.common.meeting.events.RecordingOutcome.INCOMPLETE,
+                "CLOSURE_UNCONFIRMED");
+        when(associations.findByIdForUpdate(ASSOCIATION_ID)).thenReturn(Optional.of(association));
+        when(segments.findCanonicalSessionForUpdate(TENANT, MEETING, SESSION))
+                .thenReturn(List.of(draftSegment("retained words")));
+        assertThat(processor.process(ASSOCIATION_ID)).isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.READY);
+        var saved = ArgumentCaptor.forClass(TranscriptFinalization.class);
+        verify(finalizations).save(saved.capture());
+        assertThat(saved.getValue().getRecordingOutcome())
+                .isEqualTo(com.example.common.meeting.events.RecordingOutcome.INCOMPLETE);
+        assertThat(saved.getValue().getRecordingIncompleteReason()).isEqualTo("CLOSURE_UNCONFIRMED");
+        assertThat(saved.getValue().getCanonicalTranscript()).isEqualTo("retained words");
+        assertThat(association.getRecordingOutcome()).isEqualTo(saved.getValue().getRecordingOutcome());
+    }
+
     private TranscriptSessionAssociation dueAssociation(Instant maxWaitAt) {
         TranscriptSessionAssociation association = new TranscriptSessionAssociation();
         ReflectionTestUtils.setField(association, "id", ASSOCIATION_ID);
@@ -198,6 +216,10 @@ class TranscriptQuiescentFinalizationProcessorTest {
         ReflectionTestUtils.setField(association, "sessionId", SESSION);
         ReflectionTestUtils.setField(association, "status", TranscriptSessionAssociationStatus.RESOLVED);
         association.setFinalizationState(TranscriptFinalizationState.QUIESCING);
+        association.setRecordingClosure(com.example.common.meeting.events.RecordingOutcome.FINISHED, null);
+        association.setRecordingFinishedAt(NOW.minusSeconds(600));
+        association.setFinishObservedAt(NOW.minusSeconds(590));
+        association.setMinWaitAt(NOW.minusSeconds(230));
         association.setFinalizationVersion(0);
         association.setFinalizationCycleVersion(1);
         association.setQuiescenceDueAt(NOW);

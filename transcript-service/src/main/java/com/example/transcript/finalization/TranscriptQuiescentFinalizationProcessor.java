@@ -146,6 +146,7 @@ public class TranscriptQuiescentFinalizationProcessor {
         row.setCanonicalTranscriptSha256(snapshot.transcriptSha256());
         row.setCanonicalSegments(snapshot.canonicalSegments());
         row.setCanonicalProjectionSha256(snapshot.canonicalProjectionSha256());
+        row.setRecordingClosure(association.getRecordingOutcome(), association.getRecordingIncompleteReason());
         row.setFinalizedAt(now);
         row.setCreatedAt(now);
         finalizations.save(row);

@@ -136,6 +136,35 @@ class MeetingEventOutboxFactoryTest {
                 "audio", "text", "user", "recordingUri", "uri");
     }
 
+    @Test
+    void recordingIncomplete_hasCanonicalScopeRevisionKeyAndMetadataOnlyPayload() throws Exception {
+        UUID sessionId = UUID.fromString("44444444-4444-4444-8444-444444444444");
+        MeetingSession session = new MeetingSession();
+        org.springframework.test.util.ReflectionTestUtils.setField(session, "id", sessionId);
+        session.setMeetingId(MEETING);
+        session.setTenantId(TENANT);
+        session.setOrgId(TENANT);
+        session.setExternalSessionId("SES-42");
+        Instant finishedAt = Instant.parse("2026-07-17T08:44:20Z");
+
+        MeetingEventOutbox row = factory.buildRecordingIncomplete(session, finishedAt);
+
+        assertThat(row.getEventType()).isEqualTo("meeting.recording.incomplete");
+        assertThat(row.getAggregateType()).isEqualTo("meeting.recording");
+        assertThat(row.getAggregateId()).isEqualTo(sessionId);
+        assertThat(row.getAggregateRevision()).isEqualTo(1);
+        assertThat(row.getEventKey()).isEqualTo(
+                "meeting.recording|" + sessionId + "|meeting.recording.incomplete|1");
+        JsonNode payload = objectMapper.readTree(row.getPayload());
+        assertThat(payload.get("recordingSessionId").asText()).isEqualTo(sessionId.toString());
+        assertThat(payload.get("externalSessionId").asText()).isEqualTo("SES-42");
+        assertThat(payload.get("closedAt").asText()).isEqualTo(finishedAt.toString());
+        assertThat(payload.get("reasonCode").asText()).isEqualTo("CLOSURE_UNCONFIRMED");
+        assertThat(payload.get("generatedAt").asText()).isEqualTo(finishedAt.toString());
+        assertThat(payload.fieldNames()).toIterable().doesNotContain(
+                "audio", "text", "user", "recordingUri", "uri");
+    }
+
     // ────────────────────────── helpers ──────────────────────────
 
     private static MeetingAnalysisRun run(String summary, String grounding) {

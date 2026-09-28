@@ -28,6 +28,9 @@ public enum MeetingEventType {
     /** A canonical recording session made its first immutable transition to finished. */
     RECORDING_FINISHED("meeting.recording.finished"),
 
+    /** Capture closed without proof that all audio was processed. */
+    RECORDING_INCOMPLETE("meeting.recording.incomplete"),
+
     /** A canonical transcript session was explicitly finalized and is ready to read. */
     TRANSCRIPT_READY("meeting.transcript.ready"),
 

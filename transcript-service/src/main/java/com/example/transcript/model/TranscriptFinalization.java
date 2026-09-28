@@ -58,6 +58,14 @@ public class TranscriptFinalization {
     @Column(name = "canonical_projection_sha256", length = 64, updatable = false)
     private String canonicalProjectionSha256;
 
+    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+    @Column(name = "recording_outcome", nullable = false, length = 16, updatable = false)
+    private com.example.common.meeting.events.RecordingOutcome recordingOutcome =
+            com.example.common.meeting.events.RecordingOutcome.UNKNOWN;
+
+    @Column(name = "recording_incomplete_reason", length = 32, updatable = false)
+    private String recordingIncompleteReason;
+
     @Column(name = "finalized_at", nullable = false, updatable = false)
     private Instant finalizedAt;
 
@@ -100,6 +108,13 @@ public class TranscriptFinalization {
     public String getCanonicalProjectionSha256() { return canonicalProjectionSha256; }
     public void setCanonicalProjectionSha256(String canonicalProjectionSha256) {
         this.canonicalProjectionSha256 = canonicalProjectionSha256;
+    }
+    public com.example.common.meeting.events.RecordingOutcome getRecordingOutcome() { return recordingOutcome; }
+    public String getRecordingIncompleteReason() { return recordingIncompleteReason; }
+    public void setRecordingClosure(com.example.common.meeting.events.RecordingOutcome outcome, String reason) {
+        outcome.validateReason(reason);
+        recordingOutcome = outcome;
+        recordingIncompleteReason = reason;
     }
     public Instant getFinalizedAt() { return finalizedAt; }
     public void setFinalizedAt(Instant finalizedAt) { this.finalizedAt = finalizedAt; }

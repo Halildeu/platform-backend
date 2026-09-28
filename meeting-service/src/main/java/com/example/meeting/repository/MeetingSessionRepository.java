@@ -20,6 +20,10 @@ import java.time.Instant;
  */
 public interface MeetingSessionRepository extends JpaRepository<MeetingSession, UUID> {
 
+    @Query("select count(s) from MeetingSession s where s.meetingId = :meetingId and s.recordingIncomplete = true "
+            + "and (s.orgId = :orgId or (s.orgId is null and s.tenantId = :orgId))")
+    long countIncomplete(@Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId);
+
     @Query("""
             select s
             from MeetingSession s

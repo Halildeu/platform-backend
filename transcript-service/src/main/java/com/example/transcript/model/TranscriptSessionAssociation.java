@@ -74,6 +74,14 @@ public class TranscriptSessionAssociation {
     @Column(name = "recording_finished_at")
     private Instant recordingFinishedAt;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "recording_outcome", nullable = false, length = 16)
+    private com.example.common.meeting.events.RecordingOutcome recordingOutcome =
+            com.example.common.meeting.events.RecordingOutcome.UNKNOWN;
+
+    @Column(name = "recording_incomplete_reason", length = 32)
+    private String recordingIncompleteReason;
+
     @Column(name = "finish_observed_at")
     private Instant finishObservedAt;
 
@@ -180,6 +188,13 @@ public class TranscriptSessionAssociation {
 
     public Instant getRecordingFinishedAt() { return recordingFinishedAt; }
     public void setRecordingFinishedAt(Instant value) { this.recordingFinishedAt = value; }
+    public com.example.common.meeting.events.RecordingOutcome getRecordingOutcome() { return recordingOutcome; }
+    public String getRecordingIncompleteReason() { return recordingIncompleteReason; }
+    public void setRecordingClosure(com.example.common.meeting.events.RecordingOutcome outcome, String reason) {
+        outcome.validateReason(reason);
+        recordingOutcome = outcome;
+        recordingIncompleteReason = reason;
+    }
     public Instant getFinishObservedAt() { return finishObservedAt; }
     public void setFinishObservedAt(Instant value) { this.finishObservedAt = value; }
     public Instant getLastContentChangedAt() { return lastContentChangedAt; }

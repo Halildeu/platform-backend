@@ -101,6 +101,10 @@ public final class MeetingEventGoldens {
     }
 
     /** Fully populated metadata-only {@code meeting.recording.finished}. */
+    public static String recordingIncomplete() {
+        return read("recording-incomplete.json");
+    }
+
     public static String recordingFinished() {
         return read("recording-finished.json");
     }

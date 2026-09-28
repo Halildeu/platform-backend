@@ -39,6 +39,16 @@ class MeetingEventV1GoldenTest {
     }
 
     @Test
+    void incompleteClosureHasDistinctStableMetadataOnlyWire() {
+        var envelope = MeetingEventTestEnvelopes.recordingIncomplete();
+        assertThat(MeetingEventV1Serializer.toJson(envelope))
+                .isEqualTo(MeetingEventGoldens.recordingIncomplete());
+        assertThat(envelope.eventKey()).isEqualTo("meeting.recording|"
+                + MeetingEventGoldens.RECORDING_SESSION_ID + "|meeting.recording.incomplete|1")
+                .isNotEqualTo(MeetingEventTestEnvelopes.recordingFinished().eventKey());
+    }
+
+    @Test
     void transcriptFailed_rendersTheGoldenBytes() {
         assertThat(MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.transcriptFailed()))
                 .isEqualTo(MeetingEventGoldens.transcriptFailed());

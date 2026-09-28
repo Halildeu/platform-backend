@@ -1,5 +1,7 @@
 package com.example.meeting.dto.v1.admin;
 
+import com.example.common.meeting.events.RecordingOutcome;
+
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -34,9 +36,13 @@ public record MeetingIntelligenceResultResponse(
         Instant generatedAt,
         UUID supersedesAnalysisRunId,
         boolean persisted,
-        String storageMode
+        String storageMode,
+        long incompleteRecordingCount,
+        RecordingOutcome recordingOutcome,
+        String recordingIncompleteReason
 ) {
     public MeetingIntelligenceResultResponse {
+        java.util.Objects.requireNonNull(recordingOutcome).validateReason(recordingIncompleteReason);
         summary = summary == null ? "" : summary;
         summaryCitations = safeList(summaryCitations);
         decisions = safeList(decisions);
