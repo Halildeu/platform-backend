@@ -526,6 +526,7 @@ public class MeetingService {
             if (!request.endedAt().equals(session.getEndedAt())) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "Recording end differs.");
             }
+            ensureIncompleteRecordingEvent(session);
             return lifecycleResponse(meeting, session);
         }
         if (session.getEndedAt() != null) {
@@ -536,6 +537,7 @@ public class MeetingService {
         session.setTranscriptStatus(TranscriptStatus.FAILED);
         session.setLastUpdatedBySubject(tenant.subject());
         sessionRepository.saveAndFlush(session);
+        ensureIncompleteRecordingEvent(session);
         boolean otherActive = sessionRepository.findByMeetingIdVisibleToOrg(meetingId, tenant.tenantId()).stream()
                 .anyMatch(other -> !other.getId().equals(session.getId()) && other.getStartedAt() != null && other.getEndedAt() == null);
         // COMPLETED describes meeting activity, not successful audio delivery; session outcome is separate.
@@ -545,6 +547,27 @@ public class MeetingService {
             meetingRepository.saveAndFlush(meeting);
         }
         return lifecycleResponse(meeting, session);
+    }
+
+    /** Under the same meeting row lock as finish/abandon; repairs pre-event closures on exact retry. */
+    private void ensureIncompleteRecordingEvent(MeetingSession session) {
+        var event = eventOutboxFactory.buildRecordingIncomplete(session, session.getEndedAt());
+        var existing = eventOutboxRepository.findByEventKey(event.getEventKey());
+        if (existing.isPresent()) {
+            var stored = existing.get();
+            if (!Objects.equals(stored.getPayloadRaw(), event.getPayloadRaw())
+                    || !Objects.equals(stored.getTenantId(), event.getTenantId())
+                    || !Objects.equals(stored.getOrgId(), event.getOrgId())
+                    || !Objects.equals(stored.getMeetingId(), event.getMeetingId())
+                    || !Objects.equals(stored.getAggregateId(), event.getAggregateId())
+                    || !Objects.equals(stored.getAggregateType(), event.getAggregateType())
+                    || stored.getAggregateRevision() != event.getAggregateRevision()
+                    || !Objects.equals(stored.getEventType(), event.getEventType())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Recording closure event differs.");
+            }
+            return;
+        }
+        eventOutboxRepository.saveAndFlush(event);
     }
 
     private MeetingSession ownedRecording(AdminTenantContext tenant, UUID meetingId, String externalId) {

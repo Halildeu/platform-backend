@@ -467,6 +467,7 @@ class MeetingServiceRecordingLifecycleTest {
 
     @Test
     void incompleteCloseIsIdempotentAndNeverEmitsFinish() {
+        rememberClosureEvents();
         MeetingSession session = session(null);
         when(sessionRepository.findByExternalSessionIdVisibleToOrg(MEETING_ID, "SES-1", TENANT_ID)).thenReturn(Optional.of(session));
         var command = new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT);
@@ -475,7 +476,10 @@ class MeetingServiceRecordingLifecycleTest {
         assertThat(result.transcriptStatus()).isEqualTo(TranscriptStatus.FAILED);
         assertThat(service.abandonRecording(TENANT, MEETING_ID, command)).isEqualTo(result);
         verify(sessionRepository).saveAndFlush(session);
-        verify(eventOutboxRepository, org.mockito.Mockito.never()).saveAndFlush(any());
+        var event = ArgumentCaptor.forClass(MeetingEventOutbox.class);
+        verify(eventOutboxRepository).saveAndFlush(event.capture());
+        assertThat(event.getValue().getEventType()).isEqualTo("meeting.recording.incomplete");
+        assertThat(event.getValue().getPayloadRaw()).contains("CLOSURE_UNCONFIRMED");
         assertThatThrownBy(() -> service.syncRecordingLifecycle(TENANT, MEETING_ID, command)).isInstanceOf(ResponseStatusException.class);
         assertThatThrownBy(() -> service.abandonRecording(TENANT, MEETING_ID,
                 new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT.plusSeconds(1)))).isInstanceOf(ResponseStatusException.class);
@@ -517,6 +521,78 @@ class MeetingServiceRecordingLifecycleTest {
         assertThat(service.abandonRecording(TENANT, MEETING_ID,
                 new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT)).meetingStatus()).isEqualTo(MeetingStatus.IN_PROGRESS);
         assertThat(other.getEndedAt()).isNull();
+    }
+
+    @Test
+    void exactLegacyIncompleteRetryRepairsOnlyMissingEvent() {
+        rememberClosureEvents();
+        MeetingSession session = session(ENDED_AT);
+        session.markRecordingIncomplete();
+        session.setTranscriptStatus(TranscriptStatus.FAILED);
+        when(sessionRepository.findByExternalSessionIdVisibleToOrg(MEETING_ID, "SES-1", TENANT_ID))
+                .thenReturn(Optional.of(session));
+        var command = new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT);
+        service.abandonRecording(TENANT, MEETING_ID, command);
+        service.abandonRecording(TENANT, MEETING_ID, command);
+        verify(eventOutboxRepository).saveAndFlush(any());
+        verify(sessionRepository, never()).saveAndFlush(any());
+        verify(meetingRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void legacyRetryCannotAcknowledgeAnEventWithDifferentScopeOrPayload() {
+        MeetingSession session = session(ENDED_AT);
+        session.markRecordingIncomplete();
+        session.setTranscriptStatus(TranscriptStatus.FAILED);
+        when(sessionRepository.findByExternalSessionIdVisibleToOrg(MEETING_ID, "SES-1", TENANT_ID))
+                .thenReturn(Optional.of(session));
+        var factory = new com.example.meeting.events.MeetingEventOutboxFactory();
+        var stored = factory.buildRecordingIncomplete(session, ENDED_AT.plusSeconds(1));
+        when(eventOutboxRepository.findByEventKey(any())).thenReturn(Optional.of(stored));
+        assertThatThrownBy(() -> service.abandonRecording(TENANT, MEETING_ID,
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT)))
+                .isInstanceOf(ResponseStatusException.class);
+        stored.setPayloadRaw(factory.buildRecordingIncomplete(session, ENDED_AT).getPayloadRaw());
+        stored.setTenantId(UUID.randomUUID());
+        assertThatThrownBy(() -> service.abandonRecording(TENANT, MEETING_ID,
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT)))
+                .isInstanceOf(ResponseStatusException.class);
+        verify(eventOutboxRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void erasedIncompleteRecordingCannotCreateOrRepairAnEvent() {
+        org.mockito.Mockito.doThrow(new ResponseStatusException(HttpStatus.GONE))
+                .when(sessionErasureService).assertSourceNotErased(TENANT_ID, MEETING_ID, "SES-1");
+        assertThatThrownBy(() -> service.abandonRecording(TENANT, MEETING_ID,
+                new RecordingLifecycleSyncRequest("SES-1", STARTED_AT, ENDED_AT)))
+                .isInstanceOf(ResponseStatusException.class);
+        verify(eventOutboxRepository, never()).saveAndFlush(any());
+        verify(sessionRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void lifecycleRequestRejectsPrecisionThatCannotSurviveDatabaseReload() {
+        try (var factory = jakarta.validation.Validation.buildDefaultValidatorFactory()) {
+            var validator = factory.getValidator();
+            var accepted = new RecordingLifecycleSyncRequest("SES-1",
+                    STARTED_AT.plusNanos(123456000), ENDED_AT.plusNanos(987654000));
+            assertThat(validator.validate(accepted)).isEmpty();
+            var unsupported = new RecordingLifecycleSyncRequest("SES-1",
+                    STARTED_AT.plusNanos(123456789), ENDED_AT.plusNanos(987654321));
+            assertThat(validator.validate(unsupported)).extracting(v -> v.getPropertyPath().toString())
+                    .contains("storagePrecisionSupported");
+        }
+    }
+
+    private void rememberClosureEvents() {
+        var rows = new java.util.HashMap<String, MeetingEventOutbox>();
+        when(eventOutboxRepository.findByEventKey(any())).thenAnswer(call -> Optional.ofNullable(rows.get(call.getArgument(0))));
+        when(eventOutboxRepository.saveAndFlush(any())).thenAnswer(call -> {
+            MeetingEventOutbox row = call.getArgument(0);
+            rows.put(row.getEventKey(), row);
+            return row;
+        });
     }
 
     private static Meeting meeting(MeetingStatus status) {

@@ -1,8 +1,11 @@
 # Incomplete recording lifecycle contract
 
 This source proposal pairs with platform-mobile ADR0019 and issue #7. Deploy the
-schema and both services before the corresponding phone build. No deployment or
-physical-device completion is claimed here.
+schema, compatible transcript consumer and result-completeness contracts before
+emitting the new incomplete event in a rollout. No deployment or physical-device
+completion is claimed here. This proposal is not yet deployable on its own: the
+current transcript consumer ACKs unknown event types, so producer-first deployment
+would discard the new occurrence from that consumer group.
 
 ## Canonical routes (authenticated recording access)
 
@@ -13,6 +16,15 @@ physical-device completion is claimed here.
   First abandon stores `recordingIncomplete=true`, `transcriptStatus=FAILED`, fixed
   endedAt. Identical retry returns the stored result. Different times or previously
   finished session return 409. No `meeting.recording.finished` outbox record.
+  Instead, the same transaction stores one `meeting.recording.incomplete` outbox
+  event: canonical recording scope, revision 1, stable session-based key,
+  `closedAt=generatedAt=stored endedAt`, and bounded `CLOSURE_UNCONFIRMED` reason.
+  Exact authorized retries also repair a pre-event incomplete closure's missing
+  outbox row. Existing rows must match the stored scope and exact payload; their
+  publication/dead-letter state is never reset. Conflicting or erased recordings
+  cannot create/repair events.
+  Times finer than PostgreSQL microseconds are rejected by request validation,
+  preventing an apparently exact retry from changing identity after database reload.
 - Existing normal lifecycle PUT now checks owner and exact start/end for an existing
   session. An incomplete session cannot finish. Conflicting retries return 409 rather
   than echoing a different canonical timestamp. Late old start requests cannot reopen.
@@ -42,3 +54,20 @@ until both phases are acknowledged, then erase local audio/key/journal before re
 
 The gateway registry remains in-memory. This contract provides honest incomplete
 closure, not durable complete replay; server-owned STT/process receipts remain required.
+
+## Remaining integration before release
+
+The new producer event is a prerequisite, not a saved-result implementation.
+The transcript consumer must handle the distinct event under its existing inbox,
+association and erasure locks, and enroll available retained content in bounded
+quiescence. Snapshot completeness must be immutable and bound to authoritative
+analysis capabilities, then propagated to saved results and exports. Successful
+analysis must not change an incomplete recording to a successful capture; the V17
+FAILED invariant remains intentional. Empty retained content needs an explicit,
+readable failure status, not an indefinite ambiguous 404. Mobile must preserve
+closure retries and visibly label analysis based on incomplete input.
+
+Consumer compatibility must be deployed before producer emission. Existing exact
+retry repairs alone do not redrive an already-published event that an old consumer
+ACKed as unknown. Such a rollout requires a separately reviewed durable redrive.
+The user's actual truncated report does not prove its terminal server-side state.

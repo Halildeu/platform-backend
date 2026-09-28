@@ -21,6 +21,9 @@ public enum MeetingEventType {
     /** A recording session acquired its first immutable end timestamp. */
     RECORDING_FINISHED("meeting.recording.finished"),
 
+    /** Capture closed without proof that all audio was processed. */
+    RECORDING_INCOMPLETE("meeting.recording.incomplete"),
+
     /** A meeting action gained/changed its assignee via the manual task CRUD (dilim-4). */
     ACTION_REASSIGNED("meeting.action.reassigned");
 

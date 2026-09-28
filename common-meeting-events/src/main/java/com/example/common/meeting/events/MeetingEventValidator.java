@@ -154,6 +154,23 @@ public final class MeetingEventValidator {
                             + p.eventType().wireValue());
                 }
             }
+            case MeetingEventPayload.RecordingIncomplete p -> {
+                requireNotNull(errors, p.recordingSessionId(), "payload.recordingSessionId");
+                requireText(errors, p.externalSessionId(), "payload.externalSessionId");
+                requireNotNull(errors, p.closedAt(), "payload.closedAt");
+                if (p.externalSessionId() != null
+                        && !p.externalSessionId().matches("SES-[A-Za-z0-9._:-]{1,124}")) {
+                    errors.add("payload.externalSessionId has invalid format");
+                }
+                if (!MeetingEventPayload.RecordingIncomplete.CLOSURE_UNCONFIRMED.equals(p.reasonCode())) {
+                    errors.add("payload.reasonCode must be CLOSURE_UNCONFIRMED");
+                }
+                requireOccurrenceScope(errors, envelope, p.recordingSessionId(), 1,
+                        "recordingSessionId", p.eventType());
+                if (!"meeting.recording".equals(envelope.aggregateType())) {
+                    errors.add("aggregateType must be meeting.recording for " + p.eventType().wireValue());
+                }
+            }
             case MeetingEventPayload.TranscriptReady p -> {
                 requireNotNull(errors, p.analysisRunId(), "payload.analysisRunId");
                 requireNotNull(errors, p.transcriptSessionId(), "payload.transcriptSessionId");
@@ -233,6 +250,7 @@ public final class MeetingEventValidator {
         // drift apart, the outbox row and its payload would describe different things.
         if (!(payload instanceof MeetingEventPayload.ConsentRevoked)
                 && !(payload instanceof MeetingEventPayload.RecordingFinished)
+                && !(payload instanceof MeetingEventPayload.RecordingIncomplete)
                 && !(payload instanceof MeetingEventPayload.TranscriptReady)
                 && !(payload instanceof MeetingEventPayload.TranscriptFailed)
                 && envelope.aggregateId() != null

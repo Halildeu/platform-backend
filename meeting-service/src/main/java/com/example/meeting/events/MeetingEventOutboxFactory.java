@@ -238,6 +238,43 @@ public final class MeetingEventOutboxFactory {
         return outbox;
     }
 
+    /** Build a distinct terminal marker; never reports lossless delivery. */
+    public MeetingEventOutbox buildRecordingIncomplete(
+            final MeetingSession session,
+            final Instant closedAt) {
+        final long revision = 1L;
+        final String aggregateType = "meeting.recording";
+        final MeetingEventPayload payload = new MeetingEventPayload.RecordingIncomplete(
+                session.getId(), session.getExternalSessionId(), closedAt,
+                MeetingEventPayload.RecordingIncomplete.CLOSURE_UNCONFIRMED);
+        final MeetingEventEnvelope envelope = MeetingEventEnvelope.builder()
+                .eventType(com.example.common.meeting.events.MeetingEventType.RECORDING_INCOMPLETE)
+                .producer(PRODUCER)
+                .meetingId(session.getMeetingId())
+                .tenantId(session.getTenantId())
+                .orgId(session.getOrgId())
+                .occurredAt(closedAt)
+                .aggregateType(aggregateType)
+                .aggregateId(session.getId())
+                .aggregateRevision(revision)
+                .payload(payload)
+                .build();
+
+        final MeetingEventOutbox outbox = new MeetingEventOutbox();
+        outbox.setEventType(MeetingEventType.RECORDING_INCOMPLETE.wireValue());
+        outbox.setAggregateType(aggregateType);
+        outbox.setAggregateId(session.getId());
+        outbox.setAggregateRevision(revision);
+        outbox.setMeetingId(session.getMeetingId());
+        outbox.setTenantId(session.getTenantId());
+        outbox.setOrgId(session.getOrgId());
+        outbox.setEventKey(envelope.eventKey());
+        final String payloadJson = MeetingEventV1Serializer.toJson(envelope);
+        outbox.setPayload(payloadJson);
+        outbox.setPayloadRaw(payloadJson);
+        return outbox;
+    }
+
     /**
      * This service's local enum to the shared one.
      *
