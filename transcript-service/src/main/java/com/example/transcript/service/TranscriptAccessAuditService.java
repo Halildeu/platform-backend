@@ -37,6 +37,13 @@ public class TranscriptAccessAuditService {
         this.repository = repository;
     }
 
+    /** Session status without transcript content, segment counts or a fabricated analysis run. */
+    public TranscriptAccessAudit recordStatus(AdminTenantContext context,
+                                              UUID meetingId,
+                                              UUID sessionId) {
+        return write(context, TranscriptAccessType.STATUS, null, meetingId, sessionId, null);
+    }
+
     /** Single-segment READ. */
     public TranscriptAccessAudit recordRead(AdminTenantContext context,
                                             UUID segmentId,
