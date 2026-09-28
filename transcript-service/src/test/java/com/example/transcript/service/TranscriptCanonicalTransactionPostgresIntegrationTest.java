@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.common.meeting.events.MeetingEventEnvelope;
+import com.example.common.meeting.events.RecordingOutcome;
+import com.example.transcript.finalization.RecordingIncompleteEvent;
 import com.example.common.meeting.events.SpeakerAttribution;
 import com.example.common.meeting.events.MeetingEventPayload;
 import com.example.common.meeting.events.MeetingEventType;
@@ -811,6 +813,121 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
                 .isInstanceOf(SessionErasureFence.SessionErasedException.class);
     }
 
+    @Test
+    void incompleteClosureRetainsContentAndCannotBecomeFinishedAcrossDatabaseRoundTrip() {
+        var event = incompleteEvent("SES-incomplete");
+        assertThat(recordingFinishedEventProcessor.process(event))
+                .isEqualTo(RecordingFinishedEventProcessor.ProcessResult.PROCESSED);
+        var association = associations.findAll().getFirst();
+        var initialDue = association.getQuiescenceDueAt();
+        assertThat(recordingFinishedEventProcessor.process(event))
+                .isEqualTo(RecordingFinishedEventProcessor.ProcessResult.DUPLICATE);
+        assertThat(associations.findById(association.getId()).orElseThrow().getQuiescenceDueAt())
+                .isEqualTo(initialDue);
+        assertThat(meetingEventInbox.findAll().getFirst().getEventType())
+                .isEqualTo("meeting.recording.incomplete");
+        saveSegment(TENANT, MEETING, SESSION, "SES-incomplete", 1L, TranscriptSegmentStatus.DRAFT, null);
+        makeClosureDue(association.getId());
+        assertThat(quiescentFinalizationProcessor.process(association.getId()))
+                .isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.READY);
+        var snapshot = finalizations.findAll().getFirst();
+        assertThat(snapshot.getCanonicalTranscript()).isEqualTo("draft");
+        assertThat(snapshot.getRecordingOutcome()).isEqualTo(RecordingOutcome.INCOMPLETE);
+        assertThat(snapshot.getRecordingIncompleteReason()).isEqualTo("CLOSURE_UNCONFIRMED");
+        var conflicting = new RecordingFinishedEvent(event.eventKey().replace("incomplete", "finished"),
+                "b".repeat(64), TENANT, MEETING, SESSION, event.externalSessionId(), event.closedAt());
+        assertThatThrownBy(() -> recordingFinishedEventProcessor.process(conflicting))
+                .isInstanceOf(TranscriptFinalizationStateMachine.FinalizationScopeConflictException.class);
+        assertThat(meetingEventInbox.count()).isEqualTo(1);
+        assertThat(associations.findById(association.getId()).orElseThrow().getRecordingOutcome())
+                .isEqualTo(RecordingOutcome.INCOMPLETE);
+        assertThatThrownBy(() -> jdbc.update("UPDATE " + SCHEMA
+                + ".transcript_session_associations SET recording_outcome='FINISHED', recording_incomplete_reason=NULL WHERE id=?",
+                association.getId())).isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE " + SCHEMA
+                + ".transcript_finalizations SET recording_outcome='FINISHED', recording_incomplete_reason=NULL WHERE id=?",
+                snapshot.getId())).isInstanceOf(DataIntegrityViolationException.class);
+        erasureService.erase(TENANT, MEETING, SESSION, event.externalSessionId());
+        assertThat(finalizations.count()).isZero();
+        assertThatThrownBy(() -> recordingFinishedEventProcessor.process(event))
+                .isInstanceOf(SessionErasureFence.SessionErasedException.class);
+    }
+
+    @Test
+    void firstIncompleteClosureAfterEditorialSnapshotPreservesOldVersionAndProducesNewVersion() {
+        insertResolvedAssociation();
+        saveSegment(TENANT, MEETING, SESSION, "SES-42", 1L, TranscriptSegmentStatus.FINALIZED, "retained content");
+        var first = finalizationService.finalizeTranscript(context(TENANT), MEETING, SESSION, 1L);
+        var oldSnapshot = finalizations.findById(first.id()).orElseThrow();
+        assertThat(oldSnapshot.getRecordingOutcome()).isEqualTo(RecordingOutcome.UNKNOWN);
+        recordingFinishedEventProcessor.process(incompleteEvent("SES-42"));
+        var association = associations.findAll().getFirst();
+        assertThat(association.getFinalizationCycleVersion()).isEqualTo(2);
+        assertThat(finalizationService.finalizeTranscript(context(TENANT), MEETING, SESSION, 1L)).isEqualTo(first);
+        assertThat(associations.findById(association.getId()).orElseThrow().getFinalizationState().name())
+                .isEqualTo("QUIESCING");
+        makeClosureDue(association.getId());
+        assertThat(quiescentFinalizationProcessor.process(association.getId()))
+                .isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.READY);
+        assertThat(finalizations.count()).isEqualTo(2);
+        var newSnapshot = finalizations.findByTenantIdAndMeetingIdAndSessionIdAndFinalizationVersion(
+                TENANT, MEETING, SESSION, 2L).orElseThrow();
+        assertThat(newSnapshot.getRecordingOutcome()).isEqualTo(RecordingOutcome.INCOMPLETE);
+        assertThat(newSnapshot.getCanonicalTranscript()).isEqualTo(oldSnapshot.getCanonicalTranscript());
+        assertThat(newSnapshot.getAnalysisRunId()).isNotEqualTo(oldSnapshot.getAnalysisRunId());
+        assertThat(finalizations.findById(first.id()).orElseThrow().getRecordingOutcome()).isEqualTo(RecordingOutcome.UNKNOWN);
+        assertThat(outbox.count()).isEqualTo(2);
+    }
+
+    @Test
+    void incompleteWithoutReasonFailsDatabaseConstraintAndInboxRollbackIsAtomic() {
+        insertResolvedAssociation();
+        assertThatThrownBy(() -> jdbc.update("UPDATE " + SCHEMA + ".transcript_session_associations "
+                + "SET recording_outcome='INCOMPLETE', recording_finished_at=CURRENT_TIMESTAMP WHERE session_id=?", SESSION))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        var incompatible = new RecordingFinishedEvent("meeting.recording|" + SESSION + "|meeting.recording.finished|1",
+                "b".repeat(64), TENANT, MEETING, SESSION, "SES-42", incompleteEvent("SES-42").closedAt());
+        recordingFinishedEventProcessor.process(incompatible);
+        assertThatThrownBy(() -> recordingFinishedEventProcessor.process(incompleteEvent("SES-42")))
+                .isInstanceOf(TranscriptFinalizationStateMachine.FinalizationScopeConflictException.class);
+        assertThat(meetingEventInbox.count()).isEqualTo(1);
+        assertThat(associations.findAll().getFirst().getRecordingOutcome()).isEqualTo(RecordingOutcome.FINISHED);
+        assertThat(finalizations.count()).isZero();
+    }
+
+    @Test
+    void legacyEditorialFirstFinishedRowCanReopenOnLateContentWithoutMissingObservationTime() {
+        insertResolvedAssociation();
+        saveSegment(TENANT, MEETING, SESSION, "SES-42", 1L, TranscriptSegmentStatus.FINALIZED, "early content");
+        finalizationService.finalizeTranscript(context(TENANT), MEETING, SESSION, 1L);
+        jdbc.update("UPDATE " + SCHEMA + ".transcript_session_associations SET "
+                + "recording_outcome='FINISHED', recording_finished_at=? WHERE session_id=?",
+                Timestamp.from(Instant.parse("2026-09-26T18:53:00Z")), SESSION);
+        Instant observedAfter = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        var event = new DirectSttTranscriptResultEvent("late-entry", TENANT, TENANT.toString(),
+                "7", MEETING, "SES-42", 2L, 2L, 2L, 2L, 1000L, "late-correlation",
+                "b".repeat(64), "late content", 1d, null);
+        directSttIngestion.upsert(event, SESSION);
+        var association = associations.findAll().getFirst();
+        assertThat(association.getFinalizationState().name()).isEqualTo("QUIESCING");
+        assertThat(association.getFinalizationCycleVersion()).isEqualTo(2);
+        assertThat(association.getFinishObservedAt()).isAfterOrEqualTo(observedAfter);
+        assertThat(association.getQuiescenceDueAt()).isAfter(association.getFinishObservedAt());
+        assertThat(association.getRecordingOutcome()).isEqualTo(RecordingOutcome.FINISHED);
+    }
+
+    private RecordingIncompleteEvent incompleteEvent(String source) {
+        return new RecordingIncompleteEvent("meeting.recording|" + SESSION + "|meeting.recording.incomplete|1",
+                "a".repeat(64), TENANT, MEETING, SESSION, source,
+                Instant.parse("2026-09-26T18:53:00.123456Z"), "CLOSURE_UNCONFIRMED");
+    }
+
+    private void makeClosureDue(UUID associationId) {
+        jdbc.update("UPDATE " + SCHEMA + ".transcript_session_associations SET "
+                + "min_wait_at=CURRENT_TIMESTAMP - INTERVAL '1 second', "
+                + "quiescence_due_at=CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id=?", associationId);
+    }
+
     private UUID insertQuiescingAssociation(boolean deadlineExpired) {
         UUID associationId = UUID.randomUUID();
         insertAssociation(associationId, TENANT, MEETING, "SES-quiescent", SESSION,
@@ -819,7 +936,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         Instant maxWaitAt = deadlineExpired ? now.minusSeconds(1) : now.plusSeconds(60);
         jdbc.update("UPDATE " + SCHEMA + ".transcript_session_associations SET "
                         + "finalization_state='QUIESCING', finalization_cycle_version=1, "
-                        + "recording_finished_at=?, finish_observed_at=?, last_content_changed_at=?, "
+                        + "recording_outcome='FINISHED', recording_finished_at=?, finish_observed_at=?, last_content_changed_at=?, "
                         + "min_wait_at=?, quiescence_due_at=?, max_wait_at=? WHERE id=?",
                 Timestamp.from(now.minusSeconds(600)), Timestamp.from(now.minusSeconds(590)),
                 Timestamp.from(now.minusSeconds(120)), Timestamp.from(now.minusSeconds(30)),

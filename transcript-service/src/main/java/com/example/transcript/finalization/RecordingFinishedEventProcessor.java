@@ -16,7 +16,7 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Atomically deduplicates, binds and enrolls one recording-finished occurrence. */
+/** Atomically deduplicates, binds and enrolls an authoritative recording closure. */
 @Service
 public class RecordingFinishedEventProcessor {
 
@@ -40,7 +40,7 @@ public class RecordingFinishedEventProcessor {
     }
 
     @Transactional
-    public ProcessResult process(RecordingFinishedEvent event) {
+    public ProcessResult process(RecordingClosureEvent event) {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         UUIDScope scope = new UUIDScope(event.tenantId(), event.meetingId(), event.recordingSessionId());
         erasureFence.lock(
@@ -50,7 +50,7 @@ public class RecordingFinishedEventProcessor {
         erasureFence.rejectErased(scope, event.externalSessionId());
         int inserted = inbox.insertIfAbsent(
                 deterministicId("inbox", event.eventKey()), event.eventKey(),
-                RecordingFinishedEventParser.EVENT_TYPE, event.payloadSha256(),
+                event.eventType(), event.payloadSha256(),
                 event.tenantId(), event.meetingId(), event.recordingSessionId(),
                 event.externalSessionId(), now);
 
@@ -82,7 +82,11 @@ public class RecordingFinishedEventProcessor {
                     .orElseThrow(() -> new IllegalStateException("ASSOCIATION_BIND_MISSING"));
         }
         verifyAssociationScope(association, event);
-        stateMachine.observeRecordingFinished(association, event.finishedAt(), now);
+        if (event instanceof RecordingIncompleteEvent incomplete) {
+            stateMachine.observeRecordingIncomplete(association, incomplete.closedAt(), now, incomplete.reasonCode());
+        } else {
+            stateMachine.observeRecordingFinished(association, event.closedAt(), now);
+        }
         associations.saveAndFlush(association);
         if (inbox.markProcessed(event.eventKey(), now) != 1) {
             throw new RecordingFinishedEventConflictException("INBOX_PROCESS_RACE");
@@ -91,8 +95,9 @@ public class RecordingFinishedEventProcessor {
     }
 
     private void verifyInboxScope(
-            TranscriptMeetingEventInbox stored, RecordingFinishedEvent event) {
-        if (!stored.getPayloadSha256().equals(event.payloadSha256())
+            TranscriptMeetingEventInbox stored, RecordingClosureEvent event) {
+        if (!event.eventType().equals(stored.getEventType())
+                || !stored.getPayloadSha256().equals(event.payloadSha256())
                 || !stored.getTenantId().equals(event.tenantId())
                 || !stored.getMeetingId().equals(event.meetingId())
                 || !stored.getSessionId().equals(event.recordingSessionId())
@@ -102,7 +107,7 @@ public class RecordingFinishedEventProcessor {
     }
 
     private void verifyAssociationScope(
-            TranscriptSessionAssociation association, RecordingFinishedEvent event) {
+            TranscriptSessionAssociation association, RecordingClosureEvent event) {
         if (association.getStatus() != TranscriptSessionAssociationStatus.RESOLVED
                 || !association.getTenantId().equals(event.tenantId())
                 || !association.getMeetingId().equals(event.meetingId())

@@ -15,11 +15,12 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 
-/** Fail-closed parser for the frozen meeting.event.v1 recording-finished wire. */
+/** Fail-closed parser for distinct finished and incomplete meeting.event.v1 closures. */
 @Component
 public class RecordingFinishedEventParser {
 
     static final String EVENT_TYPE = "meeting.recording.finished";
+    static final String INCOMPLETE_EVENT_TYPE = "meeting.recording.incomplete";
     static final String AGGREGATE_TYPE = "meeting.recording";
     static final int MAX_PAYLOAD_UTF8_BYTES = 8 * 1024;
     private static final Pattern SOURCE_SESSION =
@@ -29,6 +30,11 @@ public class RecordingFinishedEventParser {
             "orgId", "generatedAt", "recordingSessionId", "externalSessionId",
             "finishedAt");
 
+    private static final Set<String> INCOMPLETE_FIELDS = Set.of(
+            "schema", "eventType", "analysisRunId", "meetingId", "tenantId",
+            "orgId", "generatedAt", "recordingSessionId", "externalSessionId",
+            "closedAt", "reasonCode");
+
     private final ObjectMapper mapper;
 
     public RecordingFinishedEventParser(ObjectMapper mapper) {
@@ -36,8 +42,10 @@ public class RecordingFinishedEventParser {
     }
 
     /** Returns null for a valid stream event type this consumer does not own. */
-    public RecordingFinishedEvent parse(Map<String, String> fields) {
-        if (!EVENT_TYPE.equals(fields.get("eventType"))) {
+    public RecordingClosureEvent parse(Map<String, String> fields) {
+        String eventType = fields.get("eventType");
+        boolean incomplete = INCOMPLETE_EVENT_TYPE.equals(eventType);
+        if (!EVENT_TYPE.equals(eventType) && !incomplete) {
             return null;
         }
         try {
@@ -46,11 +54,11 @@ public class RecordingFinishedEventParser {
                 throw invalid("PAYLOAD_TOO_LARGE");
             }
             JsonNode root = mapper.readTree(payload);
-            if (!root.isObject() || !fieldNames(root).equals(PAYLOAD_FIELDS)) {
+            if (!root.isObject() || !fieldNames(root).equals(incomplete ? INCOMPLETE_FIELDS : PAYLOAD_FIELDS)) {
                 throw invalid("PAYLOAD_SHAPE");
             }
             requireText(root, "schema", "meeting.event.v1");
-            requireText(root, "eventType", EVENT_TYPE);
+            requireText(root, "eventType", eventType);
             if (!root.path("analysisRunId").isNull()) {
                 throw invalid("ANALYSIS_RUN_PRESENT");
             }
@@ -60,8 +68,15 @@ public class RecordingFinishedEventParser {
             UUID orgId = uuid(root, "orgId");
             UUID sessionId = uuid(root, "recordingSessionId");
             String externalSessionId = text(root, "externalSessionId");
-            Instant finishedAt = instant(root, "finishedAt");
-            instant(root, "generatedAt");
+            Instant closedAt = instant(root, incomplete ? "closedAt" : "finishedAt");
+            Instant generatedAt = instant(root, "generatedAt");
+            if (incomplete && (!closedAt.equals(generatedAt)
+                    || !closedAt.equals(closedAt.truncatedTo(java.time.temporal.ChronoUnit.MICROS)))) {
+                throw invalid("CLOSURE_TIME_INVALID");
+            }
+            if (incomplete) {
+                requireText(root, "reasonCode", "CLOSURE_UNCONFIRMED");
+            }
             if (!tenantId.equals(orgId)) {
                 throw invalid("ORG_SCOPE");
             }
@@ -75,12 +90,15 @@ public class RecordingFinishedEventParser {
             requireOuter(fields, "meetingId", meetingId.toString());
             requireOuter(fields, "tenantId", tenantId.toString());
             requireOuter(fields, "orgId", orgId.toString());
-            String expectedKey = AGGREGATE_TYPE + "|" + sessionId + "|" + EVENT_TYPE + "|1";
+            String expectedKey = AGGREGATE_TYPE + "|" + sessionId + "|" + eventType + "|1";
             requireOuter(fields, "eventKey", expectedKey);
 
-            return new RecordingFinishedEvent(
-                    expectedKey, sha256(payload), tenantId, meetingId, sessionId,
-                    externalSessionId, finishedAt);
+            if (incomplete) {
+                return new RecordingIncompleteEvent(expectedKey, sha256(payload), tenantId,
+                        meetingId, sessionId, externalSessionId, closedAt, text(root, "reasonCode"));
+            }
+            return new RecordingFinishedEvent(expectedKey, sha256(payload), tenantId,
+                    meetingId, sessionId, externalSessionId, closedAt);
         } catch (RecordingFinishedEventInvalidException ex) {
             throw ex;
         } catch (Exception ex) {

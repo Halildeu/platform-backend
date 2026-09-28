@@ -1,6 +1,7 @@
 package com.example.transcript.finalization;
 
 import com.example.transcript.model.TranscriptFinalizationState;
+import com.example.common.meeting.events.RecordingOutcome;
 import com.example.transcript.model.TranscriptSessionAssociation;
 import java.time.Duration;
 import java.time.Instant;
@@ -25,6 +26,22 @@ public class TranscriptFinalizationStateMachine {
             TranscriptSessionAssociation association,
             Instant finishedAt,
             Instant observedAt) {
+        observeRecordingClosed(association, finishedAt, observedAt, RecordingOutcome.FINISHED, null);
+    }
+
+    public void observeRecordingIncomplete(TranscriptSessionAssociation association,
+            Instant closedAt, Instant observedAt, String reasonCode) {
+        observeRecordingClosed(association, closedAt, observedAt, RecordingOutcome.INCOMPLETE, reasonCode);
+    }
+
+    private void observeRecordingClosed(TranscriptSessionAssociation association,
+            Instant finishedAt, Instant observedAt, RecordingOutcome outcome, String reason) {
+        outcome.validateReason(reason);
+        boolean firstClosure = association.getRecordingOutcome() == RecordingOutcome.UNKNOWN;
+        if (!firstClosure && (association.getRecordingOutcome() != outcome
+                || !java.util.Objects.equals(association.getRecordingIncompleteReason(), reason))) {
+            throw new FinalizationScopeConflictException("recording closure outcome conflicts with the stored occurrence");
+        }
         Instant normalizedFinishedAt = micros(finishedAt);
         Instant normalizedObservedAt = micros(observedAt);
         if (association.getRecordingFinishedAt() != null
@@ -35,9 +52,18 @@ public class TranscriptFinalizationStateMachine {
         if (association.getRecordingFinishedAt() == null) {
             association.setRecordingFinishedAt(normalizedFinishedAt);
         }
+        association.setRecordingClosure(outcome, reason);
         if (association.getFinalizationState() == TranscriptFinalizationState.FINALIZED
                 || association.getFinalizationState() == TranscriptFinalizationState.TIMED_OUT) {
-            return;
+            if (!firstClosure) {
+                return;
+            }
+            // A previous editorial snapshot had no closure proof. Never rewrite it;
+            // materialize the newly known outcome in a new immutable occurrence.
+            association.setFinalizationCycleVersion(Math.max(
+                    association.getFinalizationCycleVersion() + 1L,
+                    association.getFinalizationVersion() + 1L));
+            association.setFinishObservedAt(null);
         }
         if (association.getFinishObservedAt() == null) {
             association.setFinishObservedAt(normalizedObservedAt);
@@ -65,6 +91,18 @@ public class TranscriptFinalizationStateMachine {
         TranscriptFinalizationState state = association.getFinalizationState();
         if (state == TranscriptFinalizationState.FINALIZED
                 || state == TranscriptFinalizationState.TIMED_OUT) {
+            // An editorial snapshot can exist while capture is still open. The
+            // first authoritative closure will start its own bounded cycle;
+            // entering QUIESCING here would have no closure/observation time.
+            if (association.getRecordingOutcome() == RecordingOutcome.UNKNOWN) {
+                return;
+            }
+            // Legacy editorial-first closures stored the close time without an
+            // observation marker. Use this new observation, never a guessed
+            // historical time, when late content opens a valid bounded cycle.
+            if (association.getFinishObservedAt() == null) {
+                association.setFinishObservedAt(normalized);
+            }
             association.setFinalizationCycleVersion(Math.max(
                     association.getFinalizationCycleVersion() + 1L,
                     association.getFinalizationVersion() + 1L));
