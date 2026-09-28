@@ -47,7 +47,8 @@ import org.springframework.test.web.servlet.MockMvc;
 /** End-to-end internal route authorization with real RS256 bearer tokens. */
 @WebMvcTest(controllers = {
         MeetingAnalysisResultInternalController.class,
-        MeetingSessionResolutionInternalController.class
+        MeetingSessionResolutionInternalController.class,
+        com.example.meeting.controller.TeamsScheduleAuthorizationInternalController.class
 })
 @ActiveProfiles("test")
 @Import({
@@ -88,6 +89,9 @@ class MeetingInternalSignedTokenSecurityTest {
               "actions": []
             }
             """;
+
+    @MockitoBean
+    private com.example.meeting.service.TeamsScheduleAuthorizationService scheduleAuthorization;
 
     @Autowired
     private MockMvc mockMvc;
@@ -167,6 +171,43 @@ class MeetingInternalSignedTokenSecurityTest {
                 .andExpect(jsonPath("$.analysis_run_id").value(RUN_ID.toString()));
     }
 
+    @Test void workerSignedTokenAuthorizesScheduleAndCannotWriteAnalysis() throws Exception {
+        mockMvc.perform(post("/api/v1/internal/meetings/{id}/teams-calendar/authorize", MEETING_ID)
+                .header(AUTHORIZATION, bearer("teams-capture-worker", "meeting:teams-schedule:authorize"))
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(post(RESOLVE_PATH, MEETING_ID)
+                .header(AUTHORIZATION, bearer("teams-capture-worker", "meeting:teams-schedule:authorize"))
+                .contentType(MediaType.APPLICATION_JSON).content(RESOLVE_BODY))
+                .andExpect(status().isForbidden());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"meeting-ai", "transcript-service", "other-service"})
+    void evenOtherTrustedServiceCannotUseWorkerPermission(String client) throws Exception {
+        mockMvc.perform(post("/api/v1/internal/meetings/{id}/teams-calendar/authorize", MEETING_ID)
+                .header(AUTHORIZATION, bearer(client, "meeting:teams-schedule:authorize"))
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().is(client.equals("other-service") ? 401 : 403));
+        verifyNoInteractions(scheduleAuthorization);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"issuer", "audience", "subject", "expired"})
+    void wrongSignedWorkerClaimsAreRejected(String fault) throws Exception {
+        var claims = new JWTClaimsSet.Builder().issuer(fault.equals("issuer") ? "foreign" : ISSUER)
+                .subject(fault.equals("subject") ? "someone-else" : "teams-capture-worker")
+                .audience(fault.equals("audience") ? "user-service" : AUDIENCE)
+                .claim("client_id", "teams-capture-worker").claim("perm", List.of("meeting:teams-schedule:authorize"))
+                .expirationTime(new Date(System.currentTimeMillis() + (fault.equals("expired") ? -300_000 : 300_000))).build();
+        var jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
+        jwt.sign(new RSASSASigner(SERVICE_KEYS.getPrivate()));
+        mockMvc.perform(post("/api/v1/internal/meetings/{id}/teams-calendar/authorize", MEETING_ID)
+                .header(AUTHORIZATION, "Bearer " + jwt.serialize()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(scheduleAuthorization);
+    }
+
     private static String bearer(String clientId, String permission) throws Exception {
         JWTClaimsSet claims = new JWTClaimsSet.Builder()
                 .subject(clientId)
@@ -207,7 +248,7 @@ class MeetingInternalSignedTokenSecurityTest {
             decoder.setJwtValidator(SecurityConfig.buildInternalServiceValidator(
                     ISSUER,
                     List.of(AUDIENCE),
-                    List.of(MEETING_AI, TRANSCRIPT_SERVICE)));
+                    List.of(MEETING_AI, TRANSCRIPT_SERVICE, "teams-capture-worker")));
             return decoder;
         }
     }

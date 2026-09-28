@@ -1,6 +1,8 @@
 package com.example.meeting.controller;
 
 import com.example.commonauth.openfga.RequireModule;
+import com.example.meeting.dto.v1.admin.AssigneeCandidateSearchRequest;
+import com.example.meeting.dto.v1.admin.AssigneeCandidateSearchResponse;
 import com.example.meeting.dto.v1.admin.MeetingActionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingActionResponse;
 import com.example.meeting.dto.v1.admin.MeetingActionUpdateRequest;
@@ -18,6 +20,7 @@ import com.example.meeting.dto.v1.admin.RecordingLifecycleSyncRequest;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.MeetingAuthz;
 import com.example.meeting.security.TenantContextResolver;
+import com.example.meeting.service.ActionAssigneeNames;
 import com.example.meeting.service.MeetingService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -44,6 +47,7 @@ import java.util.UUID;
  * .../{meetingId}/sessions/{id} GET PUT DELETE
  * .../{meetingId}/actions       GET(list) POST(create)
  * .../{meetingId}/actions/{id}  GET PUT DELETE
+ * .../{meetingId}/assignee-candidates/search  POST (people picker, gitops#3834)
  * .../{meetingId}/decisions     GET(list) POST(create)
  * .../{meetingId}/decisions/{id} GET PUT DELETE
  * </pre>
@@ -58,12 +62,15 @@ public class MeetingSubResourceController {
 
     private final MeetingService meetingService;
     private final TenantContextResolver tenantContextResolver;
+    private final ActionAssigneeNames assigneeNames;
 
     public MeetingSubResourceController(
             MeetingService meetingService,
-            TenantContextResolver tenantContextResolver) {
+            TenantContextResolver tenantContextResolver,
+            ActionAssigneeNames assigneeNames) {
         this.meetingService = meetingService;
         this.tenantContextResolver = tenantContextResolver;
+        this.assigneeNames = assigneeNames;
     }
 
     // ───────────────────────────── Sessions ─────────────────────────────
@@ -186,7 +193,7 @@ public class MeetingSubResourceController {
     @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.VIEWER)
     public List<MeetingActionResponse> listActions(@PathVariable UUID meetingId) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
-        return meetingService.listActions(tenant, meetingId);
+        return assigneeNames.withNames(meetingService.listActions(tenant, meetingId));
     }
 
     @GetMapping("/actions/{actionId}")
@@ -194,7 +201,7 @@ public class MeetingSubResourceController {
     public MeetingActionResponse getAction(
             @PathVariable UUID meetingId, @PathVariable UUID actionId) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
-        return meetingService.getAction(tenant, meetingId, actionId);
+        return assigneeNames.withName(meetingService.getAction(tenant, meetingId, actionId));
     }
 
     @PostMapping("/actions")
@@ -203,7 +210,8 @@ public class MeetingSubResourceController {
             @PathVariable UUID meetingId,
             @Valid @RequestBody MeetingActionCreateRequest request) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
-        MeetingActionResponse created = meetingService.createAction(tenant, meetingId, request);
+        MeetingActionResponse created =
+                assigneeNames.withName(meetingService.createAction(tenant, meetingId, request));
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
@@ -214,7 +222,21 @@ public class MeetingSubResourceController {
             @PathVariable UUID actionId,
             @Valid @RequestBody MeetingActionUpdateRequest request) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
-        return meetingService.updateAction(tenant, meetingId, actionId, request);
+        return assigneeNames.withName(meetingService.updateAction(tenant, meetingId, actionId, request));
+    }
+
+    /**
+     * "Göreve ata" people picker — Faz 24 (gitops#3834). Same gate as creating an action: whoever
+     * may assign a task on this meeting may look up whom to assign it to. POST so the typed name
+     * stays out of URLs and access logs.
+     */
+    @PostMapping("/assignee-candidates/search")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
+    public AssigneeCandidateSearchResponse searchAssigneeCandidates(
+            @PathVariable UUID meetingId,
+            @Valid @RequestBody AssigneeCandidateSearchRequest request) {
+        AdminTenantContext tenant = tenantContextResolver.resolveRequired();
+        return meetingService.searchAssigneeCandidates(tenant, meetingId, request);
     }
 
     @DeleteMapping("/actions/{actionId}")

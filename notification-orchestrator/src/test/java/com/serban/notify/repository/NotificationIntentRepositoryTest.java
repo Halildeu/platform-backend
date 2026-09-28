@@ -2,12 +2,14 @@ package com.serban.notify.repository;
 
 import com.serban.notify.AbstractPostgresTest;
 import com.serban.notify.domain.NotificationIntent;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -20,10 +22,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest
 @ActiveProfiles("test")
 @ContextConfiguration(initializers = AbstractPostgresTest.Initializer.class)
+@Transactional
 class NotificationIntentRepositoryTest extends AbstractPostgresTest {
 
     @Autowired
     NotificationIntentRepository repo;
+
+    @Autowired
+    EntityManager entityManager;
 
     @Test
     void persistAndRetrieveIntent() {
@@ -34,6 +40,8 @@ class NotificationIntentRepositoryTest extends AbstractPostgresTest {
         assertThat(saved.getCreatedAt()).isNotNull();
         assertThat(saved.getStatus()).isEqualTo(NotificationIntent.Status.PENDING);
 
+        entityManager.flush();
+        entityManager.clear();
         Optional<NotificationIntent> found = repo.findByIntentId(intent.getIntentId());
         assertThat(found).isPresent();
         assertThat(found.get().getOrgId()).isEqualTo("default");
@@ -52,10 +60,14 @@ class NotificationIntentRepositoryTest extends AbstractPostgresTest {
         future.setScheduledAt(OffsetDateTime.now().plusHours(1));
         repo.save(future);
 
+        // The container is shared with other test classes. Verify eligibility,
+        // not whether our row happens to occur in an unordered first page.
+        // The test transaction also keeps background workers from consuming
+        // these uncommitted fixtures and rolls them back after each test.
         List<NotificationIntent> result = repo.findDueForProcessing(
             NotificationIntent.Status.PENDING,
             OffsetDateTime.now(),
-            PageRequest.of(0, 10)
+            Pageable.unpaged()
         );
 
         assertThat(result).extracting(NotificationIntent::getIntentId)

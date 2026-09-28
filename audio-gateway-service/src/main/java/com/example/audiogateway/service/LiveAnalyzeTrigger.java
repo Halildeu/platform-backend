@@ -1,8 +1,11 @@
 package com.example.audiogateway.service;
 
 import com.example.audiogateway.dto.TranscriptResult;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -11,6 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.Disposable;
 import reactor.core.Disposables;
 import reactor.core.publisher.Mono;
@@ -37,9 +41,9 @@ import reactor.core.publisher.Mono;
  *       payload) but never LOGGED. Metric labels are counts only.</li>
  * </ul>
  *
- * <p>Time-window fallback (a periodic flush independent of segment count)
- * is deferred to a follow-up slice; segment-count is the primary trigger
- * for the desktop viewer scope.
+ * <p>A dirty window also flushes after a bounded wait, even if no more speech
+ * arrives. The deadline is measured from the first unflushed fragment, not
+ * reset by later speech. It still obeys single-flight and request cadence.
  */
 public final class LiveAnalyzeTrigger implements AutoCloseable {
 
@@ -50,6 +54,9 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
     private final String bearerToken;
     private final Duration timeout;
     private final long minIntervalNanos;
+    private final Duration maxWait;
+    private final boolean sentenceTriggered;
+    private static final ObjectMapper JSON = new ObjectMapper();
     private volatile boolean closed;
     /** Optional live relay (Faz 24 İ5); null when broadcast is disabled. */
     private final LiveAnalysisStreamHub analysisHub;
@@ -61,6 +68,7 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
     private final Counter publishError;
     private final Counter publishDropped;
     private final Counter publishCoalesced;
+    private final Timer publishDuration;
 
     public LiveAnalyzeTrigger(
             final WebClient webClient,
@@ -95,6 +103,28 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
             final MeterRegistry meters,
             final LiveAnalysisStreamHub analysisHub,
             final Duration minInterval) {
+        this(webClient, segmentWindow, bearerToken, timeout, meters, analysisHub,
+                minInterval, Duration.ofSeconds(15));
+    }
+
+    public LiveAnalyzeTrigger(
+            final WebClient webClient,
+            final int segmentWindow,
+            final String bearerToken,
+            final Duration timeout,
+            final MeterRegistry meters,
+            final LiveAnalysisStreamHub analysisHub,
+            final Duration minInterval,
+            final Duration maxWait) {
+        this(webClient, segmentWindow, bearerToken, timeout, meters, analysisHub,
+                minInterval, maxWait, false);
+    }
+
+    public LiveAnalyzeTrigger(
+            final WebClient webClient, final int segmentWindow, final String bearerToken,
+            final Duration timeout, final MeterRegistry meters,
+            final LiveAnalysisStreamHub analysisHub, final Duration minInterval,
+            final Duration maxWait, final boolean sentenceTriggered) {
         if (segmentWindow < 1) {
             throw new IllegalArgumentException("segmentWindow must be >= 1");
         }
@@ -106,6 +136,11 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
             throw new IllegalArgumentException("minInterval must not be negative");
         }
         this.minIntervalNanos = minInterval.toNanos();
+        if (maxWait.isNegative() || maxWait.isZero()) {
+            throw new IllegalArgumentException("maxWait must be positive");
+        }
+        this.maxWait = maxWait;
+        this.sentenceTriggered = sentenceTriggered;
         this.analysisHub = analysisHub;
         this.publishAttempts = Counter.builder("audio_gw_live_analyze_publish_total")
                 .description("Attempts to post to meeting-ai /analyze/live (per meeting-triggered flush)")
@@ -121,6 +156,9 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
                 .register(meters);
         this.publishDropped = Counter.builder("audio_gw_live_analyze_drop_total")
                 .description("Transcripts skipped (missing meetingId or blank text)")
+                .register(meters);
+        this.publishDuration = Timer.builder("audio_gw_live_analyze_request")
+                .description("Live-analysis HTTP request duration including upstream wait")
                 .register(meters);
     }
 
@@ -143,20 +181,47 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
         }
 
         final Aggregation agg =
-                perMeeting.computeIfAbsent(meetingId, k -> new Aggregation(segmentWindow));
-        final Aggregation.Snapshot snapshot = agg.appendAndMaybeFlush(result.text().trim());
-        if (snapshot == null) {
-            return; // still accumulating
-        }
+                perMeeting.computeIfAbsent(meetingId, k -> new Aggregation(segmentWindow, sentenceTriggered));
         synchronized (agg) {
-            // Snapshot sequence is assigned under the aggregation lock. A slower
-            // producer must not replace newer pending context with an older one.
-            if (snapshot.segmentSeq() <= agg.lastQueuedSequence) return;
-            if (agg.pendingSnapshot != null) publishCoalesced.increment();
-            agg.lastQueuedSequence = snapshot.segmentSeq();
-            agg.pendingSnapshot = snapshot;
+            if (closed) return;
+            final Aggregation.Snapshot snapshot = agg.appendAndMaybeFlush(result.text().trim());
+            if (snapshot == null) {
+                armWindowDeadline(meetingId, agg);
+                return;
+            }
+            cancelWindowDeadline(agg);
+            queueSnapshot(agg, snapshot);
         }
         scheduleNext(meetingId, agg);
+    }
+
+    /** Caller holds the aggregation lock, shared by count and deadline flushes. */
+    private void queueSnapshot(final Aggregation agg, final Aggregation.Snapshot snapshot) {
+        if (snapshot == null || snapshot.segmentSeq() <= agg.lastQueuedSequence) return;
+        if (agg.pendingSnapshot != null) publishCoalesced.increment();
+        agg.lastQueuedSequence = snapshot.segmentSeq();
+        agg.pendingSnapshot = snapshot;
+    }
+
+    private void armWindowDeadline(final String meetingId, final Aggregation agg) {
+        if (agg.windowDeadline != null) return;
+        final Disposable.Swap deadline = Disposables.swap();
+        agg.windowDeadline = deadline;
+        deadline.update(Mono.delay(maxWait).subscribe(ignored -> {
+            synchronized (agg) {
+                if (closed || agg.windowDeadline != deadline) return;
+                agg.windowDeadline = null;
+                queueSnapshot(agg, agg.flushDirty());
+            }
+            scheduleNext(meetingId, agg);
+        }));
+    }
+
+    private static void cancelWindowDeadline(final Aggregation agg) {
+        if (agg.windowDeadline != null) {
+            agg.windowDeadline.dispose();
+            agg.windowDeadline = null;
+        }
     }
 
     private void scheduleNext(final String meetingId, final Aggregation agg) {
@@ -181,7 +246,7 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
                 agg.hasPublished = true;
                 agg.lastPublishNanos = System.nanoTime();
             }
-            return firePublish(meetingId, snapshot);
+            return firePublish(meetingId, snapshot, agg);
         })).doFinally(signal -> {
             synchronized (agg) {
                 agg.publishing = false;
@@ -190,13 +255,18 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
         }).subscribe());
     }
 
-    private Mono<Void> firePublish(final String meetingId, final Aggregation.Snapshot snapshot) {
+    private Mono<Void> firePublish(final String meetingId, final Aggregation.Snapshot snapshot,
+            final Aggregation agg) {
         return Mono.defer(() -> {
+            final long startedAt = System.nanoTime();
             publishAttempts.increment();
             final Map<String, Object> body = new LinkedHashMap<>();
             body.put("transcript", snapshot.transcript());
             body.put("meeting_id", meetingId);
             body.put("segment_seq", snapshot.segmentSeq());
+            synchronized (agg) {
+                if (agg.liveCursor != null) body.put("previous_live_cursor", agg.liveCursor);
+            }
 
             final WebClient.RequestBodySpec req = webClient
                     .post()
@@ -211,23 +281,61 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
                     .doOnSuccess(
                             analysisJson -> {
                                 publishSuccess.increment();
+                                synchronized (agg) {
+                                    agg.liveCursor = readCursor(analysisJson);
+                                }
+                                log.info("live-analyze delivered meeting_id={} seq={} elapsed_ms={} source_chars={}",
+                                        meetingId, snapshot.segmentSeq(),
+                                        (System.nanoTime() - startedAt) / 1_000_000,
+                                        snapshot.transcript().length());
                                 // Relay to live viewers. Never let a hub failure
                                 // turn a successful analysis into a failed one.
                                 if (analysisHub != null) {
                                     analysisHub.publish(meetingId, analysisJson);
                                 }
                             })
-                    .then();
-        }).doOnError(err -> {
+                    .then()
+                    .doOnError(err -> {
                         publishError.increment();
-                        // PII discipline: log the failure class + status, NEVER the transcript.
+                        // Only opaque correlation metadata; never exception messages,
+                        // response bodies, transcript text, headers or credentials.
+                        final int status = err instanceof WebClientResponseException response
+                                ? response.getStatusCode().value() : 0;
                         log.warn(
-                                "live-analyze trigger failed err_class={} meeting_id_len={} seq={}",
+                                "live-analyze trigger failed err_class={} http_status={} meeting_id={} seq={} elapsed_ms={}",
                                 err.getClass().getSimpleName(),
-                                meetingId.length(),
-                                snapshot.segmentSeq());
+                                status,
+                                meetingId,
+                                snapshot.segmentSeq(),
+                                (System.nanoTime() - startedAt) / 1_000_000);
                     })
+                    .doFinally(signal -> publishDuration.record(Duration.ofNanos(System.nanoTime() - startedAt)))
                     .onErrorResume(err -> Mono.empty());
+        });
+    }
+
+    /** Optional content-free checkpoint. Old upstreams simply return no cursor. */
+    private static JsonNode readCursor(final String response) {
+        if (response == null) return null;
+        try {
+            final JsonNode root = JSON.readTree(response);
+            if (root == null) return null;
+            final JsonNode cursor = root.path("live_cursor");
+            if (!cursor.isObject() || cursor.size() != 3
+                    || !cursor.path("source_length").isIntegralNumber()
+                    || !cursor.path("source_length").canConvertToInt()
+                    || cursor.path("source_length").asLong() < 1
+                    || cursor.path("source_length").asLong() > 2_000_000
+                    || !cursor.path("source_sha256").asText().matches("[0-9a-f]{64}")
+                    || !cursor.path("active_indices").isArray()
+                    || cursor.path("active_indices").size() > 23) return null;
+            for (final JsonNode index : cursor.path("active_indices")) {
+                if (!index.isIntegralNumber() || !index.canConvertToInt() || index.asInt() < 0) return null;
+            }
+            return cursor;
+        } catch (final com.fasterxml.jackson.core.JsonProcessingException ignored) {
+            return null;
+        }
     }
 
     @Override
@@ -236,7 +344,9 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
         perMeeting.values().forEach(agg -> {
             synchronized (agg) {
                 if (agg.subscription != null) agg.subscription.dispose();
+                cancelWindowDeadline(agg);
                 agg.pendingSnapshot = null;
+                agg.liveCursor = null;
                 agg.history.setLength(0);
             }
         });
@@ -260,6 +370,8 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
         static final int MAX_CUMULATIVE_CHARS = 60_000;
 
         private final int window;
+        private final boolean sentenceTriggered;
+        private JsonNode liveCursor;
         private final AtomicInteger seq = new AtomicInteger(0);
         // Guarded by `this`.
         private int sinceFlush = 0;
@@ -270,9 +382,15 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
         private boolean hasPublished;
         private long lastPublishNanos;
         private Disposable.Swap subscription;
+        private Disposable.Swap windowDeadline;
 
         Aggregation(final int window) {
+            this(window, false);
+        }
+
+        Aggregation(final int window, final boolean sentenceTriggered) {
             this.window = window;
+            this.sentenceTriggered = sentenceTriggered;
         }
 
         /**
@@ -299,9 +417,18 @@ public final class LiveAnalyzeTrigger implements AutoCloseable {
                 history.delete(0, boundary < 0 ? cut : boundary + 1);
             }
             sinceFlush++;
-            if (sinceFlush < window) {
+            // Word-sized STT events must not start an expensive model request
+            // half way through a sentence. The deadline still handles pauses
+            // and providers that omit punctuation.
+            final boolean sentenceEnd = fragment.matches("(?s).*[.!?…][\\\"'”’)]*$");
+            if (sentenceTriggered ? !sentenceEnd : sinceFlush < window) {
                 return null;
             }
+            return flushDirty();
+        }
+
+        synchronized Snapshot flushDirty() {
+            if (sinceFlush == 0) return null;
             sinceFlush = 0;
             final int nextSeq = seq.incrementAndGet();
             return new Snapshot(history.toString(), nextSeq);

@@ -16,6 +16,8 @@ import okhttp3.mockwebserver.SocketPolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /**
@@ -53,6 +55,76 @@ class LiveAnalyzeTriggerTest {
 
     private double counter(final String name) {
         return meters.counter(name).count();
+    }
+
+    @Test
+    void sentenceModeWaitsForTheSentenceThenPublishesWithoutTheWordWindowDelay() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (var trigger = new LiveAnalyzeTrigger(client, 2, "", Duration.ofSeconds(2),
+                meters, null, Duration.ZERO, Duration.ofSeconds(5), true)) {
+            for (String word : new String[] {"Mehmet", "bütçe", "raporunu", "hazırlayacak"}) {
+                trigger.offer("live-sentence", resultWith(word));
+            }
+            assertThat(server.takeRequest(150, TimeUnit.MILLISECONDS)).isNull();
+            trigger.offer("live-sentence", resultWith("."));
+            assertThat(server.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8())
+                    .contains("Mehmet bütçe raporunu hazırlayacak .");
+        }
+    }
+
+    @Test
+    void incrementalCursorIsSentOnlyToItsOwnMeetingAndClearedForOldServers() throws Exception {
+        final String cursor = "{\"source_length\":25,\"source_sha256\":\"" + "a".repeat(64)
+                + "\",\"active_indices\":[0]}";
+        server.enqueue(new MockResponse().setBody("{\"live_cursor\":" + cursor + "}"));
+        server.enqueue(new MockResponse().setBody("{}"));
+        server.enqueue(new MockResponse().setBody("{}"));
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (var trigger = new LiveAnalyzeTrigger(client, 1, "", Duration.ofSeconds(2), meters)) {
+            trigger.offer("one", resultWith("First task."));
+            assertThat(server.takeRequest(1, TimeUnit.SECONDS)).isNotNull();
+            await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertThat(counter("audio_gw_live_analyze_publish_success_total")).isEqualTo(1));
+            trigger.offer("two", resultWith("Other meeting."));
+            assertThat(server.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8())
+                    .doesNotContain("previous_live_cursor");
+            trigger.offer("one", resultWith("Next sentence."));
+            assertThat(server.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8())
+                    .contains("previous_live_cursor", "source_sha256");
+            await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertThat(counter("audio_gw_live_analyze_publish_success_total")).isEqualTo(3));
+            trigger.offer("one", resultWith("Final sentence."));
+            assertThat(server.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8())
+                    .doesNotContain("previous_live_cursor");
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"not-json", "null", "{}",
+            "{\"live_cursor\":{\"source_length\":5,\"source_sha256\":\"invalid\",\"active_indices\":[]}}"})
+    void ignoresInvalidOptionalCursorWithoutBreakingRelay(final String response) throws Exception {
+        server.enqueue(new MockResponse().setBody(response));
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (var trigger = new LiveAnalyzeTrigger(client, 1, "", Duration.ofSeconds(2), meters)) {
+            trigger.offer("cursor-contract", resultWith("First sentence."));
+            assertThat(server.takeRequest(1, TimeUnit.SECONDS)).isNotNull();
+            await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                    assertThat(counter("audio_gw_live_analyze_publish_success_total")).isEqualTo(1));
+            trigger.offer("cursor-contract", resultWith("Second sentence."));
+            assertThat(server.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8())
+                    .doesNotContain("previous_live_cursor");
+        }
+    }
+
+    @Test
+    void sentenceModeStillPublishesSpeechWithoutPunctuationByItsDeadline() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (var trigger = new LiveAnalyzeTrigger(client, 5, "", Duration.ofSeconds(2),
+                meters, null, Duration.ZERO, Duration.ofMillis(100), true)) {
+            trigger.offer("no-punctuation", resultWith("Mehmet raporu hazırlayacak"));
+            assertThat(server.takeRequest(1, TimeUnit.SECONDS).getBody().readUtf8())
+                    .contains("Mehmet raporu hazırlayacak");
+        }
     }
 
     @Test
@@ -148,9 +220,74 @@ class LiveAnalyzeTriggerTest {
     }
 
     @Test
+    void flushesShortSpeechWithoutWaitingForAnotherFragmentOrRecordingStop() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (var trigger = new LiveAnalyzeTrigger(client, 5, "", Duration.ofSeconds(2),
+                meters, null, Duration.ZERO, Duration.ofMillis(150))) {
+            trigger.offer("short-speech", resultWith("The team approved the proposal."));
+            final var request = server.takeRequest(2, TimeUnit.SECONDS);
+            assertThat(request).isNotNull();
+            assertThat(request.getBody().readUtf8()).contains("approved the proposal", "\"segment_seq\":1");
+            assertThat(server.takeRequest(350, TimeUnit.MILLISECONDS)).isNull();
+        }
+    }
+
+    @Test
+    void aCountFlushCancelsItsDeadlineButKeepsTheNextShortWindow() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}"));
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (var trigger = new LiveAnalyzeTrigger(client, 2, "", Duration.ofSeconds(2),
+                meters, null, Duration.ZERO, Duration.ofMillis(150))) {
+            trigger.offer("mixed", resultWith("First decision."));
+            trigger.offer("mixed", resultWith("Second decision."));
+            assertThat(server.takeRequest(2, TimeUnit.SECONDS)).isNotNull();
+            assertThat(server.takeRequest(350, TimeUnit.MILLISECONDS)).isNull();
+            trigger.offer("mixed", resultWith("Final action before a pause."));
+            final var next = server.takeRequest(2, TimeUnit.SECONDS);
+            assertThat(next).isNotNull();
+            assertThat(next.getBody().readUtf8()).contains("First decision.", "Final action", "\"segment_seq\":2");
+            assertThat(server.takeRequest(350, TimeUnit.MILLISECONDS)).isNull();
+        }
+    }
+
+    @Test
+    void timedWindowsStillCoalesceBehindAnInFlightAnalysis() throws Exception {
+        server.enqueue(new MockResponse().setBody("{}").setBodyDelay(900, TimeUnit.MILLISECONDS));
+        server.enqueue(new MockResponse().setBody("{}"));
+        try (var trigger = new LiveAnalyzeTrigger(client, 2, "", Duration.ofSeconds(3),
+                meters, null, Duration.ZERO, Duration.ofMillis(150))) {
+            trigger.offer("slow-window", resultWith("First decision."));
+            trigger.offer("slow-window", resultWith("First owner."));
+            assertThat(server.takeRequest(2, TimeUnit.SECONDS)).isNotNull();
+            trigger.offer("slow-window", resultWith("Second action."));
+            assertThat(server.takeRequest(250, TimeUnit.MILLISECONDS)).isNull();
+            trigger.offer("slow-window", resultWith("Newest action."));
+            assertThat(server.takeRequest(250, TimeUnit.MILLISECONDS)).isNull();
+            final var next = server.takeRequest(2, TimeUnit.SECONDS);
+            assertThat(next).isNotNull();
+            assertThat(next.getBody().readUtf8()).contains("First decision.", "Second action.", "Newest action.", "\"segment_seq\":3");
+            assertThat(server.takeRequest(350, TimeUnit.MILLISECONDS)).isNull();
+        }
+    }
+
+    @Test
+    void closingCancelsAnUnderfilledWindow() throws Exception {
+        final var trigger = new LiveAnalyzeTrigger(client, 5, "", Duration.ofSeconds(2),
+                meters, null, Duration.ZERO, Duration.ofMillis(150));
+        trigger.offer("closing-window", resultWith("Decision not yet flushed."));
+        trigger.close();
+        assertThat(server.takeRequest(350, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    @Test
     void liveCadenceConfigurationIsBoundedAndDefaultsToFifteenSeconds() {
         final var config = new com.example.audiogateway.config.AudioGatewayProperties.DirectStt.LiveAnalyze();
         assertThat(config.getMinIntervalMs()).isEqualTo(15_000);
+        assertThat(config.getMaxWaitMs()).isEqualTo(15_000);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> config.setMaxWaitMs(0))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> config.setMaxWaitMs(300_001))
+                .isInstanceOf(IllegalArgumentException.class);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> config.setMinIntervalMs(-1))
                 .isInstanceOf(IllegalArgumentException.class);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> config.setMinIntervalMs(300_001))

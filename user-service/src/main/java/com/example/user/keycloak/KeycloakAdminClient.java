@@ -56,6 +56,52 @@ public class KeycloakAdminClient {
         return props.isEnabled();
     }
 
+    public String realm() { return props.getRealm(); }
+
+    public record MicrosoftIdentity(java.util.UUID tenantId, java.util.UUID objectId) {}
+
+    /**
+     * Reads an exact Keycloak subject and its currently linked broker identity.
+     * entra_tid/entra_oid must be admin-only attributes populated by the M365
+     * FORCE mappers (canonical GitOps setup-m365-broker.sh). The federated userId
+     * is an opaque broker subject, NOT the Entra object ID. Never search by email.
+     */
+    public Optional<MicrosoftIdentity> fetchMicrosoftIdentity(String subject, String providerAlias) {
+        if (!isEnabled()) throw new IllegalStateException("keycloak admin access disabled");
+        if (MicrosoftOrganizerProperties.canonicalUuid(subject) == null
+                || providerAlias == null || !providerAlias.matches("[a-zA-Z0-9_-]{1,64}")) return Optional.empty();
+        try {
+            JsonNode user = adminRequest(spec -> spec.get()
+                    .uri("/admin/realms/{realm}/users/{id}", props.getRealm(), subject)
+                    .retrieve().bodyToMono(JsonNode.class));
+            if (user == null || !subject.equals(user.path("id").asText())
+                    || !user.path("enabled").isBoolean() || !user.path("enabled").asBoolean()) return Optional.empty();
+            var tenant = MicrosoftOrganizerProperties.canonicalUuid(singleAttribute(user, "entra_tid"));
+            var object = MicrosoftOrganizerProperties.canonicalUuid(singleAttribute(user, "entra_oid"));
+            if (tenant == null || object == null) return Optional.empty();
+            JsonNode links = adminRequest(spec -> spec.get()
+                    .uri("/admin/realms/{realm}/users/{id}/federated-identity", props.getRealm(), subject)
+                    .retrieve().bodyToMono(JsonNode.class));
+            if (links == null || !links.isArray()) return Optional.empty();
+            int matching = 0;
+            for (JsonNode link : links) {
+                if (providerAlias.equals(link.path("identityProvider").asText())) {
+                    if (!link.path("userId").isTextual() || link.path("userId").asText().isBlank()) return Optional.empty();
+                    matching++;
+                }
+            }
+            return matching == 1 ? Optional.of(new MicrosoftIdentity(tenant, object)) : Optional.empty();
+        } catch (WebClientResponseException.NotFound error) {
+            return Optional.empty();
+        }
+    }
+
+    private static String singleAttribute(JsonNode user, String name) {
+        JsonNode values = user.path("attributes").path(name);
+        return values.isArray() && values.size() == 1 && values.get(0).isTextual()
+                ? values.get(0).asText() : null;
+    }
+
     /** Snapshot of everything the panel MFA section shows for one KC user. */
     public record MfaSnapshot(String kcUserId, String username, boolean requiresMfa,
             boolean totpConfigured, String phoneNumber, List<String> allowedMethods) {}

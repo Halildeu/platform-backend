@@ -180,6 +180,85 @@ class LiveAnalysisRelayTest {
     }
 
     @Test
+    void leavingOneViewerKeepsTheOtherViewerConnected() {
+        final List<String> remaining = new CopyOnWriteArrayList<>();
+        final Disposable first = hub.subscribe("shared-meeting").subscribe();
+        final Disposable second = hub.subscribe("shared-meeting").subscribe(remaining::add);
+        try {
+            first.dispose();
+            hub.publish("shared-meeting", ANALYSIS_JSON);
+            assertThat(remaining).containsExactly(ANALYSIS_JSON);
+            assertThat(hub.activeMeetings()).isEqualTo(1);
+        } finally {
+            first.dispose();
+            second.dispose();
+        }
+        assertThat(hub.activeMeetings()).isZero();
+    }
+
+    @Test
+    void anUnsubscribedFluxDoesNotAllocateOrOrphanAMeeting() {
+        final var deferred = hub.subscribe("deferred-meeting");
+        assertThat(hub.activeMeetings()).isZero();
+        final Disposable temporary = hub.subscribe("deferred-meeting").subscribe();
+        temporary.dispose();
+        final List<String> received = new CopyOnWriteArrayList<>();
+        final Disposable current = deferred.subscribe(received::add);
+        try {
+            hub.publish("deferred-meeting", ANALYSIS_JSON);
+            assertThat(received).containsExactly(ANALYSIS_JSON);
+        } finally {
+            current.dispose();
+        }
+        assertThat(hub.activeMeetings()).isZero();
+    }
+
+    @Test
+    void theSameFluxCanBeSubscribedTwiceAndSurvivesOneCancellation() {
+        final var shared = hub.subscribe("shared-flux");
+        final Disposable first = shared.subscribe();
+        final List<String> received = new CopyOnWriteArrayList<>();
+        final Disposable second = shared.subscribe(received::add);
+        try {
+            first.dispose();
+            hub.publish("shared-flux", ANALYSIS_JSON);
+            assertThat(received).containsExactly(ANALYSIS_JSON);
+        } finally {
+            first.dispose();
+            second.dispose();
+        }
+        assertThat(hub.activeMeetings()).isZero();
+    }
+
+    @Test
+    void concurrentLastDepartureAndNewSubscriptionDoNotOrphanTheNewViewer() throws Exception {
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            for (int iteration = 0; iteration < 100; iteration++) {
+                final Disposable previous = hub.subscribe("reconnect").subscribe();
+                final List<String> received = new CopyOnWriteArrayList<>();
+                final var start = new java.util.concurrent.CountDownLatch(1);
+                final var departure = executor.submit(() -> {
+                    start.await(); previous.dispose(); return null;
+                });
+                final var arrival = executor.submit(() -> {
+                    start.await(); return hub.subscribe("reconnect").subscribe(received::add);
+                });
+                start.countDown();
+                departure.get(2, java.util.concurrent.TimeUnit.SECONDS);
+                final Disposable current = arrival.get(2, java.util.concurrent.TimeUnit.SECONDS);
+                try {
+                    hub.publish("reconnect", ANALYSIS_JSON);
+                    assertThat(received).containsExactly(ANALYSIS_JSON);
+                } finally {
+                    current.dispose();
+                    previous.dispose();
+                }
+                assertThat(hub.activeMeetings()).isZero();
+            }
+        }
+    }
+
+    @Test
     void hubNeverThrowsOnDegenerateInput() {
         assertThatCode(
                         () -> {

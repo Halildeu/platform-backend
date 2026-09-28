@@ -286,20 +286,34 @@ public class UserControllerV1 {
     // as 500. The constraint is on the mapping, not on business logic — legitimate
     // numeric ids keep their existing behaviour, so this is safe on all callers.
     @GetMapping("/{id:\\d+}")
-    public ResponseEntity<UserDetailDto> getUser(@PathVariable Long id) {
+    public ResponseEntity<UserDetailDto> getUser(@RequestHeader(value = "X-Company-Id", required = false) Long companyId,
+                                                 @PathVariable Long id) {
         // Resolve the caller first — applies the 401/403 gate, including the
         // ACCOUNT_DISABLED activation gate, so a passive (enabled=false)
         // account cannot read user detail via this endpoint.
-        requireCurrentUser();
+        User currentUser = requireCurrentUser();
+        // gitops#3839: anyone may read their own record; anybody else's needs
+        // USER_READ — the same authority the admin grid requires. Without it
+        // any active account could enumerate every user's detail by id.
+        if (!id.equals(currentUser.getId())) {
+            requirePermissionWithCompanyScope(PermissionActions.USER_READ, companyId);
+        }
         User user = userService.findRequiredById(id);
         return ResponseEntity.ok(UserDtoMapper.toDetail(user));
     }
 
     @GetMapping("/by-email")
-    public ResponseEntity<UserDetailDto> getUserByEmail(@RequestParam("email") String email) {
+    public ResponseEntity<UserDetailDto> getUserByEmail(@RequestHeader(value = "X-Company-Id", required = false) Long companyId,
+                                                        @RequestParam("email") String email) {
         // Caller gate (incl. ACCOUNT_DISABLED) — a passive account cannot
         // read user detail via this endpoint either.
-        requireCurrentUser();
+        User currentUser = requireCurrentUser();
+        // gitops#3839: own record by e-mail is free; anybody else's needs USER_READ.
+        boolean ownRecord = currentUser.getEmail() != null && email != null
+                && currentUser.getEmail().trim().equalsIgnoreCase(email.trim());
+        if (!ownRecord) {
+            requirePermissionWithCompanyScope(PermissionActions.USER_READ, companyId);
+        }
         return userService.findByEmail(email)
                 .map(UserDtoMapper::toDetail)
                 .map(ResponseEntity::ok)
@@ -307,9 +321,14 @@ public class UserControllerV1 {
     }
 
     @PutMapping("/{id:\\d+}/activation")
-    public ResponseEntity<UserMutationAckDto> updateActivation(@PathVariable Long id,
+    public ResponseEntity<UserMutationAckDto> updateActivation(@RequestHeader(value = "X-Company-Id", required = false) Long companyId,
+                                                               @PathVariable Long id,
                                                                @Valid @RequestBody UserActivationRequestDto request) {
         User currentUser = requireCurrentUser();
+        // gitops#3839: (de)activating an account is a user-management mutation —
+        // USER_UPDATE with company scope, like updateUser. It used to need only an
+        // active session: any account could lock out any other, admins included.
+        requirePermissionWithCompanyScope(PermissionActions.USER_UPDATE, companyId);
         String auditId = userService.updateActivation(id, Boolean.TRUE.equals(request.getActive()), currentUser.getId());
         return ResponseEntity.ok(UserMutationAckDto.ok(prefixUserAuditId(auditId)));
     }

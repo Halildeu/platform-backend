@@ -917,6 +917,28 @@ public class OpenFgaAuthzService {
         return checkNoCacheResult(userId, relation, objectType, objectId).allowed();
     }
 
+    /** Dispatch-time check: bypass both caches and fail closed when the policy engine is disabled. */
+    public CheckResult checkPrincipalFreshResult(String principal, String relation, String objectType, String objectId) {
+        if (!enabled || !circuitBreaker.allowRequest()) return new CheckResult(false, "unavailable");
+        try {
+            var request = new ClientCheckRequest().user(principal).relation(relation)._object(objectType + ":" + objectId);
+            var options = new dev.openfga.sdk.api.configuration.ClientCheckOptions()
+                    .consistency(dev.openfga.sdk.api.model.ConsistencyPreference.HIGHER_CONSISTENCY);
+            var response = client.check(request, options).get(5, java.util.concurrent.TimeUnit.SECONDS);
+            if (response == null || response.getAllowed() == null) return new CheckResult(false, "unavailable");
+            boolean allowed = Boolean.TRUE.equals(response.getAllowed());
+            circuitBreaker.recordSuccess();
+            if (allowed && allowCounter != null) allowCounter.increment();
+            if (!allowed && denyCounter != null) denyCounter.increment();
+            return new CheckResult(allowed, allowed ? "granted" : "no_relation");
+        } catch (Exception error) {
+            if (error instanceof InterruptedException) Thread.currentThread().interrupt();
+            circuitBreaker.recordFailure();
+            if (denyCounter != null) denyCounter.increment();
+            return new CheckResult(false, "unavailable");
+        }
+    }
+
     /**
      * Cache-bypassing check with an explicit unavailable state.
      *

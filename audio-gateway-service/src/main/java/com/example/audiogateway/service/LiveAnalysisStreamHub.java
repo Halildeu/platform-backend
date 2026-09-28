@@ -54,7 +54,14 @@ public class LiveAnalysisStreamHub {
      */
     static final int BUFFER_CAPACITY = 32;
 
-    private final ConcurrentMap<String, Sinks.Many<String>> sinks = new ConcurrentHashMap<>();
+    private static final class Channel {
+        private final Sinks.Many<String> sink =
+                Sinks.many().multicast().onBackpressureBuffer(BUFFER_CAPACITY, false);
+        // Accessed only in the map's per-key compute operation.
+        private int viewers;
+    }
+
+    private final ConcurrentMap<String, Channel> sinks = new ConcurrentHashMap<>();
 
     /**
      * Publish the analysis JSON {@code payload} to whoever is subscribed to
@@ -65,13 +72,13 @@ public class LiveAnalysisStreamHub {
         if (meetingId == null || meetingId.isBlank() || payload == null || payload.isBlank()) {
             return;
         }
-        final Sinks.Many<String> sink = sinks.get(meetingId);
-        if (sink == null) {
+        final Channel channel = sinks.get(meetingId);
+        if (channel == null) {
             // Nobody is watching — do NOT allocate a sink just to drop frames.
             return;
         }
         try {
-            final Sinks.EmitResult emitResult = sink.tryEmitNext(payload);
+            final Sinks.EmitResult emitResult = channel.sink.tryEmitNext(payload);
             if (emitResult.isFailure()) {
                 log.debug(
                         "live-analysis broadcast emit skipped meetingId={} reason={}",
@@ -89,19 +96,21 @@ public class LiveAnalysisStreamHub {
      */
     public Flux<String> subscribe(final String meetingId) {
         Objects.requireNonNull(meetingId, "meetingId");
-        final Sinks.Many<String> sink =
-                sinks.computeIfAbsent(
-                        meetingId,
-                        k -> Sinks.many().multicast().onBackpressureBuffer(BUFFER_CAPACITY, false));
-        return sink.asFlux()
-                .doFinally(
-                        signal -> {
-                            if (sink.currentSubscriberCount() <= 1) {
-                                // Last subscriber leaving — drop the sink so the
-                                // map does not grow unbounded across meetings.
-                                sinks.remove(meetingId, sink);
-                            }
-                        });
+        return Flux.defer(() -> {
+            final Channel channel = sinks.compute(meetingId, (key, existing) -> {
+                final Channel current = existing == null ? new Channel() : existing;
+                current.viewers++;
+                return current;
+            });
+            return channel.sink.asFlux().doFinally(signal ->
+                    sinks.computeIfPresent(meetingId, (key, current) -> {
+                        if (current != channel) return current;
+                        // Reactor has already removed the leaving subscriber here.
+                        // Register and release under the same map lock so a new
+                        // viewer cannot attach to a channel being removed.
+                        return --current.viewers == 0 ? null : current;
+                    }));
+        });
     }
 
     /** Test/observability helper. */

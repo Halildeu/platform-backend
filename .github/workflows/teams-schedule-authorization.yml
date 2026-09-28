@@ -1,0 +1,38 @@
+name: Teams schedule authorization
+on:
+  pull_request:
+    paths:
+      - 'meeting-service/**'
+      - 'common-auth/**'
+      - 'auth-service/**'
+      - 'teams-capture-worker/**'
+      - '.github/workflows/teams-schedule-authorization.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'meeting-service/**'
+      - 'common-auth/**'
+      - 'auth-service/**'
+      - 'teams-capture-worker/**'
+      - '.github/workflows/teams-schedule-authorization.yml'
+permissions:
+  contents: read
+concurrency:
+  group: teams-schedule-authorization-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Verify fresh grants and signed service boundaries
+        run: >-
+          mvn -B -q -pl meeting-service,auth-service -am
+          -Dtest=TeamsScheduleAuthorizationServiceTest,TeamsScheduleAuthorizationInternalControllerTest,MeetingInternalSignedTokenSecurityTest,MeetingInternalChainSecurityTest,MeetingInternalSecurityConverterTest,MeetingServiceRecordingAccessTest,TeamsCalendarControllerTest,HttpTeamsCalendarTransportTest,OpenFgaAuthzServiceNoCacheTest,TeamsWorkerTokenMintTest
+          -Dsurefire.failIfNoSpecifiedTests=false test

@@ -192,6 +192,14 @@ security:
             - transcript:canonical:read
             - transcript:analysis-job-capability:issue
         require-explicit-permissions: true
+      teams-capture-worker:
+        # Separate worker credential; blank leaves minting disabled until provisioned.
+        secret: ${SERVICE_CLIENT_TEAMS_CAPTURE_WORKER_SECRET:}
+        allowed-audiences:
+          - meeting-service
+        allowed-permissions:
+          - meeting:teams-schedule:authorize
+        require-explicit-permissions: true
       transcript-service:
         # Blank by default: Vault/ESO provisioning is the activation gate.
         secret: ${SERVICE_CLIENT_TRANSCRIPT_SERVICE_SECRET:}
@@ -227,7 +235,7 @@ security:
     # defaults so the user-service admin-email mint works even before the gitops
     # env override; gitops sets the canonical list explicitly.
     allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service,user-service,notification-orchestrator,meeting-service,transcript-service}
-    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write,users:internal,users:display-names:read,notify:intents:system,meeting:analysis-result:write,meeting:session:resolve,transcript:canonical:read,transcript:analysis-job-capability:issue,transcript:session:erase}
+    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:meeting:teams-schedule:authorize,permissions:read,permissions:write,users:internal,users:display-names:read,notify:intents:system,meeting:analysis-result:write,meeting:session:resolve,transcript:canonical:read,transcript:analysis-job-capability:issue,transcript:session:erase}
     rate-limit-per-minute: ${SECURITY_SERVICE_MINT_RATE_LIMIT:120}
     failed-auth-rate-limit-per-minute: ${SECURITY_SERVICE_MINT_FAILED_AUTH_RATE_LIMIT:30}
   admin-fallback:

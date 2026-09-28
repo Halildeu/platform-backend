@@ -1,0 +1,6 @@
+{
+  "controlBaseUrl": "http://127.0.0.1:18080",
+  "publicCallbackUrl": "https://testai.acik.com/api/teams/callback",
+  "expectedTenantId": "",
+  "expectedApplicationId": "cb8dc8da-0168-470d-9d35-908fdfcc3fa3"
+}

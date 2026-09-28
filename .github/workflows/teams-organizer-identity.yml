@@ -1,0 +1,42 @@
+name: Teams organizer identity
+
+on:
+  pull_request:
+    paths:
+      - 'user-service/**'
+      - 'common-auth/**'
+      - 'teams-capture-worker/docs/organizer-identity.md'
+      - '.github/workflows/teams-organizer-identity.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'user-service/**'
+      - 'common-auth/**'
+      - '.github/workflows/teams-organizer-identity.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  identity-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Compile dependencies and verify identity boundaries
+        run: >-
+          ./mvnw -B -pl user-service -am test
+          -Dtest=MicrosoftIdentityReadTest,MicrosoftOrganizerInternalControllerTest,MicrosoftOrganizerHttpSecurityTest,KeycloakAdminClientTest,AuthenticatedPrincipalInternalControllerTest
+          -Dsurefire.failIfNoSpecifiedTests=false
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: teams-organizer-identity-${{ github.sha }}
+          path: user-service/target/surefire-reports/
+          if-no-files-found: error

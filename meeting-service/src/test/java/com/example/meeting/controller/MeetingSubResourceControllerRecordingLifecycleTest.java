@@ -14,6 +14,7 @@ import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.model.TranscriptStatus;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.TenantContextResolver;
+import com.example.meeting.service.ActionAssigneeNames;
 import com.example.meeting.service.MeetingService;
 import java.time.Instant;
 import java.util.UUID;
@@ -38,6 +39,8 @@ class MeetingSubResourceControllerRecordingLifecycleTest {
     @Autowired private MockMvc mockMvc;
     @MockitoBean private MeetingService meetingService;
     @MockitoBean private TenantContextResolver tenantContextResolver;
+    // gitops#3834: the controller names assignees after the service returns; unused here.
+    @MockitoBean private ActionAssigneeNames assigneeNames;
 
     @Test
     void syncRecordingLifecycleReturnsCanonicalProjection() throws Exception {
