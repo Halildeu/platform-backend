@@ -52,8 +52,11 @@ public class MeetingIntelligenceResultAccessAudit {
     @Column(name = "meeting_id", nullable = false)
     private UUID meetingId;
 
-    @Column(name = "analysis_run_id", nullable = false)
+    @Column(name = "analysis_run_id")
     private UUID analysisRunId;
+
+    @Column(name = "session_id")
+    private UUID sessionId;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "access_type", nullable = false, length = 32)
@@ -122,6 +125,9 @@ public class MeetingIntelligenceResultAccessAudit {
     public void setAnalysisRunId(UUID analysisRunId) {
         this.analysisRunId = analysisRunId;
     }
+
+    public UUID getSessionId() { return sessionId; }
+    public void setSessionId(UUID sessionId) { this.sessionId = sessionId; }
 
     public MeetingIntelligenceResultAccessType getAccessType() {
         return accessType;
