@@ -213,4 +213,67 @@ class DisplayPolicyValidatorTest {
         assertThatThrownBy(() -> DisplayPolicyValidator.validate(req))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("512");
     }
+
+    // ---- managed (uploaded) wallpaper asset — platform-backend#1203 ----
+
+    private static final String MANAGED_SHA = "d".repeat(64);
+    private static final String MANAGED_REF = "asset:sha256:" + MANAGED_SHA;
+
+    private static Wallpaper managed(String ref, String sha, String type) {
+        return new Wallpaper(true, "FILL", true, ref, sha, type);
+    }
+
+    @Test
+    void aWellFormedManagedRefPasses() {
+        assertThatCode(() -> DisplayPolicyValidator.validate(
+                enforce(null, managed(MANAGED_REF, MANAGED_SHA, "image/png")))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void aManagedRefWhoseHashDisagreesWithAssetSha256IsRefused() {
+        // The agent verifies against assetSha256 and downloads by the ref; if they
+        // differ, a correct image would be refused or the wrong one trusted.
+        assertThatThrownBy(() -> DisplayPolicyValidator.validate(
+                enforce(null, managed(MANAGED_REF, "e".repeat(64), "image/png"))))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("equal the hash");
+    }
+
+    @Test
+    void aManagedRefWithoutAssetSha256IsRefused() {
+        assertThatThrownBy(() -> DisplayPolicyValidator.validate(
+                enforce(null, managed(MANAGED_REF, null, "image/png"))))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("assetSha256");
+    }
+
+    @Test
+    void aManagedRefWithoutContentTypeIsRefused() {
+        assertThatThrownBy(() -> DisplayPolicyValidator.validate(
+                enforce(null, managed(MANAGED_REF, MANAGED_SHA, null))))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("contentType");
+    }
+
+    @Test
+    void aMalformedManagedRefIsRefused() {
+        for (String bad : new String[] {
+                "asset:sha256:" + "D".repeat(64),          // uppercase
+                "asset:sha256:" + "d".repeat(63),          // short
+                "asset:sha256:" + "d".repeat(64) + "/x",   // trailing path
+                "asset:sha256:../../etc/passwd"}) {
+            assertThatThrownBy(() -> DisplayPolicyValidator.validate(
+                    enforce(null, managed(bad, MANAGED_SHA, "image/png"))))
+                    .as(bad).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
+    void aLocalPathIsStillAcceptedUnchanged() {
+        // The pre-existing contract — an image already on the endpoint — keeps working.
+        assertThatCode(() -> DisplayPolicyValidator.validate(enforce(null,
+                new Wallpaper(true, "FILL", true, "C:\\Windows\\Web\\Wallpaper\\Windows\\img0.jpg", null, null))))
+                .doesNotThrowAnyException();
+        org.assertj.core.api.Assertions.assertThat(
+                DisplayPolicyValidator.isManagedAssetRef("C:\\Wallpapers\\corp.png")).isFalse();
+        org.assertj.core.api.Assertions.assertThat(
+                DisplayPolicyValidator.isManagedAssetRef(MANAGED_REF)).isTrue();
+    }
 }
