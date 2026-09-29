@@ -2,6 +2,7 @@ package com.example.audiogateway.config;
 
 import com.example.audiogateway.service.AudioChunkDispatcher;
 import com.example.audiogateway.service.AudioGatewayAuditSink;
+import com.example.audiogateway.service.DirectSttAttributionFinishNotifier;
 import com.example.audiogateway.service.DirectSttForwardingDispatcher;
 import com.example.audiogateway.service.DirectSttProviderRegistry;
 import com.example.audiogateway.service.DirectSttTranscriptionClient;
@@ -368,13 +369,30 @@ public class DirectSttConfig {
             final DirectSttTranscriptResultSink transcriptResultSink,
             final DirectSttProviderRegistry providerRegistry,
             final ObjectProvider<RedisStreamsAudioChunkDispatcher> redisProvider,
-            final ObjectProvider<NoOpAudioChunkDispatcher> noOpProvider) {
+            final ObjectProvider<NoOpAudioChunkDispatcher> noOpProvider,
+            final DirectSttAttributionFinishNotifier attributionFinishNotifier) {
 
         final AudioChunkDispatcher delegate = resolveDelegate(
                 props.getDispatcher().getMode(), redisProvider, noOpProvider);
 
         return new DirectSttForwardingDispatcher(
-                delegate, auditSink, transcriptResultSink, providerRegistry, props, meters);
+                delegate, auditSink, transcriptResultSink, providerRegistry, props, meters,
+                attributionFinishNotifier);
+    }
+
+    /**
+     * #3746: shares the {@code directSttWebClient} (and therefore the mTLS tunnel) with
+     * the forward path. Constructed even when disabled — every hook no-ops on the flag —
+     * so enabling is a pure config change.
+     */
+    @Bean
+    public DirectSttAttributionFinishNotifier directSttAttributionFinishNotifier(
+            @org.springframework.beans.factory.annotation.Qualifier("directSttWebClient")
+            final WebClient webClient,
+            final AudioGatewayProperties props,
+            final MeterRegistry meters) {
+        return new DirectSttAttributionFinishNotifier(
+                webClient, props.getDirectStt(), meters);
     }
 
     private AudioChunkDispatcher resolveDelegate(
