@@ -400,6 +400,16 @@ public class AudioGatewayProperties {
         private final Speechmatics speechmatics = new Speechmatics();
 
         /**
+         * #3746 post-session attribution finish handshake to live-stt. DEFAULT-OFF.
+         * When enabled, the gateway tells live-stt when a session's window forwards
+         * are complete (fire-and-forget, same WebClient/mTLS as the forward) so the
+         * scheduled diarization batch can run on whole-session audio. Requires
+         * {@link #transcribeUrl} to end with {@code /transcribe} (validated at
+         * notifier construction, fail-closed).
+         */
+        private final AttributionFinish attributionFinish = new AttributionFinish();
+
+        /**
          * Durable transcript-result stream handoff. This is transcript content, not raw
          * audio. It may remain off while direct-STT is off, but startup fails closed when
          * direct-STT is enabled without this handoff.
@@ -584,6 +594,10 @@ public class AudioGatewayProperties {
 
         public void setMaxResponseBytes(final int maxResponseBytes) {
             this.maxResponseBytes = maxResponseBytes;
+        }
+
+        public AttributionFinish getAttributionFinish() {
+            return attributionFinish;
         }
 
         public Aggregation getAggregation() {
@@ -980,6 +994,30 @@ public class AudioGatewayProperties {
 
             public void setSourceHistoryMaxBytes(final int sourceHistoryMaxBytes) {
                 this.sourceHistoryMaxBytes = sourceHistoryMaxBytes;
+            }
+        }
+
+        /** #3746 attribution finish handshake settings (see field above). */
+        public static class AttributionFinish {
+            private boolean enabled = false;
+
+            /** Per-call cap for the fire-and-forget finish POST. */
+            private long timeoutMs = 3_000L;
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(final boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public long getTimeoutMs() {
+                return timeoutMs;
+            }
+
+            public void setTimeoutMs(final long timeoutMs) {
+                this.timeoutMs = timeoutMs;
             }
         }
 
