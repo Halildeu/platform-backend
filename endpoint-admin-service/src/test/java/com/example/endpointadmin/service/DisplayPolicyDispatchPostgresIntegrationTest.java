@@ -3,6 +3,7 @@ package com.example.endpointadmin.service;
 import com.example.endpointadmin.audit.AuditIntegrityVerifier;
 import com.example.endpointadmin.audit.PgAdvisoryAuditChainLock;
 import com.example.endpointadmin.config.TimeConfig;
+import com.example.endpointadmin.dto.v1.admin.AdminDisplayPolicyAssetResponse;
 import com.example.endpointadmin.dto.v1.admin.AdminDisplayPolicyResponse;
 import com.example.endpointadmin.dto.v1.admin.ApproveEndpointCommandRequest;
 import com.example.endpointadmin.dto.v1.admin.ClearDisplayPolicyRequest;
@@ -10,15 +11,18 @@ import com.example.endpointadmin.dto.v1.admin.SetDisplayPolicyRequest;
 import com.example.endpointadmin.model.ApprovalDecision;
 import com.example.endpointadmin.model.DisplayPolicyOperation;
 import com.example.endpointadmin.model.EndpointDisplayPolicy;
+import com.example.endpointadmin.model.EndpointDisplayPolicyAsset;
 import com.example.endpointadmin.repository.EndpointDisplayPolicyRepository;
 import com.example.endpointadmin.repository.EndpointDisplayPolicyRevisionRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
 import com.example.endpointadmin.security.AesGcmDeviceSecretProtector;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -27,16 +31,23 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.server.ResponseStatusException;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * #508 slice-2b — end-to-end PG integration proof of the Codex 019ea911 RED-fix
@@ -60,6 +71,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         TimeConfig.class,
         EndpointAdminCommandService.class,
         EndpointDisplayPolicyService.class,
+        DisplayPolicyAssetService.class,
         DisplayPolicyApprovalListener.class,
         EndpointAuditService.class,
         EndpointInstallPreflightService.class,
@@ -72,6 +84,8 @@ class DisplayPolicyDispatchPostgresIntegrationTest {
 
     private static final String PROPOSER = "alice@example.com";
     private static final String APPROVER = "bob@example.com";
+    private static final String MANAGED_CAPABLE = "{\"capabilities\":[\"SET_DISPLAY_POLICY\",\""
+            + EndpointDisplayPolicyService.MANAGED_ASSET_CAPABILITY + "\"]}";
 
     @MockitoBean
     private EndpointEnrollmentService enrollmentService;
@@ -102,10 +116,12 @@ class DisplayPolicyDispatchPostgresIntegrationTest {
     }
 
     @Autowired private EndpointDisplayPolicyService displayPolicyService;
+    @Autowired private DisplayPolicyAssetService assetService;
     @Autowired private EndpointAdminCommandService commandService;
     @Autowired private EndpointDisplayPolicyRepository policyRepository;
     @Autowired private EndpointDisplayPolicyRevisionRepository revisionRepository;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private DataSource dataSource;
     @Autowired private PlatformTransactionManager txManager;
 
     private TransactionTemplate tx() {
@@ -190,10 +206,119 @@ class DisplayPolicyDispatchPostgresIntegrationTest {
         assertThat(rows).isEqualTo(1);
     }
 
+    @Test
+    void managedWallpaper_isServedOnlyToTheDeviceWhoseApprovedPolicyNamesIt() {
+        UUID tenant = UUID.randomUUID();
+        UUID device = seedDevice(tenant, MANAGED_CAPABLE);
+        UUID otherDevice = seedDevice(tenant, MANAGED_CAPABLE);
+        byte[] png = png(4096);
+
+        AdminDisplayPolicyAssetResponse uploaded =
+                assetService.upload(ctx(tenant, PROPOSER), png, "image/png");
+        assertThat(uploaded.created()).isTrue();
+        assertThat(assetService.upload(ctx(tenant, APPROVER), png, "image/png").created()).isFalse();
+
+        UUID commandId = tx().execute(s -> displayPolicyService.enforce(
+                ctx(tenant, PROPOSER), device, managedWallpaperRequest(uploaded)))
+                .openProposal().commandId();
+        // Proposed is not approved: the device cannot fetch the image yet.
+        assertNotFound(() -> assetService.loadForDevice(device.toString(), uploaded.assetSha256()));
+
+        tx().executeWithoutResult(s -> commandService.approveCommand(
+                ctx(tenant, APPROVER), commandId,
+                new ApproveEndpointCommandRequest(ApprovalDecision.APPROVE, null)));
+
+        EndpointDisplayPolicy current = currentRow(tenant, device);
+        assertThat(current.getWallpaperAssetRef()).isEqualTo(uploaded.assetRef());
+        assertThat(current.getWallpaperUserCannotChange()).isTrue();
+
+        EndpointDisplayPolicyAsset served =
+                assetService.loadForDevice(device.toString(), uploaded.assetSha256());
+        assertThat(served.getContent()).isEqualTo(png);
+        assertThat(served.getContentType()).isEqualTo("image/png");
+
+        // Same tenant, same image, but no approved policy naming it.
+        assertNotFound(() -> assetService.loadForDevice(otherDevice.toString(), uploaded.assetSha256()));
+    }
+
+    @Test
+    void aConcurrentIdenticalUpload_resolvesToTheCommittedRow() throws Exception {
+        UUID tenant = UUID.randomUUID();
+        byte[] png = png(512);
+        String sha = DisplayPolicyAssetService.sha256Hex(png);
+
+        try (Connection winner = dataSource.getConnection()) {
+            winner.setAutoCommit(false);
+            try (PreparedStatement ps = winner.prepareStatement("INSERT INTO endpoint_display_policy_assets "
+                    + "(id, tenant_id, sha256, content_type, size_bytes, content, created_by_subject, created_at) "
+                    + "VALUES (?, ?, ?, 'image/png', ?, ?, 'winner', now())")) {
+                ps.setObject(1, UUID.randomUUID());
+                ps.setObject(2, tenant);
+                ps.setString(3, sha);
+                ps.setInt(4, png.length);
+                ps.setBytes(5, png);
+                ps.executeUpdate();
+            }
+            // The winner's row is not committed, so the upload's existence check
+            // misses it and its insert blocks on the unique index until the commit.
+            CompletableFuture<AdminDisplayPolicyAssetResponse> loser = CompletableFuture.supplyAsync(
+                    () -> assetService.upload(ctx(tenant, APPROVER), png, "image/png"));
+            awaitInsertBlockedOnLock();
+            winner.commit();
+
+            AdminDisplayPolicyAssetResponse res = loser.get(30, TimeUnit.SECONDS);
+            assertThat(res.created()).isFalse();
+            assertThat(res.assetSha256()).isEqualTo(sha);
+        }
+        Integer rows = jdbc.queryForObject(
+                "SELECT count(*) FROM endpoint_display_policy_assets WHERE tenant_id = ?",
+                Integer.class, tenant);
+        assertThat(rows).isEqualTo(1);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static AdminTenantContext ctx(UUID tenant, String subject) {
         return new AdminTenantContext(tenant, subject);
+    }
+
+    private static SetDisplayPolicyRequest managedWallpaperRequest(AdminDisplayPolicyAssetResponse asset) {
+        return new SetDisplayPolicyRequest(
+                DisplayPolicyOperation.ENFORCE,
+                "corporate wallpaper",
+                null,
+                new SetDisplayPolicyRequest.Wallpaper(true, "fill", true,
+                        asset.assetRef(), asset.assetSha256(), asset.contentType()));
+    }
+
+    /** A PNG signature followed by every byte value, so a signed/unsigned slip shows. */
+    private static byte[] png(int size) {
+        byte[] b = new byte[size];
+        byte[] magic = {(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+        System.arraycopy(magic, 0, b, 0, magic.length);
+        for (int i = magic.length; i < size; i++) {
+            b[i] = (byte) (i % 256);
+        }
+        return b;
+    }
+
+    private void awaitInsertBlockedOnLock() throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        while (System.nanoTime() < deadline) {
+            Integer waiting = jdbc.queryForObject("SELECT count(*) FROM pg_stat_activity "
+                    + "WHERE wait_event_type = 'Lock' "
+                    + "AND query ILIKE '%insert into%endpoint_display_policy_assets%'", Integer.class);
+            if (waiting != null && waiting > 0) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        throw new AssertionError("the upload's insert never waited on the uncommitted row");
+    }
+
+    private static void assertNotFound(ThrowingCallable call) {
+        assertThatThrownBy(call).isInstanceOfSatisfying(ResponseStatusException.class,
+                e -> assertThat(e.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
     }
 
     private static SetDisplayPolicyRequest enforceRequest() {
@@ -221,6 +346,10 @@ class DisplayPolicyDispatchPostgresIntegrationTest {
     }
 
     private UUID seedDeviceWithFreshCapableHeartbeat(UUID tenant) {
+        return seedDevice(tenant, "{\"capabilities\":[\"SET_DISPLAY_POLICY\"]}");
+    }
+
+    private UUID seedDevice(UUID tenant, String heartbeatPayload) {
         UUID device = UUID.randomUUID();
         Timestamp now = Timestamp.from(Instant.now());
         jdbc.update("INSERT INTO endpoint_devices "
@@ -231,8 +360,7 @@ class DisplayPolicyDispatchPostgresIntegrationTest {
         jdbc.update("INSERT INTO endpoint_heartbeats "
                         + "(id, tenant_id, device_id, received_at, payload) "
                         + "VALUES (?, ?, ?, ?, ?::jsonb)",
-                UUID.randomUUID(), tenant, device, now,
-                "{\"capabilities\":[\"SET_DISPLAY_POLICY\"]}");
+                UUID.randomUUID(), tenant, device, now, heartbeatPayload);
         return device;
     }
 }

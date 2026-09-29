@@ -71,6 +71,7 @@ class EndpointDisplayPolicyServiceTest {
     @Mock private EndpointDeviceRepository deviceRepository;
     @Mock private EndpointHeartbeatRepository heartbeatRepository;
     @Mock private EndpointAuditService auditService;
+    @Mock private DisplayPolicyAssetService assetService;
 
     private EndpointDisplayPolicyService service;
 
@@ -109,7 +110,7 @@ class EndpointDisplayPolicyServiceTest {
     private EndpointDisplayPolicyService newService(boolean enabled) {
         return new EndpointDisplayPolicyService(
                 policyRepository, revisionRepository, commandRepository, deviceRepository,
-                heartbeatRepository, auditService, Clock.fixed(NOW, ZoneOffset.UTC),
+                heartbeatRepository, auditService, assetService, Clock.fixed(NOW, ZoneOffset.UTC),
                 enabled, Duration.ofMinutes(5), "SET_DISPLAY_POLICY");
     }
 
@@ -368,6 +369,76 @@ class EndpointDisplayPolicyServiceTest {
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    // ── managed (uploaded) wallpaper asset — platform-backend#1203 ─────────────
+
+    private static final String ASSET_SHA = "f".repeat(64);
+
+    private static SetDisplayPolicyRequest managedWallpaperRequest() {
+        return new SetDisplayPolicyRequest(
+                DisplayPolicyOperation.ENFORCE,
+                "corporate wallpaper",
+                null,
+                new SetDisplayPolicyRequest.Wallpaper(true, "FILL", true,
+                        "asset:sha256:" + ASSET_SHA, ASSET_SHA, "image/png"));
+    }
+
+    private void advertise(String... capabilities) {
+        EndpointHeartbeat hb = org.mockito.Mockito.mock(EndpointHeartbeat.class);
+        when(hb.getReceivedAt()).thenReturn(NOW.minusSeconds(30));
+        when(hb.getPayload()).thenReturn(Map.of("capabilities", List.of(capabilities)));
+        when(heartbeatRepository.findFirstByDevice_IdOrderByReceivedAtDesc(DEVICE_ID))
+                .thenReturn(Optional.of(hb));
+    }
+
+    @Test
+    void managedWallpaper_isProposedWhenTheImageExistsAndTheAgentCanDownload() {
+        advertise("SET_DISPLAY_POLICY", "SET_DISPLAY_POLICY_MANAGED_ASSET");
+
+        AdminDisplayPolicyResponse res = service.enforce(context, DEVICE_ID, managedWallpaperRequest());
+
+        assertThat(res).isNotNull();
+        org.mockito.Mockito.verify(assetService).requireManagedAsset(TENANT, ASSET_SHA, "image/png");
+        org.mockito.Mockito.verify(commandRepository).saveAndFlush(any());
+    }
+
+    @Test
+    void managedWallpaper_isRefusedForAnAgentThatCannotDownload() {
+        // An older agent would treat asset:sha256:... as a local path, fail its
+        // os.Stat preflight and report FAILED. Refuse before dispatching.
+        advertise("SET_DISPLAY_POLICY");
+
+        assertThatThrownBy(() -> service.enforce(context, DEVICE_ID, managedWallpaperRequest()))
+                .isInstanceOfSatisfying(ResponseStatusException.class, e -> {
+                    assertThat(e.getStatusCode().value()).isEqualTo(422);
+                    assertThat(e.getReason()).contains("SET_DISPLAY_POLICY_MANAGED_ASSET");
+                });
+        org.mockito.Mockito.verify(commandRepository, org.mockito.Mockito.never()).saveAndFlush(any());
+    }
+
+    @Test
+    void managedWallpaper_thatWasNeverUploadedCreatesNoProposal() {
+        advertise("SET_DISPLAY_POLICY", "SET_DISPLAY_POLICY_MANAGED_ASSET");
+        when(assetService.requireManagedAsset(TENANT, ASSET_SHA, "image/png"))
+                .thenThrow(new ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "wallpaper asset has not been uploaded."));
+
+        assertThatThrownBy(() -> service.enforce(context, DEVICE_ID, managedWallpaperRequest()))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        e -> assertThat(e.getStatusCode().value()).isEqualTo(400));
+        org.mockito.Mockito.verify(commandRepository, org.mockito.Mockito.never()).saveAndFlush(any());
+    }
+
+    @Test
+    void localPathWallpaper_needsNoManagedCapabilityAndNoAssetLookup() {
+        // Unchanged contract: an image already on the endpoint is not a managed asset.
+        advertise("SET_DISPLAY_POLICY");
+
+        service.enforce(context, DEVICE_ID, enforceRequest());
+
+        org.mockito.Mockito.verify(assetService, org.mockito.Mockito.never())
+                .requireManagedAsset(any(), any(), any());
+    }
 
     private static SetDisplayPolicyRequest enforceRequest() {
         return new SetDisplayPolicyRequest(
