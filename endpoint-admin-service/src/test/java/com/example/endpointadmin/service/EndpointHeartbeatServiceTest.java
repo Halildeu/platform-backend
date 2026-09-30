@@ -15,6 +15,8 @@ import com.example.endpointadmin.testsupport.IsolatedH2DataJpaTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
@@ -27,7 +29,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @IsolatedH2DataJpaTest
 @Import({TimeConfig.class, EndpointHeartbeatService.class})
+@RecordApplicationEvents
 class EndpointHeartbeatServiceTest {
+
+    @Autowired
+    private ApplicationEvents events;
 
     @Autowired
     private EndpointHeartbeatService heartbeatService;
@@ -133,7 +139,46 @@ class EndpointHeartbeatServiceTest {
                 .hasMessageContaining("Endpoint device is decommissioned.");
     }
 
+    @Test
+    void recordHeartbeatAnnouncesACollectCapableDeviceForItsFirstInventory() {
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE));
+
+        heartbeatService.recordHeartbeat(credential(device), heartbeatRequest(), "127.0.0.1", "hmac");
+
+        assertThat(events.stream(DeviceHeartbeatRecordedEvent.class))
+                .containsExactly(new DeviceHeartbeatRecordedEvent(device.getTenantId(), device.getId(), true));
+    }
+
+    @Test
+    void recordHeartbeatMarksAnAgentWithoutCollectInventoryAsNotCapable() {
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE));
+
+        heartbeatService.recordHeartbeat(credential(device),
+                heartbeatRequest(List.of("LIST_LOCAL_USERS", "collect_inventory_v2")), "127.0.0.1", "hmac");
+
+        assertThat(events.stream(DeviceHeartbeatRecordedEvent.class))
+                .containsExactly(new DeviceHeartbeatRecordedEvent(device.getTenantId(), device.getId(), false));
+    }
+
+    @Test
+    void rejectedHeartbeatAnnouncesNothing() {
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.DECOMMISSIONED));
+
+        assertThatThrownBy(() -> heartbeatService.recordHeartbeat(credential(device), heartbeatRequest(),
+                "127.0.0.1", "hmac")).isInstanceOf(ResponseStatusException.class);
+
+        assertThat(events.stream(DeviceHeartbeatRecordedEvent.class)).isEmpty();
+    }
+
+    private DeviceCredentialResult credential(EndpointDevice device) {
+        return new DeviceCredentialResult(device.getId().toString(), UUID.randomUUID().toString(), Instant.now());
+    }
+
     private AgentHeartbeatRequest heartbeatRequest() {
+        return heartbeatRequest(List.of("COLLECT_INVENTORY"));
+    }
+
+    private AgentHeartbeatRequest heartbeatRequest(List<String> capabilities) {
         return new AgentHeartbeatRequest(
                 "install-1",
                 "PC-001",
@@ -144,7 +189,7 @@ class EndpointHeartbeatServiceTest {
                 null,
                 "Windows 11 Pro",
                 "ONLINE",
-                List.of("COLLECT_INVENTORY"),
+                capabilities,
                 Instant.now(),
                 Map.of(),
                 List.of(),

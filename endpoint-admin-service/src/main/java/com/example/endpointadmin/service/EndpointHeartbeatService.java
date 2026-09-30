@@ -2,6 +2,7 @@ package com.example.endpointadmin.service;
 
 import com.example.endpointadmin.dto.v1.agent.AgentHeartbeatRequest;
 import com.example.endpointadmin.dto.v1.agent.AgentHeartbeatResponse;
+import com.example.endpointadmin.model.CommandType;
 import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointHeartbeat;
@@ -10,6 +11,7 @@ import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointHeartbeatRepository;
 import com.example.endpointadmin.security.DeviceCredentialException;
 import com.example.endpointadmin.security.DeviceCredentialResult;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,13 +31,16 @@ public class EndpointHeartbeatService {
     private final EndpointDeviceRepository deviceRepository;
     private final EndpointHeartbeatRepository heartbeatRepository;
     private final Clock clock;
+    private final ApplicationEventPublisher eventPublisher;
 
     public EndpointHeartbeatService(EndpointDeviceRepository deviceRepository,
                                     EndpointHeartbeatRepository heartbeatRepository,
-                                    Clock clock) {
+                                    Clock clock,
+                                    ApplicationEventPublisher eventPublisher) {
         this.deviceRepository = deviceRepository;
         this.heartbeatRepository = heartbeatRepository;
         this.clock = clock;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional
@@ -81,12 +86,31 @@ public class EndpointHeartbeatService {
         heartbeat.setAgentVersion(agentVersion);
         heartbeat.setOsVersion(osVersion);
         heartbeat.setIpAddress(truncate(trimToNull(remoteAddress), 64));
-        heartbeat.setPayload(payload(request, agentMode));
+        Map<String, Object> payload = payload(request, agentMode);
+        heartbeat.setPayload(payload);
 
         deviceRepository.saveAndFlush(device);
         heartbeatRepository.saveAndFlush(heartbeat);
 
+        // platform-backend#1206: consumed AFTER_COMMIT to queue the device's
+        // first inventory while it still has none.
+        eventPublisher.publishEvent(new DeviceHeartbeatRecordedEvent(
+                device.getTenantId(), device.getId(),
+                advertises(payload.get("capabilities"), CommandType.COLLECT_INVENTORY)));
+
         return new AgentHeartbeatResponse(true, device.getId(), device.getStatus(), now);
+    }
+
+    private static boolean advertises(Object capabilities, CommandType capability) {
+        if (!(capabilities instanceof List<?> list)) {
+            return false;
+        }
+        for (Object item : list) {
+            if (item != null && capability.name().equalsIgnoreCase(String.valueOf(item))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private UUID resolveDeviceId(DeviceCredentialResult principal) {
