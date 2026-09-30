@@ -234,7 +234,7 @@ class VariantSecurityIntegrationTest {
 
         /** board #2556: the cache reads the revision on every authorized request. */
         @Override
-        public long getAuthzVersion() {
+        public long getAuthzVersion(String bearerToken) {
             return authzVersion;
         }
 
