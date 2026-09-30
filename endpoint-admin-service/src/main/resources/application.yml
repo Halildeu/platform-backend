@@ -72,6 +72,12 @@ endpoint-admin:
     reconcile-initial-delay-ms: ${ENDPOINT_ADMIN_DEVICE_STALENESS_RECONCILE_INITIAL_DELAY_MS:60000}
   commands:
     claim-ttl-seconds: ${ENDPOINT_ADMIN_COMMAND_CLAIM_TTL_SECONDS:300}
+    # platform-backend#1206 — queue a newly enrolled device's first full
+    # inventory from its heartbeat until a snapshot lands (no admin click).
+    auto-initial-inventory:
+      enabled: ${ENDPOINT_ADMIN_AUTO_INITIAL_INVENTORY_ENABLED:true}
+      retry-base: ${ENDPOINT_ADMIN_AUTO_INITIAL_INVENTORY_RETRY_BASE:PT15M}
+      retry-max: ${ENDPOINT_ADMIN_AUTO_INITIAL_INVENTORY_RETRY_MAX:PT24H}
   rollout-failure:
     github-escalation:
       # #527 §9.4 live issue POST. Disabled by default: the GET preview remains
