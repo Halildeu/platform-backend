@@ -223,7 +223,7 @@ public class RetryWorker {
 
         RenderedMessage message = renderer.render(template, intent.getPayload());
 
-        ChannelAdapter adapter = adapterRegistry.get(delivery.getChannel()).orElse(null);
+        ChannelAdapter adapter = adapterRegistry.get(ChannelAdapterRegistry.dispatchKey(delivery.getChannel(), delivery.getProvider())).orElse(null);
         if (adapter == null) {
             log.warn("retry delivery {} adapter missing for channel '{}' — DLQ",
                 delivery.getId(), delivery.getChannel());
@@ -292,6 +292,7 @@ public class RetryWorker {
             delivery.setFailureReason(result.failureReason());
             if (result.status() == ChannelAdapter.DeliveryAttemptResult.Status.RETRY) {
                 Duration delay = backoffCalculator.computeDelay(delivery.getAttemptCount());
+                delay = com.serban.notify.push.NativePushRetry.delay(delay, result);
                 delivery.setNextRetryAt(now.plus(delay));
                 metrics.retryScheduled(delivery.getChannel());
             } else {
