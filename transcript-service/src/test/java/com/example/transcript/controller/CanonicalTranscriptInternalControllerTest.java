@@ -95,6 +95,6 @@ class CanonicalTranscriptInternalControllerTest {
         return new CanonicalTranscriptSnapshotDto(
                 tenantId, meetingId, sessionId, 4L,
                 Instant.parse("2026-07-18T03:00:00Z"), "FINALIZED",
-                "canonical text", "a".repeat(64), 1, List.of());
+                "canonical text", "a".repeat(64), 1, List.of(), com.example.common.meeting.events.RecordingOutcome.UNKNOWN, null);
     }
 }

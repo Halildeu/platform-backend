@@ -40,6 +40,8 @@ class AnalysisJobCapabilityVerifierTest {
         assertThat(binding.analysisRunId()).isEqualTo(RUN_ID);
         assertThat(binding.analysisSpecVersion()).isEqualTo("analysis-v2");
         assertThat(binding.expiresAt()).isEqualTo(NOW.plusSeconds(299));
+        assertThat(binding.recordingOutcome()).isEqualTo(com.example.common.meeting.events.RecordingOutcome.UNKNOWN);
+        assertThat(binding.recordingIncompleteReason()).isNull();
     }
 
     @Test
@@ -84,6 +86,38 @@ class AnalysisJobCapabilityVerifierTest {
                         Clock.fixed(NOW, ZoneOffset.UTC)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("5 minutes");
+    }
+
+    @Test
+    void explicitIncompleteAndFinishedClaimsPreserveCanonicalProvenance() {
+        var incomplete = verifier(AnalysisJobCapabilityTestTokens.ENCODED_SECRET).verify(
+                AnalysisJobCapabilityTestTokens.withClaims(validToken(), java.util.Map.of(
+                        "recording_outcome", "INCOMPLETE", "recording_incomplete_reason", "CLOSURE_UNCONFIRMED")));
+        assertThat(incomplete.recordingOutcome()).isEqualTo(com.example.common.meeting.events.RecordingOutcome.INCOMPLETE);
+        assertThat(incomplete.recordingIncompleteReason()).isEqualTo("CLOSURE_UNCONFIRMED");
+        var finished = verifier(AnalysisJobCapabilityTestTokens.ENCODED_SECRET).verify(
+                AnalysisJobCapabilityTestTokens.withClaims(validToken(), java.util.Map.of("recording_outcome", "FINISHED")));
+        assertThat(finished.recordingOutcome()).isEqualTo(com.example.common.meeting.events.RecordingOutcome.FINISHED);
+        assertThat(finished.recordingIncompleteReason()).isNull();
+    }
+
+    @Test
+    void malformedOutcomeOrReasonNeverDowngradesToUnknown() {
+        var cases = new java.util.ArrayList<java.util.Map<String, Object>>();
+        cases.add(java.util.Map.of("recording_outcome", "COMPLETE"));
+        cases.add(java.util.Map.of("recording_outcome", 1));
+        cases.add(java.util.Map.of("recording_outcome", "INCOMPLETE"));
+        cases.add(java.util.Map.of("recording_incomplete_reason", "CLOSURE_UNCONFIRMED"));
+        cases.add(java.util.Map.of("recording_outcome", "INCOMPLETE", "recording_incomplete_reason", "OTHER"));
+        cases.add(java.util.Map.of("recording_outcome", "FINISHED", "recording_incomplete_reason", "CLOSURE_UNCONFIRMED"));
+        cases.add(java.util.Map.of("recording_outcome", "UNKNOWN", "recording_incomplete_reason", "CLOSURE_UNCONFIRMED"));
+        var presentNull = new java.util.HashMap<String, Object>();
+        presentNull.put("recording_outcome", null);
+        cases.add(presentNull);
+        for (var claims : cases) {
+            assertInvalid(verifier(AnalysisJobCapabilityTestTokens.ENCODED_SECRET),
+                    AnalysisJobCapabilityTestTokens.withClaims(validToken(), claims));
+        }
     }
 
     private static String validToken() {

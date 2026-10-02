@@ -15,6 +15,22 @@ import org.springframework.data.domain.Pageable;
 import jakarta.persistence.LockModeType;
 
 public interface TranscriptFinalizationRepository extends JpaRepository<TranscriptFinalization, UUID> {
+    /** Hold the observed occurrence against retention until status and its audit commit. */
+    @Lock(LockModeType.PESSIMISTIC_READ)
+    @Query("""
+            select f from TranscriptFinalization f
+            where f.tenantId = :tenantId
+              and (f.orgId = :tenantId or f.orgId is null)
+              and f.meetingId = :meetingId
+              and f.sessionId = :sessionId
+              and f.finalizationVersion = :finalizationVersion
+            """)
+    Optional<TranscriptFinalization> findVisibleOccurrenceForStatus(
+            @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
+            @Param("sessionId") UUID sessionId,
+            @Param("finalizationVersion") long finalizationVersion);
+
     Optional<TranscriptFinalization> findByTenantIdAndMeetingIdAndSessionIdAndFinalizationVersion(
             UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion);
 

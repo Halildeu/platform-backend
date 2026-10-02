@@ -105,6 +105,12 @@ public final class MeetingEventV1Serializer {
                 json.put("externalSessionId", p.externalSessionId());
                 json.put("finishedAt", text(p.finishedAt()));
             }
+            case MeetingEventPayload.RecordingIncomplete p -> {
+                json.put("recordingSessionId", text(p.recordingSessionId()));
+                json.put("externalSessionId", p.externalSessionId());
+                json.put("closedAt", text(p.closedAt()));
+                json.put("reasonCode", p.reasonCode());
+            }
             case MeetingEventPayload.TranscriptReady p -> {
                 json.put("transcriptSessionId", text(p.transcriptSessionId()));
                 json.put("finalizationVersion", p.finalizationVersion());

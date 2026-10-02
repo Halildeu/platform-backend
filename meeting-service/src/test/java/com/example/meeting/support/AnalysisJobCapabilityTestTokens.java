@@ -23,6 +23,20 @@ public final class AnalysisJobCapabilityTestTokens {
     private AnalysisJobCapabilityTestTokens() {
     }
 
+    /** Test-only signing of valid and deliberately malformed additional claims. */
+    public static String withClaims(String token, java.util.Map<String, Object> additions) {
+        try {
+            var claims = new java.util.LinkedHashMap<String, Object>(SignedJWT.parse(token).getJWTClaimsSet().toJSONObject());
+            claims.putAll(additions);
+            var jwt = new com.nimbusds.jose.JWSObject(new JWSHeader(JWSAlgorithm.HS256),
+                    new com.nimbusds.jose.Payload(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(claims)));
+            jwt.sign(new MACSigner(SECRET));
+            return jwt.serialize();
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to create test capability", ex);
+        }
+    }
+
     public static String issue(
             UUID tenantId,
             UUID meetingId,

@@ -58,6 +58,7 @@ class MeetingIntelligenceResultAccessAuditPostgresIntegrationTest {
 
     @Autowired
     private MeetingRepository meetingRepository;
+    @Autowired private MeetingSessionRepository sessionRepository;
 
     @Autowired
     private MeetingAnalysisRunRepository runRepository;
@@ -82,7 +83,7 @@ class MeetingIntelligenceResultAccessAuditPostgresIntegrationTest {
 
         assertThat(columns).containsExactly(
                 "id", "tenant_id", "org_id", "accessor_subject", "meeting_id",
-                "analysis_run_id", "access_type", "result_count", "trace_id", "accessed_at");
+                "analysis_run_id", "access_type", "result_count", "trace_id", "accessed_at", "session_id");
         assertThat(jdbc.queryForObject("""
                 SELECT count(*)
                 FROM pg_indexes
@@ -144,7 +145,7 @@ class MeetingIntelligenceResultAccessAuditPostgresIntegrationTest {
                 decisionRepository,
                 actionRepository,
                 new MeetingIntelligenceResultAccessAuditService(accessAuditRepository),
-                new ObjectMapper());
+                new ObjectMapper(), sessionRepository);
         AdminTenantContext context =
                 new AdminTenantContext(tenantId, "reader@example.com", "role-admin");
 

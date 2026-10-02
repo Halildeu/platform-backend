@@ -172,6 +172,27 @@ class MeetingCanonicalTranscriptServiceTest {
         verify(auditService, never()).recordCanonicalTranscriptRead(any(), any(), any());
     }
 
+    @Test
+    void closureMustMatchTheStoredAnalysisOccurrenceBeforeContentIsDisclosed() {
+        var outcome = com.example.common.meeting.events.RecordingOutcome.INCOMPLETE;
+        run.setRecordingClosure(outcome, "CLOSURE_UNCONFIRMED");
+        when(analysisRuns.findVisibleExactRun(RUN, MEETING, TENANT)).thenReturn(Optional.of(run));
+        var legacySnapshot = snapshot(HASH);
+        when(transcriptClient.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC)).thenReturn(legacySnapshot);
+        assertStatus(() -> service.read(TENANT_CONTEXT, MEETING, RUN),
+                409, "TRANSCRIPT_RESULT_SCOPE_MISMATCH");
+        verifyNoInteractions(auditService);
+
+        when(transcriptClient.read(TENANT, MEETING, SESSION, 7L, RUN, SPEC)).thenReturn(
+                new CanonicalTranscriptClient.Snapshot(TENANT, MEETING, SESSION, 7L, FINALIZED_AT,
+                        "FINALIZED", legacySnapshot.transcript(), HASH, 1, legacySnapshot.segments(),
+                        outcome, "CLOSURE_UNCONFIRMED"));
+        var response = service.read(TENANT_CONTEXT, MEETING, RUN);
+        assertThat(response.recordingOutcome()).isEqualTo(outcome);
+        assertThat(response.recordingIncompleteReason()).isEqualTo("CLOSURE_UNCONFIRMED");
+        verify(auditService).recordCanonicalTranscriptRead(TENANT_CONTEXT, MEETING, RUN);
+    }
+
     private static void assertStatus(Runnable action, int status, String reason) {
         assertThatThrownBy(action::run)
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
@@ -207,7 +228,7 @@ class MeetingCanonicalTranscriptServiceTest {
         return new CanonicalTranscriptClient.Snapshot(
                 TENANT, MEETING, SESSION, 7L, FINALIZED_AT, "FINALIZED",
                 "canonical text", hash, 1,
-                List.of(new CanonicalTranscriptClient.Segment("canonical text", 0.0, 1.0)));
+                List.of(new CanonicalTranscriptClient.Segment("canonical text", 0.0, 1.0)), com.example.common.meeting.events.RecordingOutcome.UNKNOWN, null);
     }
 
     private static MeetingAnalysisRunDestructionTombstone destruction(

@@ -114,6 +114,11 @@ public final class MeetingEventKeys {
                     p.recordingSessionId(),
                     MeetingEventType.RECORDING_FINISHED,
                     1);
+            case MeetingEventPayload.RecordingIncomplete p -> occurrenceKey(
+                    "meeting.recording",
+                    p.recordingSessionId(),
+                    MeetingEventType.RECORDING_INCOMPLETE,
+                    1);
             case MeetingEventPayload.TranscriptReady p -> occurrenceKey(
                     "meeting.transcript",
                     p.transcriptSessionId(),

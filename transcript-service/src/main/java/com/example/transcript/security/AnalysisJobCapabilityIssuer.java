@@ -1,5 +1,7 @@
 package com.example.transcript.security;
 
+import com.example.common.meeting.events.RecordingOutcome;
+
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -89,6 +91,8 @@ public class AnalysisJobCapabilityIssuer {
                 .claim("transcript_sha256", binding.transcriptSha256())
                 .claim("analysis_run_id", binding.analysisRunId().toString())
                 .claim("analysis_spec_version", binding.analysisSpecVersion())
+                .claim("recording_outcome", binding.recordingOutcome().name())
+                .claim("recording_incomplete_reason", binding.recordingIncompleteReason())
                 .build();
         SignedJWT jwt = new SignedJWT(
                 new JWSHeader.Builder(JWSAlgorithm.HS256).type(JOSEObjectType.JWT).build(), claims);
@@ -123,7 +127,19 @@ public class AnalysisJobCapabilityIssuer {
             Instant finalizedAt,
             String transcriptSha256,
             UUID analysisRunId,
-            String analysisSpecVersion) { }
+            String analysisSpecVersion,
+            RecordingOutcome recordingOutcome,
+            String recordingIncompleteReason) {
+        public JobBinding {
+            java.util.Objects.requireNonNull(recordingOutcome).validateReason(recordingIncompleteReason);
+        }
+
+        public JobBinding(UUID tenantId, UUID meetingId, UUID sessionId, long finalizationVersion,
+                Instant finalizedAt, String transcriptSha256, UUID analysisRunId, String analysisSpecVersion) {
+            this(tenantId, meetingId, sessionId, finalizationVersion, finalizedAt,
+                    transcriptSha256, analysisRunId, analysisSpecVersion, RecordingOutcome.UNKNOWN, null);
+        }
+    }
 
     public record IssuedCapability(String token, UUID capabilityId, Instant expiresAt) { }
 }

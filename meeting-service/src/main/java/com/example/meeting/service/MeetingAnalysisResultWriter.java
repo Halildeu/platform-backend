@@ -149,6 +149,7 @@ public class MeetingAnalysisResultWriter {
         run.setFinalizedAt(request.finalizedAt());
         run.setAnalysisSpecVersion(request.analysisSpecVersion());
         run.setJobCapabilityId(binding.capabilityId());
+        run.setRecordingClosure(binding.recordingOutcome(), binding.recordingIncompleteReason());
         run.setAnalyzerContractVersion(request.analyzerContractVersion());
         run.setModel(request.model());
         run.setBackend(request.backend());

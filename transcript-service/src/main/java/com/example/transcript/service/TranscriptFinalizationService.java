@@ -161,6 +161,7 @@ public class TranscriptFinalizationService {
         finalization.setCanonicalTranscriptSha256(snapshot.transcriptSha256());
         finalization.setCanonicalSegments(snapshot.canonicalSegments());
         finalization.setCanonicalProjectionSha256(snapshot.canonicalProjectionSha256());
+        finalization.setRecordingClosure(association.getRecordingOutcome(), association.getRecordingIncompleteReason());
         finalization.setFinalizedAt(finalizedAt);
         finalization.setCreatedAt(finalizedAt);
         finalizationRepository.save(finalization);

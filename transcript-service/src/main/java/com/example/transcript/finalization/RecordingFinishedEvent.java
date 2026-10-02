@@ -11,5 +11,7 @@ public record RecordingFinishedEvent(
         UUID meetingId,
         UUID recordingSessionId,
         String externalSessionId,
-        Instant finishedAt) {
+        Instant finishedAt) implements RecordingClosureEvent {
+    @Override public Instant closedAt() { return finishedAt; }
+    @Override public String eventType() { return "meeting.recording.finished"; }
 }
