@@ -78,6 +78,10 @@ final class SpeechmaticsLiveProtocolAdapter {
         transcription.put("diarization", "speaker");
         transcription.put("max_delay", config.getMaxDelaySeconds());
         transcription.put("max_delay_mode", config.getMaxDelayMode());
+        if (config.getPunctuationSensitivity() != null) {
+            transcription.putObject("punctuation_overrides")
+                    .put("sensitivity", config.getPunctuationSensitivity());
+        }
         if (additionalVocab != null && !additionalVocab.isEmpty()) {
             final ArrayNode vocab = objectMapper.createArrayNode();
             for (final String term : additionalVocab) {
