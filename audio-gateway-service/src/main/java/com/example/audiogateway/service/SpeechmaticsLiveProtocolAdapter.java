@@ -143,7 +143,10 @@ final class SpeechmaticsLiveProtocolAdapter {
                 acknowledgedAudioSequences.tryEmitError(
                         new SpeechmaticsAudioAcknowledgementException(
                                 "Speechmatics failed before acknowledging all audio"));
-                yield List.of("{\"type\":\"error\",\"msg\":\"speechmatics stream failed\"}");
+                final ObjectNode failure = objectMapper.createObjectNode();
+                failure.put("type", "error");
+                failure.put("msg", safeErrorCode(event));
+                yield List.of(encode(failure));
             }
             case "AudioAdded" -> {
                 observeAudioAdded(event);
@@ -151,6 +154,22 @@ final class SpeechmaticsLiveProtocolAdapter {
             }
             case "Info", "Warning" -> List.of();
             default -> List.of();
+        };
+    }
+
+    /** Never forward provider reason/detail fields: they may contain submitted content. */
+    private static String safeErrorCode(final JsonNode event) {
+        return switch (event.path("type").asText("")) {
+            case "buffer_error" -> "SPEECHMATICS_BUFFER_ERROR";
+            case "data_error" -> "SPEECHMATICS_DATA_ERROR";
+            case "job_error" -> "SPEECHMATICS_JOB_ERROR";
+            case "not_authorised" -> "SPEECHMATICS_NOT_AUTHORISED";
+            case "not_allowed" -> "SPEECHMATICS_NOT_ALLOWED";
+            case "quota_exceeded" -> "SPEECHMATICS_QUOTA_EXCEEDED";
+            case "timelimit_exceeded" -> "SPEECHMATICS_TIMELIMIT_EXCEEDED";
+            case "idle_timeout" -> "SPEECHMATICS_IDLE_TIMEOUT";
+            case "invalid_message" -> "SPEECHMATICS_INVALID_MESSAGE";
+            default -> "speechmatics stream failed";
         };
     }
 
