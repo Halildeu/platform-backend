@@ -13,11 +13,11 @@ import java.util.List;
  *
  * <p>{@link #transportEpoch()} identifies the sequence space {@code windowSeq} belongs to.
  * Window numbering restarts at 0 whenever a new space opens — a fresh REST session buffer,
- * a fresh WebSocket leg, or the same socket reconnecting — so {@code windowSeq} is only
+ * or a fresh provider WebSocket bridge — so {@code windowSeq} is only
  * comparable WITHIN one epoch. A consumer advances only to a higher epoch; anything
  * carrying a lower one is a straggler from a closed space, not a reason to reopen it.
  * {@link #transport()} names the leg for logging and metrics but is NOT an epoch: a
- * reconnect keeps the same transport while opening a new sequence space.
+ * legacy reconnect opens a new space, while negotiated recording resume retains the same bridge and epoch.
  */
 public record DirectSttTranscriptResultContext(
         String sessionId,
@@ -47,8 +47,8 @@ public record DirectSttTranscriptResultContext(
 ) {
 
     /**
-     * Which leg carried the audio. Window sequences restart per transport, so this is the
-     * epoch boundary a downstream reorder buffer must reset on.
+     * Which leg carried the audio. Consumers use transportEpoch, not this enum alone,
+     * to distinguish independent window sequence spaces.
      */
     public enum Transport {
         /** Gateway-to-live-stt WebSocket bridge. */

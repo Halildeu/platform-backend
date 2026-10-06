@@ -79,6 +79,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
 
     private final ConcurrentHashMap<String, WebSocketSession> activeSessions =
             new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, RetainedLiveWebSocketSession> retainedSessions =
+            new ConcurrentHashMap<>();
     private final Counter supersededConnections;
     private final Counter acceptedFrames;
     private final Counter duplicateFrames;
@@ -140,6 +142,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
 
     @Override
     public void destroy() {
+        retainedSessions.values().forEach(RetainedLiveWebSocketSession::evict);
         transcriptSinkScheduler.dispose();
     }
 
@@ -184,6 +187,16 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         return clientSession.close(CloseStatus.NOT_ACCEPTABLE);
                     }
                     final String correlationId = correlationId(clientSession);
+                    final var query = UriComponentsBuilder.fromUri(clientSession.getHandshakeInfo().getUri())
+                            .build().getQueryParams();
+                    if (query.containsKey("resume_protocol")) {
+                        if (!"speechmatics".equals(record.sttProvider())
+                                || query.get("resume_protocol").size() != 1
+                                || !RetainedLiveWebSocketSession.PROTOCOL.equals(query.getFirst("resume_protocol"))) {
+                            return clientSession.close(CloseStatus.POLICY_VIOLATION);
+                        }
+                        return attachRetained(clientSession, record, correlationId, query);
+                    }
                     // Latest connection of the verified owner wins. A client whose
                     // network dropped cannot send a close frame, so its old socket
                     // lingers here until TCP gives up (minutes). Rejecting the
@@ -192,7 +205,13 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     // (platform-desktop#138). Live relay sequence state lives in the
                     // registry and survives the swap, so the replay stays
                     // duplicate-suppressed and contiguous.
-                    final WebSocketSession previous = activeSessions.put(sessionId, clientSession);
+                    final WebSocketSession previous;
+                    synchronized (retainedSessions) {
+                        if (retainedSessions.containsKey(sessionId)) {
+                            return clientSession.close(CloseStatus.POLICY_VIOLATION);
+                        }
+                        previous = activeSessions.put(sessionId, clientSession);
+                    }
                     if (previous != null && previous != clientSession) {
                         supersededConnections.increment();
                         log.info(
@@ -260,6 +279,58 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                 activeSessions.remove(sessionId, clientSession);
                             });
                 });
+    }
+
+    private Mono<Void> attachRetained(WebSocketSession client, SessionRecord record, String correlationId,
+            org.springframework.util.MultiValueMap<String, String> query) {
+        final String requestedEpoch = query.getFirst("source_epoch");
+        final long afterFinal;
+        try {
+            if ((query.containsKey("source_epoch") && query.get("source_epoch").size() != 1)
+                    || (query.containsKey("after_final") && query.get("after_final").size() != 1)
+                    || (requestedEpoch != null && !requestedEpoch.matches("[0-9a-f-]{36}"))) {
+                return client.close(CloseStatus.POLICY_VIOLATION);
+            }
+            afterFinal = Long.parseLong(query.getFirst("after_final") == null ? "-1" : query.getFirst("after_final"));
+            if (afterFinal < -1L) return client.close(CloseStatus.POLICY_VIOLATION);
+        } catch (NumberFormatException error) { return client.close(CloseStatus.POLICY_VIOLATION); }
+        final RetainedLiveWebSocketSession retained;
+        synchronized (retainedSessions) {
+            RetainedLiveWebSocketSession existing = retainedSessions.get(record.sessionId());
+            if (existing == null) {
+                // A missing source epoch (including after restart/lease expiry) cannot
+                // be replaced by a new provider while claiming recording continuity.
+                if (requestedEpoch != null || afterFinal != -1L || activeSessions.containsKey(record.sessionId())
+                        || retainedSessions.size() >= properties.getBounds().getMaxActiveSessions()) {
+                    return client.close(CloseStatus.POLICY_VIOLATION);
+                }
+                final var streaming = properties.getDirectStt().getStreaming();
+                final var identity = new java.util.concurrent.atomic.AtomicReference<RetainedLiveWebSocketSession>();
+                existing = new RetainedLiveWebSocketSession(client.getHandshakeInfo(), objectMapper,
+                        Schedulers.parallel(), Duration.ofSeconds(60),
+                        streaming.getMaxFrameBytes() + LiveAudioStreamFrame.HEADER_BYTES,
+                        streaming.getMaxClientControlBytes(), properties.getDirectStt().getMaxResponseBytes(),
+                        () -> retainedSessions.remove(record.sessionId(), identity.get()));
+                identity.set(existing);
+                retainedSessions.put(record.sessionId(), existing);
+            }
+            retained = existing;
+        }
+        safeAudit(new AuditEvent.TranscriptEventsAccessed(record.sessionId(), record.tenantId(),
+                record.userId(), record.meetingId(), "WEBSOCKET", "", 0, correlationId, System.currentTimeMillis()));
+        final SpeechmaticsLiveProtocolAdapter adapter = new SpeechmaticsLiveProtocolAdapter(
+                objectMapper, properties.getDirectStt().getSpeechmatics());
+        final Mono<Void> provider = speechmaticsClient.execute(adapter.endpoint(), adapter.authorizationHeaders(),
+                        upstream -> bridge(retained, upstream, record, correlationId, adapter))
+                .takeUntilOther(sessions.abandonment(record.sessionId()))
+                .timeout(Duration.ofMinutes(properties.getBounds().getMaxSessionMinutes()))
+                .doOnError(error -> {
+                    upstreamFailures.increment();
+                    log.warn("Retained live provider failed err={} sessionId={} correlationId={}",
+                            error.getClass().getSimpleName(), record.sessionId(), correlationId);
+                });
+        return retained.attach(client, requestedEpoch, afterFinal)
+                .doOnSubscribe(ignored -> retained.start(provider));
     }
 
     private Mono<Void> bridge(
