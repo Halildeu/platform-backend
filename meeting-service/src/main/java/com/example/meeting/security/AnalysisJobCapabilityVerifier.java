@@ -1,5 +1,7 @@
 package com.example.meeting.security;
 
+import com.example.common.meeting.events.RecordingOutcome;
+
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.crypto.MACVerifier;
@@ -105,12 +107,24 @@ public class AnalysisJobCapabilityVerifier {
                     requiredHash(claims.getStringClaim("transcript_sha256")),
                     requiredUuid(claims.getStringClaim("analysis_run_id")),
                     requiredText(claims.getStringClaim("analysis_spec_version"), 64),
-                    expiresAt);
+                    expiresAt, recordingOutcome(claims), claims.getStringClaim("recording_incomplete_reason"));
         } catch (ResponseStatusException ex) {
             throw ex;
         } catch (ParseException | JOSEException | RuntimeException ex) {
             throw invalid();
         }
+    }
+
+    private static RecordingOutcome recordingOutcome(JWTClaimsSet claims) throws ParseException {
+        if (!claims.getClaims().containsKey("recording_outcome")) {
+            if (claims.getClaims().containsKey("recording_incomplete_reason")) {
+                throw invalid();
+            }
+            return RecordingOutcome.UNKNOWN;
+        }
+        // Only an absent legacy claim is UNKNOWN. Null, wrong types and unknown
+        // values are invalid signed input, never a reason to downgrade evidence.
+        return RecordingOutcome.valueOf(requiredText(claims.getStringClaim("recording_outcome"), 16));
     }
 
     private static Instant requiredInstant(java.util.Date value) {
@@ -176,5 +190,11 @@ public class AnalysisJobCapabilityVerifier {
             String transcriptSha256,
             UUID analysisRunId,
             String analysisSpecVersion,
-            Instant expiresAt) { }
+            Instant expiresAt,
+            RecordingOutcome recordingOutcome,
+            String recordingIncompleteReason) {
+        public JobBinding {
+            java.util.Objects.requireNonNull(recordingOutcome).validateReason(recordingIncompleteReason);
+        }
+    }
 }

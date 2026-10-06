@@ -83,6 +83,22 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
             @Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId,
             @Param("sessionId") String sessionId);
 
+    /** Orders status observations against retention, which does not take the parent lock. */
+    @Lock(LockModeType.PESSIMISTIC_READ)
+    @Query("""
+            select r from MeetingAnalysisRun r
+            where r.meetingId = :meetingId
+              and (r.orgId = :orgId or (r.orgId is null and r.tenantId = :orgId))
+              and r.transcriptSessionId = :sessionId
+            order by case when r.finalizedAt is null then 1 else 0 end asc,
+                     r.finalizedAt desc, r.finalizationVersion desc,
+                     r.generatedAt desc, r.createdAt desc, r.analysisRunId desc
+            limit 1
+            """)
+    Optional<MeetingAnalysisRun> findLatestBySessionVisibleToOrgForStatus(
+            @Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId,
+            @Param("sessionId") String sessionId);
+
     @Query("""
             select r
             from MeetingAnalysisRun r

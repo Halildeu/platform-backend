@@ -103,6 +103,37 @@ class RecordingFinishedEventProcessorTest {
         verify(stateMachine, never()).observeRecordingFinished(any(), any(), any());
     }
 
+    @Test
+    void incompleteOccurrenceKeepsItsOwnTypeAndCannotTakeFinishedTransition() {
+        String key = EVENT_KEY.replace("recording.finished", "recording.incomplete");
+        var event = new RecordingIncompleteEvent(key, SHA, TENANT, MEETING, SESSION,
+                SOURCE_SESSION, NOW.minusSeconds(1), "CLOSURE_UNCONFIRMED");
+        var stored = matchingInbox(null);
+        when(stored.getEventType()).thenReturn(event.eventType());
+        var association = matchingAssociation(SESSION);
+        when(inbox.insertIfAbsent(any(), eq(key), eq(event.eventType()), eq(SHA),
+                eq(TENANT), eq(MEETING), eq(SESSION), eq(SOURCE_SESSION), eq(NOW))).thenReturn(1);
+        when(inbox.findByEventKey(key)).thenReturn(Optional.of(stored));
+        when(associations.findSourceForUpdate(TENANT, MEETING, "DIRECT_STT", SOURCE_SESSION))
+                .thenReturn(Optional.of(association));
+        when(inbox.markProcessed(key, NOW)).thenReturn(1);
+        assertThat(processor.process(event)).isEqualTo(RecordingFinishedEventProcessor.ProcessResult.PROCESSED);
+        verify(stateMachine).observeRecordingIncomplete(association, event.closedAt(), NOW, "CLOSURE_UNCONFIRMED");
+        verify(stateMachine, never()).observeRecordingFinished(any(), any(), any());
+        verify(associations).saveAndFlush(association);
+    }
+
+    @Test
+    void storedEventTypeMismatchFailsEvenIfAlreadyProcessed() {
+        var stored = matchingInbox(NOW.minusSeconds(1));
+        when(stored.getEventType()).thenReturn("meeting.recording.incomplete");
+        when(inbox.findByEventKey(EVENT_KEY)).thenReturn(Optional.of(stored));
+        assertThatThrownBy(() -> processor.process(event()))
+                .isInstanceOf(RecordingFinishedEventProcessor.RecordingFinishedEventConflictException.class)
+                .hasMessage("INBOX_KEY_DIVERGENCE");
+        verify(stateMachine, never()).observeRecordingFinished(any(), any(), any());
+    }
+
     private RecordingFinishedEvent event() {
         return new RecordingFinishedEvent(
                 EVENT_KEY, SHA, TENANT, MEETING, SESSION, SOURCE_SESSION,
@@ -111,6 +142,7 @@ class RecordingFinishedEventProcessorTest {
 
     private TranscriptMeetingEventInbox matchingInbox(Instant processedAt) {
         TranscriptMeetingEventInbox stored = mock(TranscriptMeetingEventInbox.class);
+        when(stored.getEventType()).thenReturn("meeting.recording.finished");
         when(stored.getPayloadSha256()).thenReturn(SHA);
         when(stored.getTenantId()).thenReturn(TENANT);
         when(stored.getMeetingId()).thenReturn(MEETING);

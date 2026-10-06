@@ -48,6 +48,7 @@ class MeetingIntelligenceResultServiceTest {
     @Mock
     private MeetingIntelligenceResultAccessAuditService accessAuditService;
 
+    @Mock private com.example.meeting.repository.MeetingSessionRepository sessionRepository;
     private MeetingIntelligenceResultService service;
     private final AdminTenantContext tenant =
             new AdminTenantContext(ORG_ID, "admin@example.com", "admin@example.com");
@@ -60,7 +61,7 @@ class MeetingIntelligenceResultServiceTest {
                 decisionRepository,
                 actionRepository,
                 accessAuditService,
-                new ObjectMapper());
+                new ObjectMapper(), sessionRepository);
     }
 
     @Test
@@ -107,8 +108,25 @@ class MeetingIntelligenceResultServiceTest {
     }
 
     @Test
+    void incompleteRecordingInAnotherSessionSurvivesResultReadAndReadFailureIsNotZero() {
+        MeetingAnalysisRun run = analysisRun();
+        run.setRecordingClosure(com.example.common.meeting.events.RecordingOutcome.FINISHED, null);
+        when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID)).thenReturn(Optional.of(new Meeting()));
+        when(runRepository.findLatestBySessionVisibleToOrg(MEETING_ID, ORG_ID, "SES-1")).thenReturn(Optional.of(run));
+        when(decisionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of());
+        when(actionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of());
+        when(sessionRepository.countIncomplete(MEETING_ID, ORG_ID)).thenReturn(1L).thenThrow(new IllegalStateException("fixture"));
+        var response = service.getForSession(tenant, MEETING_ID, "SES-1");
+        assertThat(response.incompleteRecordingCount()).isEqualTo(1);
+        assertThat(response.recordingOutcome()).isEqualTo(com.example.common.meeting.events.RecordingOutcome.FINISHED);
+        assertThat(response.recordingIncompleteReason()).isNull();
+        assertThatThrownBy(() -> service.getForSession(tenant, MEETING_ID, "SES-1")).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
     void selectedSessionReturnsOnlyItsExactRunAndAuditsRepeatedReads() {
         MeetingAnalysisRun run = analysisRun();
+        run.setRecordingClosure(com.example.common.meeting.events.RecordingOutcome.INCOMPLETE, "CLOSURE_UNCONFIRMED");
         when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID))
                 .thenReturn(Optional.of(new Meeting()));
         when(runRepository.findLatestBySessionVisibleToOrg(MEETING_ID, ORG_ID, "SES-1"))
@@ -121,6 +139,8 @@ class MeetingIntelligenceResultServiceTest {
         var first = service.getForSession(tenant, MEETING_ID, "SES-1");
         assertThat(service.getForSession(tenant, MEETING_ID, "SES-1")).isEqualTo(first);
         assertThat(first.analysisRunId()).isEqualTo(RUN_ID);
+        assertThat(first.recordingOutcome()).isEqualTo(com.example.common.meeting.events.RecordingOutcome.INCOMPLETE);
+        assertThat(first.recordingIncompleteReason()).isEqualTo("CLOSURE_UNCONFIRMED");
         assertThat(first.sessionId()).isEqualTo(run.getTranscriptSessionId());
         verify(runRepository, org.mockito.Mockito.never())
                 .findLatestByMeetingIdVisibleToOrg(MEETING_ID, ORG_ID);

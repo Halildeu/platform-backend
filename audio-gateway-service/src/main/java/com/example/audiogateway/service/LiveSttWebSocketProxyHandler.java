@@ -79,6 +79,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
 
     private final ConcurrentHashMap<String, WebSocketSession> activeSessions =
             new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, RetainedLiveWebSocketSession> retainedSessions =
+            new ConcurrentHashMap<>();
     private final Counter supersededConnections;
     private final Counter acceptedFrames;
     private final Counter duplicateFrames;
@@ -140,6 +142,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
 
     @Override
     public void destroy() {
+        retainedSessions.values().forEach(RetainedLiveWebSocketSession::evict);
         transcriptSinkScheduler.dispose();
     }
 
@@ -167,7 +170,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     if (record == null
                             || !Objects.equals(record.tenantId(), tenantId)
                             || !Objects.equals(record.userId(), userId)
-                            || record.state() == SessionState.FINISHED) {
+                            || (record.state() != SessionState.STARTED && record.state() != SessionState.STREAMING)) {
                         return clientSession.close(CloseStatus.POLICY_VIOLATION);
                     }
                     if (!"internal".equals(record.sttProvider())
@@ -184,6 +187,16 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         return clientSession.close(CloseStatus.NOT_ACCEPTABLE);
                     }
                     final String correlationId = correlationId(clientSession);
+                    final var query = UriComponentsBuilder.fromUri(clientSession.getHandshakeInfo().getUri())
+                            .build().getQueryParams();
+                    if (query.containsKey("resume_protocol")) {
+                        if (!"speechmatics".equals(record.sttProvider())
+                                || query.get("resume_protocol").size() != 1
+                                || !RetainedLiveWebSocketSession.PROTOCOL.equals(query.getFirst("resume_protocol"))) {
+                            return clientSession.close(CloseStatus.POLICY_VIOLATION);
+                        }
+                        return attachRetained(clientSession, record, correlationId, query);
+                    }
                     // Latest connection of the verified owner wins. A client whose
                     // network dropped cannot send a close frame, so its old socket
                     // lingers here until TCP gives up (minutes). Rejecting the
@@ -192,7 +205,13 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     // (platform-desktop#138). Live relay sequence state lives in the
                     // registry and survives the swap, so the replay stays
                     // duplicate-suppressed and contiguous.
-                    final WebSocketSession previous = activeSessions.put(sessionId, clientSession);
+                    final WebSocketSession previous;
+                    synchronized (retainedSessions) {
+                        if (retainedSessions.containsKey(sessionId)) {
+                            return clientSession.close(CloseStatus.POLICY_VIOLATION);
+                        }
+                        previous = activeSessions.put(sessionId, clientSession);
+                    }
                     if (previous != null && previous != clientSession) {
                         supersededConnections.increment();
                         log.info(
@@ -233,6 +252,12 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                             correlationId,
                                             speechmatics));
                     return connection
+                            .takeUntilOther(sessions.abandonment(sessionId))
+                            .then(Mono.defer(() -> {
+                                SessionRecord current = sessions.get(sessionId).orElse(null);
+                                return current == null || current.state() == SessionState.ABANDONING || current.state() == SessionState.ABANDONED
+                                        ? clientSession.close(CloseStatus.POLICY_VIOLATION) : Mono.empty();
+                            }))
                             .doOnError(error -> {
                                 if (error instanceof ClientFrameException) {
                                     return;
@@ -254,6 +279,58 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                 activeSessions.remove(sessionId, clientSession);
                             });
                 });
+    }
+
+    private Mono<Void> attachRetained(WebSocketSession client, SessionRecord record, String correlationId,
+            org.springframework.util.MultiValueMap<String, String> query) {
+        final String requestedEpoch = query.getFirst("source_epoch");
+        final long afterFinal;
+        try {
+            if ((query.containsKey("source_epoch") && query.get("source_epoch").size() != 1)
+                    || (query.containsKey("after_final") && query.get("after_final").size() != 1)
+                    || (requestedEpoch != null && !requestedEpoch.matches("[0-9a-f-]{36}"))) {
+                return client.close(CloseStatus.POLICY_VIOLATION);
+            }
+            afterFinal = Long.parseLong(query.getFirst("after_final") == null ? "-1" : query.getFirst("after_final"));
+            if (afterFinal < -1L) return client.close(CloseStatus.POLICY_VIOLATION);
+        } catch (NumberFormatException error) { return client.close(CloseStatus.POLICY_VIOLATION); }
+        final RetainedLiveWebSocketSession retained;
+        synchronized (retainedSessions) {
+            RetainedLiveWebSocketSession existing = retainedSessions.get(record.sessionId());
+            if (existing == null) {
+                // A missing source epoch (including after restart/lease expiry) cannot
+                // be replaced by a new provider while claiming recording continuity.
+                if (requestedEpoch != null || afterFinal != -1L || activeSessions.containsKey(record.sessionId())
+                        || retainedSessions.size() >= properties.getBounds().getMaxActiveSessions()) {
+                    return client.close(CloseStatus.POLICY_VIOLATION);
+                }
+                final var streaming = properties.getDirectStt().getStreaming();
+                final var identity = new java.util.concurrent.atomic.AtomicReference<RetainedLiveWebSocketSession>();
+                existing = new RetainedLiveWebSocketSession(client.getHandshakeInfo(), objectMapper,
+                        Schedulers.parallel(), Duration.ofSeconds(60),
+                        streaming.getMaxFrameBytes() + LiveAudioStreamFrame.HEADER_BYTES,
+                        streaming.getMaxClientControlBytes(), properties.getDirectStt().getMaxResponseBytes(),
+                        () -> retainedSessions.remove(record.sessionId(), identity.get()));
+                identity.set(existing);
+                retainedSessions.put(record.sessionId(), existing);
+            }
+            retained = existing;
+        }
+        safeAudit(new AuditEvent.TranscriptEventsAccessed(record.sessionId(), record.tenantId(),
+                record.userId(), record.meetingId(), "WEBSOCKET", "", 0, correlationId, System.currentTimeMillis()));
+        final SpeechmaticsLiveProtocolAdapter adapter = new SpeechmaticsLiveProtocolAdapter(
+                objectMapper, properties.getDirectStt().getSpeechmatics());
+        final Mono<Void> provider = speechmaticsClient.execute(adapter.endpoint(), adapter.authorizationHeaders(),
+                        upstream -> bridge(retained, upstream, record, correlationId, adapter))
+                .takeUntilOther(sessions.abandonment(record.sessionId()))
+                .timeout(Duration.ofMinutes(properties.getBounds().getMaxSessionMinutes()))
+                .doOnError(error -> {
+                    upstreamFailures.increment();
+                    log.warn("Retained live provider failed err={} sessionId={} correlationId={}",
+                            error.getClass().getSimpleName(), record.sessionId(), correlationId);
+                });
+        return retained.attach(client, requestedEpoch, afterFinal)
+                .doOnSubscribe(ignored -> retained.start(provider));
     }
 
     private Mono<Void> bridge(
@@ -294,9 +371,14 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 new LiveTranscriptWindowAccumulator(properties.getDirectStt().getStreaming()
                         .getSourceHistoryMaxBytes());
 
-        final Flux<WebSocketMessage> admittedClientFrames = client.receive()
+        final Flux<ProviderUpload> admittedClientFrames = client.receive()
                 .limitRate(1)
-                .<WebSocketMessage>handle((message, sink) -> {
+                .<ProviderUpload>handle((message, sink) -> {
+                    SessionRecord admissionRecord = sessions.get(record.sessionId()).orElse(null);
+                    if (admissionRecord == null || (admissionRecord.state() != SessionState.STARTED && admissionRecord.state() != SessionState.STREAMING)) {
+                        sink.error(new ClientFrameException("live stream session is terminal"));
+                        return;
+                    }
                     // Do NOT release the payload: reactor-netty owns the inbound frame and
                     // releases it after this handler returns (FluxReceive.drainReceiver ->
                     // DefaultByteBufHolder.release). Releasing the DataBuffer here drops the
@@ -339,15 +421,15 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             return;
                         }
                         if (speechmatics == null) {
-                            sink.next(upstream.textMessage(control.upstreamPayload(objectMapper)));
+                            sink.next(new ProviderUpload(upstream.textMessage(control.upstreamPayload(objectMapper)), -1L, 0L));
                         } else if (control.terminal()) {
                             // Emit an internal marker through the same serialized upload
                             // publisher. A side-channel sink can race Reactor Netty's
                             // currently handled EOF frame and leave client.receive() open.
                             // The transform below consumes this marker and completes without
                             // ever forwarding it to Speechmatics.
-                            sink.next(upstream.textMessage(
-                                    SPEECHMATICS_UPLOAD_TERMINAL_MARKER));
+                            sink.next(new ProviderUpload(upstream.textMessage(
+                                    SPEECHMATICS_UPLOAD_TERMINAL_MARKER), -1L, 0L));
                         }
                         return;
                     }
@@ -385,7 +467,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             current -> emitComputePlaneAudit(current, frame, correlationId));
                     if (outcome instanceof LiveFrameOutcome.Duplicate) {
                         duplicateFrames.increment();
-                        emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
+                        if (speechmatics == null || speechmatics.canonicalAudioAcknowledged(frame.chunkSeq())) {
+                            emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
+                        }
                         return;
                     }
                     if (!(outcome instanceof LiveFrameOutcome.Accepted)) {
@@ -398,14 +482,16 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     audioSent.set(true);
                     transcriptWindow.append(frame, record.sampleRateHz(), record.channels());
                     if (speechmatics == null) {
-                        sink.next(upstream.binaryMessage(factory ->
-                                factory.wrap(frame.toFloat32LittleEndian())));
+                        sink.next(new ProviderUpload(upstream.binaryMessage(factory ->
+                                factory.wrap(frame.toFloat32LittleEndian())), -1L, 0L));
+                        emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
                     } else {
                         speechmaticsFrameCount.incrementAndGet();
                         acceptedSamples.addAndGet(frame.pcm16().length / Short.BYTES);
-                        sink.next(upstream.binaryMessage(factory -> factory.wrap(frame.pcm16())));
+                        final long providerSequence = speechmatics.registerAudioFrame(frame.chunkSeq());
+                        sink.next(new ProviderUpload(upstream.binaryMessage(factory -> factory.wrap(frame.pcm16())),
+                                frame.chunkSeq(), providerSequence));
                     }
-                    emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
                 })
                 // The AI endpoint can spend minutes loading pinned models. Do not admit,
                 // account or forward any desktop audio until it proves the exact source
@@ -433,7 +519,11 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                 speechmaticsFrameCount.get()))
                         .flux();
         final Mono<Void> ingestClientFrames = admittedClientFrames
-                .concatMap(message -> {
+                // Four maximum-size PCM16 frames are below 10 seconds of audio.
+                // Admission alone is not delivery: hold each slot until AudioAdded.
+                .flatMapSequential(uploadFrame -> {
+                    final WebSocketMessage message = uploadFrame.message();
+                    final boolean terminal = speechmatics != null && isSpeechmaticsUploadTerminalMarker(message);
                     final Flux<WebSocketMessage> messages = speechmatics != null
                                     && isSpeechmaticsUploadTerminalMarker(message)
                             ? speechmaticsTerminalMessages
@@ -441,12 +531,18 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     return messages
                             .doOnNext(outboundMessage -> emitUpstreamUploadFrame(
                                     upstreamUploadFrames, outboundMessage))
+                            .then(uploadFrame.providerSequence() > 0L
+                                    ? speechmatics.audioAcknowledged(uploadFrame.providerSequence(), Duration.ofMillis(
+                                            properties.getDirectStt().getSpeechmatics().getAudioAckTimeoutMs()))
+                                        .doOnSuccess(ignored -> emitAudioAcknowledgement(
+                                                clientControlEvents, client, uploadFrame.canonicalSequence()))
+                                    : Mono.empty())
                             .then(Mono.fromRunnable(() -> {
-                                if (eofSent.get()) {
+                                if (terminal || (speechmatics == null && eofSent.get())) {
                                     completeUpstreamUpload(upstreamUploadFrames);
                                 }
                             }));
-                }, 1)
+                }, speechmatics == null ? 1 : 4, 1)
                 .then()
                 .doOnSuccess(ignored -> upstreamUploadFrames.tryEmitComplete())
                 .doOnError(upstreamUploadFrames::tryEmitError)
@@ -563,6 +659,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         // by cancelling another before the provider-authoritative terminal reached the user.
         return Mono.when(upload, download, ingestClientFrames).then();
     }
+
+    private record ProviderUpload(WebSocketMessage message, long canonicalSequence, long providerSequence) { }
 
     private static boolean isSpeechmaticsUploadTerminalMarker(
             final WebSocketMessage message) {

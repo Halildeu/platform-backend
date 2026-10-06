@@ -158,6 +158,81 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
 
     // ────────────────────────── Happy path + mapping ──────────────────────────
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(com.example.common.meeting.events.RecordingOutcome.class)
+    void signedClosureSurvivesPersistenceReadAndFreshCapabilityRetry(
+            com.example.common.meeting.events.RecordingOutcome outcome) {
+        UUID tenant = UUID.randomUUID();
+        UUID meeting = insertMeeting(tenant);
+        UUID run = UUID.randomUUID();
+        var body = request(SHA_A, "summary", List.of("decision"), List.of(), null);
+        String reason = outcome == com.example.common.meeting.events.RecordingOutcome.INCOMPLETE
+                ? "CLOSURE_UNCONFIRMED" : null;
+        assertThat(service.ingest(meeting, run, closureCapability(tenant, meeting, run, body, outcome), body)
+                .idempotentReplay()).isFalse();
+        var stored = runRepository.findById(run).orElseThrow();
+        assertThat(stored.getRecordingOutcome()).isEqualTo(outcome);
+        assertThat(stored.getRecordingIncompleteReason()).isEqualTo(reason);
+        var response = resultService.getLatest(new AdminTenantContext(tenant, "reader", "reader"), meeting);
+        assertThat(response.recordingOutcome()).isEqualTo(outcome);
+        assertThat(response.recordingIncompleteReason()).isEqualTo(reason);
+        assertThat(service.ingest(meeting, run, closureCapability(tenant, meeting, run, body, outcome), body)
+                .idempotentReplay()).isTrue();
+        assertThat(runCount(meeting)).isEqualTo(1);
+        assertThat(capabilityUseCount(run)).isEqualTo(2);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"UNKNOWN,FINISHED", "UNKNOWN,INCOMPLETE",
+            "FINISHED,UNKNOWN", "FINISHED,INCOMPLETE", "INCOMPLETE,UNKNOWN", "INCOMPLETE,FINISHED"})
+    void samePayloadCannotReplayWithDifferentSignedClosure(
+            com.example.common.meeting.events.RecordingOutcome original,
+            com.example.common.meeting.events.RecordingOutcome changed) {
+        UUID tenant = UUID.randomUUID();
+        UUID meeting = insertMeeting(tenant);
+        UUID run = UUID.randomUUID();
+        var body = request(SHA_A, "summary", List.of(), List.of(), null);
+        service.ingest(meeting, run, closureCapability(tenant, meeting, run, body, original), body);
+        assertThatThrownBy(() -> service.ingest(meeting, run,
+                closureCapability(tenant, meeting, run, body, changed), body))
+                .isInstanceOfSatisfying(ResponseStatusException.class, error -> {
+                    assertThat(error.getStatusCode().value()).isEqualTo(409);
+                    assertThat(error.getReason()).isEqualTo("IDEMPOTENCY_CONFLICT");
+                });
+        assertThat(capabilityUseCount(run)).isEqualTo(1);
+        assertThat(runRepository.findById(run).orElseThrow().getRecordingOutcome()).isEqualTo(original);
+    }
+
+    @Test
+    void databaseRejectsClosureRewritesAndInvalidNewPairsButAllowsOtherUpdates() {
+        UUID tenant = UUID.randomUUID();
+        UUID meeting = insertMeeting(tenant);
+        UUID run = UUID.randomUUID();
+        var body = request(SHA_A, "summary", List.of(), List.of(), null);
+        service.ingest(meeting, run, closureCapability(tenant, meeting, run, body,
+                com.example.common.meeting.events.RecordingOutcome.INCOMPLETE), body);
+        assertThatThrownBy(() -> jdbc.update("UPDATE " + SCHEMA + ".meeting_analysis_runs "
+                + "SET recording_outcome='FINISHED', recording_incomplete_reason=NULL WHERE analysis_run_id=?", run))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        for (String[] invalid : new String[][]{{"INCOMPLETE", null}, {"INCOMPLETE", "OTHER"},
+                {"FINISHED", "CLOSURE_UNCONFIRMED"}, {"UNKNOWN", "CLOSURE_UNCONFIRMED"}, {"COMPLETE", null}}) {
+            assertThatThrownBy(() -> jdbc.update("INSERT INTO " + SCHEMA + ".meeting_analysis_runs "
+                    + "(analysis_run_id, meeting_id, tenant_id, org_id, transcript_session_id, transcript_sha256, "
+                    + "analyzer_contract_version, payload_hash, generated_at, created_at, updated_at, "
+                    + "recording_outcome, recording_incomplete_reason) "
+                    + "SELECT ?, meeting_id, tenant_id, org_id, transcript_session_id, transcript_sha256, "
+                    + "analyzer_contract_version, payload_hash, generated_at, created_at, updated_at, ?, ? "
+                    + "FROM " + SCHEMA + ".meeting_analysis_runs WHERE analysis_run_id=?",
+                    UUID.randomUUID(), invalid[0], invalid[1], run))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+        }
+        assertThat(jdbc.update("UPDATE " + SCHEMA + ".meeting_analysis_runs "
+                + "SET legal_hold=true WHERE analysis_run_id=?", run)).isEqualTo(1);
+        assertThat(runCount(meeting)).isEqualTo(1);
+        assertThat(runRepository.findById(run).orElseThrow().getRecordingOutcome())
+                .isEqualTo(com.example.common.meeting.events.RecordingOutcome.INCOMPLETE);
+    }
+
     @Test
     void relativeDueText_persistsReopensRetriesAndRetainsTenantIsolation() {
         UUID tenantId = UUID.randomUUID();
@@ -754,12 +829,17 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
 
     @Test
     void raceRecoveryArm_sameKeySamePayload_loserReconcilesTo200Replay() throws Exception {
-        assertRaceRecoveryArm(true);
+        assertRaceRecoveryArm(true, true);
     }
 
     @Test
     void raceRecoveryArm_sameKeyDifferentPayload_loserReconcilesTo409() throws Exception {
-        assertRaceRecoveryArm(false);
+        assertRaceRecoveryArm(false, true);
+    }
+
+    @Test
+    void raceRecoveryArm_samePayloadDifferentClosure_loserReconcilesTo409() throws Exception {
+        assertRaceRecoveryArm(true, false);
     }
 
     /**
@@ -770,7 +850,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
      * releasing the seed commits the winner and the main path fails with a unique
      * violation and reconciles.
      */
-    private void assertRaceRecoveryArm(boolean samePayload) throws Exception {
+    private void assertRaceRecoveryArm(boolean samePayload, boolean sameClosure) throws Exception {
         UUID org = UUID.randomUUID();
         UUID meetingId = insertMeeting(org);
         UUID runId = UUID.randomUUID();
@@ -796,7 +876,9 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
 
             Future<Object> main = exec.submit(() -> {
                 try {
-                    return ingest(meetingId, runId, request);
+                    return sameClosure ? ingest(meetingId, runId, request)
+                            : service.ingest(meetingId, runId, closureCapability(org, meetingId, runId, request,
+                                    com.example.common.meeting.events.RecordingOutcome.INCOMPLETE), request);
                 } catch (ResponseStatusException e) {
                     return e;
                 }
@@ -809,7 +891,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
             Object result = main.get(30, SECONDS);
             seed.get(15, SECONDS);
 
-            if (samePayload) {
+            if (samePayload && sameClosure) {
                 assertThat(result).isInstanceOf(MeetingAnalysisResultIngestResponse.class);
                 assertThat(((MeetingAnalysisResultIngestResponse) result).idempotentReplay()).isTrue();
             } else {
@@ -818,6 +900,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
             }
             assertThat(runCount(meetingId)).isEqualTo(1);
             assertThat(decisionCount(meetingId) + actionCount(meetingId)).isZero();
+            if (!sameClosure) assertThat(capabilityUseCount(runId)).isZero();
         } finally {
             exec.shutdownNow();
         }
@@ -826,6 +909,17 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     // ────────────────────────── helpers ──────────────────────────
 
     private enum Outcome { CREATED, REPLAY, CONFLICT }
+
+    private String closureCapability(UUID tenant, UUID meeting, UUID run,
+            MeetingAnalysisResultIngestRequest body, com.example.common.meeting.events.RecordingOutcome outcome) {
+        Map<String, Object> claims = new java.util.HashMap<>();
+        claims.put("recording_outcome", outcome.name());
+        if (outcome == com.example.common.meeting.events.RecordingOutcome.INCOMPLETE) {
+            claims.put("recording_incomplete_reason", "CLOSURE_UNCONFIRMED");
+        }
+        return AnalysisJobCapabilityTestTokens.withClaims(
+                AnalysisJobCapabilityTestTokens.issue(tenant, meeting, run, body), claims);
+    }
 
     private static Outcome classify(java.util.function.Supplier<MeetingAnalysisResultIngestResponse> call) {
         try {

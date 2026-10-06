@@ -69,9 +69,26 @@ class TranscriptAssociationMigrationIntegrationTest {
         insertPreEpochWindowSegment(tenant, meeting, "SES-legacy", 47L, 995L, 997L);
         insertPreEpochWindowSegment(tenant, meeting, "SES-legacy", 398L, 995L, 997L);
 
+        migrateTo("14");
+        try (Connection connection = connection();
+             var statement = connection.prepareStatement("UPDATE " + SCHEMA
+                     + ".transcript_session_associations SET recording_finished_at=? WHERE session_id=?")) {
+            statement.setTimestamp(1, Timestamp.from(Instant.parse("2026-09-26T18:53:00.123456Z")));
+            statement.setObject(2, finalizedSession);
+            statement.executeUpdate();
+        }
         migrateTo(null);
 
         try (Connection connection = connection()) {
+            assertThat(singleString(connection, "SELECT recording_outcome FROM " + SCHEMA
+                    + ".transcript_session_associations WHERE session_id=?", finalizedSession))
+                    .isEqualTo("FINISHED");
+            assertThat(singleString(connection, "SELECT recording_outcome FROM " + SCHEMA
+                    + ".transcript_finalizations WHERE id=?", legacyFinalization))
+                    .isEqualTo("UNKNOWN");
+            assertThat(singleString(connection, "SELECT recording_outcome FROM " + SCHEMA
+                    + ".transcript_session_associations WHERE tenant_id=? AND meeting_id=? AND source_session_id='SES-legacy'",
+                    tenant, meeting)).isEqualTo("UNKNOWN");
             assertThat(singleLong(connection,
                     "SELECT count(*) FROM " + SCHEMA + ".transcript_session_associations "
                             + "WHERE tenant_id = ? AND meeting_id = ? AND source_session_id = 'SES-legacy'",

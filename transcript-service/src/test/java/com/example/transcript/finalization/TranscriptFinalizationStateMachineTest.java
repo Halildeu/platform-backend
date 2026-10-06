@@ -8,6 +8,9 @@ import com.example.transcript.model.TranscriptSessionAssociation;
 import java.time.Duration;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import com.example.common.meeting.events.RecordingOutcome;
 
 class TranscriptFinalizationStateMachineTest {
 
@@ -77,6 +80,9 @@ class TranscriptFinalizationStateMachineTest {
     @Test
     void distinctContentAfterFinalizationOpensNextRevisionCycle() {
         TranscriptSessionAssociation association = association(TranscriptFinalizationState.FINALIZED, 3, 3);
+        association.setRecordingClosure(RecordingOutcome.FINISHED, null);
+        association.setRecordingFinishedAt(Instant.parse("2026-07-17T10:00:00Z"));
+        association.setFinishObservedAt(Instant.parse("2026-07-17T10:00:01Z"));
         Instant changedAt = Instant.parse("2026-07-17T11:00:00.123456789Z");
 
         stateMachine.recordDistinctContent(association, changedAt);
@@ -102,6 +108,97 @@ class TranscriptFinalizationStateMachineTest {
         assertThatThrownBy(() -> stateMachine.observeRecordingFinished(
                 association, finishedAt.plusSeconds(1), finishedAt.plusSeconds(6)))
                 .isInstanceOf(TranscriptFinalizationStateMachine.FinalizationScopeConflictException.class);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = RecordingOutcome.class, names = {"FINISHED", "INCOMPLETE"})
+    void firstClosureAfterEditorialSnapshotStartsFreshVersionWithoutRewritingPriorVersion(RecordingOutcome outcome) {
+        var association = association(TranscriptFinalizationState.FINALIZED, 3, 3);
+        Instant closedAt = Instant.parse("2026-07-17T10:00:00Z");
+        Instant observedAt = closedAt.plusSeconds(30);
+        observe(association, outcome, closedAt, observedAt);
+
+        assertThat(association.getRecordingOutcome()).isEqualTo(outcome);
+        assertThat(association.getFinalizationVersion()).isEqualTo(3);
+        assertThat(association.getFinalizationCycleVersion()).isEqualTo(4);
+        assertThat(association.getFinalizationState()).isEqualTo(TranscriptFinalizationState.QUIESCING);
+        assertThat(association.getMinWaitAt()).isEqualTo(observedAt.plusSeconds(360));
+        assertThat(association.getMaxWaitAt()).isEqualTo(observedAt.plusSeconds(900));
+        observe(association, outcome, closedAt, observedAt.plusSeconds(120));
+        assertThat(association.getFinishObservedAt()).isEqualTo(observedAt);
+        assertThat(association.getFinalizationCycleVersion()).isEqualTo(4);
+        assertThat(association.getMaxWaitAt()).isEqualTo(observedAt.plusSeconds(900));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = RecordingOutcome.class, names = {"FINISHED", "INCOMPLETE"})
+    void mutuallyExclusiveClosureCannotReplaceStoredOutcome(RecordingOutcome first) {
+        var association = association(TranscriptFinalizationState.AWAITING_FINISH, 0, 0);
+        Instant time = Instant.parse("2026-07-17T10:00:00Z");
+        observe(association, first, time, time);
+        RecordingOutcome other = first == RecordingOutcome.FINISHED
+                ? RecordingOutcome.INCOMPLETE : RecordingOutcome.FINISHED;
+        assertThatThrownBy(() -> observe(association, other, time, time.plusSeconds(1)))
+                .isInstanceOf(TranscriptFinalizationStateMachine.FinalizationScopeConflictException.class);
+        assertThat(association.getRecordingOutcome()).isEqualTo(first);
+        assertThat(association.getFinishObservedAt()).isEqualTo(time);
+    }
+
+    @Test
+    void editorialContentBeforeClosureDoesNotEnterInvalidQuiescenceState() {
+        var association = association(TranscriptFinalizationState.FINALIZED, 2, 2);
+        Instant changedAt = Instant.parse("2026-07-17T10:00:00Z");
+        stateMachine.recordDistinctContent(association, changedAt);
+        assertThat(association.getLastContentChangedAt()).isEqualTo(changedAt);
+        assertThat(association.getFinalizationState()).isEqualTo(TranscriptFinalizationState.FINALIZED);
+        assertThat(association.getFinalizationCycleVersion()).isEqualTo(2);
+        assertThat(association.getQuiescenceDueAt()).isNull();
+        observe(association, RecordingOutcome.INCOMPLETE, changedAt.plusSeconds(1), changedAt.plusSeconds(2));
+        assertThat(association.getFinalizationCycleVersion()).isEqualTo(3);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = TranscriptFinalizationState.class, names = {"FINALIZED", "TIMED_OUT"})
+    void incompleteReplayDoesNotReopenTerminalCycleButLateContentDoes(TranscriptFinalizationState terminal) {
+        var association = association(TranscriptFinalizationState.AWAITING_FINISH, 0, 0);
+        Instant time = Instant.parse("2026-07-17T10:00:00Z");
+        observe(association, RecordingOutcome.INCOMPLETE, time, time);
+        if (terminal == TranscriptFinalizationState.FINALIZED) stateMachine.markFinalized(association);
+        else stateMachine.markTimedOut(association, "NO_VALID_SEGMENTS_BEFORE_DEADLINE");
+        observe(association, RecordingOutcome.INCOMPLETE, time, time.plusSeconds(1000));
+        assertThat(association.getFinalizationState()).isEqualTo(terminal);
+        assertThat(association.getFinalizationCycleVersion()).isEqualTo(1);
+        assertThat(association.getQuiescenceDueAt()).isNull();
+        stateMachine.recordDistinctContent(association, time.plusSeconds(1200));
+        assertThat(association.getFinalizationState()).isEqualTo(TranscriptFinalizationState.QUIESCING);
+        assertThat(association.getFinalizationCycleVersion()).isEqualTo(2);
+        assertThat(association.getRecordingOutcome()).isEqualTo(RecordingOutcome.INCOMPLETE);
+        assertThat(association.getRecordingIncompleteReason()).isEqualTo("CLOSURE_UNCONFIRMED");
+        assertThat(association.getQuiescenceDueAt()).isEqualTo(time.plusSeconds(1260));
+    }
+
+    @Test
+    void lateContentRepairsLegacyMissingObservationMarkerWithoutInventingHistoricalTime() {
+        var association = association(TranscriptFinalizationState.FINALIZED, 3, 3);
+        Instant closedAt = Instant.parse("2026-07-17T10:00:00Z");
+        association.setRecordingClosure(RecordingOutcome.FINISHED, null);
+        association.setRecordingFinishedAt(closedAt);
+        Instant changedAt = closedAt.plusSeconds(3600);
+        stateMachine.recordDistinctContent(association, changedAt);
+        assertThat(association.getFinishObservedAt()).isEqualTo(changedAt);
+        assertThat(association.getFinalizationCycleVersion()).isEqualTo(4);
+        assertThat(association.getRecordingFinishedAt()).isEqualTo(closedAt);
+        assertThat(association.getQuiescenceDueAt()).isEqualTo(changedAt.plusSeconds(60));
+        assertThat(association.getMaxWaitAt()).isEqualTo(changedAt.plusSeconds(900));
+    }
+
+    private void observe(TranscriptSessionAssociation association, RecordingOutcome outcome,
+            Instant closedAt, Instant observedAt) {
+        if (outcome == RecordingOutcome.INCOMPLETE) {
+            stateMachine.observeRecordingIncomplete(association, closedAt, observedAt, "CLOSURE_UNCONFIRMED");
+        } else {
+            stateMachine.observeRecordingFinished(association, closedAt, observedAt);
+        }
     }
 
     private TranscriptSessionAssociation association(

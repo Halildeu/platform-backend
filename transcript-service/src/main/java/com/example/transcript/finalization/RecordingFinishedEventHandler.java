@@ -22,7 +22,7 @@ public class RecordingFinishedEventHandler {
 
     public HandleOutcome handle(Map<String, String> fields) {
         try {
-            RecordingFinishedEvent event = parser.parse(fields);
+            RecordingClosureEvent event = parser.parse(fields);
             if (event == null) {
                 return new HandleOutcome(HandleResult.IGNORED, "OTHER_EVENT_TYPE");
             }

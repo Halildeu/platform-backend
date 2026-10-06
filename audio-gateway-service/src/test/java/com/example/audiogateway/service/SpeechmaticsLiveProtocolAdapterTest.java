@@ -16,6 +16,26 @@ class SpeechmaticsLiveProtocolAdapterTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
+    void preservesOnlyAllowlistedProviderErrorTypesWithoutSensitiveReasons() throws Exception {
+        for (String code : List.of("buffer_error", "data_error", "job_error", "not_authorised",
+                "not_allowed", "quota_exceeded", "timelimit_exceeded", "idle_timeout", "invalid_message")) {
+            var input = objectMapper.createObjectNode().put("message", "Error")
+                    .put("type", code).put("reason", "PRIVATE transcript token");
+            var output = adapter().translate(input.toString(), 0).getFirst();
+            assertThat(output).doesNotContain("PRIVATE", "reason");
+            assertThat(objectMapper.readTree(output).path("msg").asText())
+                    .isEqualTo("SPEECHMATICS_" + code.toUpperCase(java.util.Locale.ROOT));
+            assertThat(objectMapper.readTree(output).size()).isEqualTo(2);
+        }
+        for (String type : List.of("unknown", "PRIVATE", "buffer_error PRIVATE")) {
+            var input = objectMapper.createObjectNode().put("message", "Error")
+                    .put("type", type).put("reason", "PRIVATE");
+            assertThat(adapter().translate(input.toString(), 0))
+                    .containsExactly("{\"type\":\"error\",\"msg\":\"speechmatics stream failed\"}");
+        }
+    }
+
+    @Test
     void requestsAnonymousDiarizationAndPreservesOverlappingWordAttribution() throws Exception {
         var adapter = adapter();
         var config = objectMapper.readTree(adapter.startMessage(16000)).path("transcription_config");

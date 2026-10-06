@@ -23,6 +23,13 @@ public record RecordingLifecycleSyncRequest(
         @NotNull Instant startedAt,
         Instant endedAt) {
 
+    /** PostgreSQL stores microseconds; accepting finer values breaks exact retry after reload. */
+    @AssertTrue(message = "recording times must use microsecond precision or coarser")
+    public boolean isStoragePrecisionSupported() {
+        return (startedAt == null || startedAt.getNano() % 1000 == 0)
+                && (endedAt == null || endedAt.getNano() % 1000 == 0);
+    }
+
     @AssertTrue(message = "endedAt must not be before startedAt")
     public boolean isChronological() {
         return startedAt == null || endedAt == null || !endedAt.isBefore(startedAt);

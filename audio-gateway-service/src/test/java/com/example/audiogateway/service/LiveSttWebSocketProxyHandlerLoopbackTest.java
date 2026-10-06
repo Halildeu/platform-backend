@@ -129,6 +129,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     @BeforeEach
     void setUp() {
         sessions = mock(AudioSessionRegistry.class);
+        org.mockito.Mockito.lenient().when(sessions.abandonment(any())).thenReturn(Mono.never());
         auditSink = mock(AudioGatewayAuditSink.class);
         meters = new SimpleMeterRegistry();
         upstreamClient = new ReactorNettyWebSocketClient();
@@ -579,9 +580,135 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
     }
 
     @Test
+    void speechmaticsProviderErrorReachesClientBeforePendingReceiptIsCancelled() {
+        final ReceiptProbe probe = receiptProbe();
+        probe.send(0L);
+        awaitReceiptCondition(() -> probe.providerFrames.get() == 1);
+        probe.providerEvents.emitNext(
+                "{\"message\":\"Error\",\"type\":\"buffer_error\",\"reason\":\"private detail\"}",
+                Sinks.EmitFailureHandler.FAIL_FAST);
+        awaitReceiptCondition(() -> probe.closed.get() != null);
+        assertThat(probe.events.stream().filter(value -> value.contains("\"type\":\"error\"")))
+                .containsExactly("{\"type\":\"error\",\"msg\":\"SPEECHMATICS_BUFFER_ERROR\"}");
+        assertThat(probe.events).noneMatch(value -> value.contains("audio_ack") || value.contains("private detail"));
+        assertThat(probe.closed.get()).isEqualTo(CloseStatus.SERVER_ERROR);
+        probe.handler.destroy();
+    }
+
+    @Test
+    void speechmaticsFifthFrameWaitsForProviderReceiptBeforeForwarding() {
+        final ReceiptProbe probe = receiptProbe();
+        for (long seq = 0L; seq < 5L; seq++) probe.send(seq);
+        awaitReceiptCondition(() -> probe.providerFrames.get() == 4);
+        // Keep the provider deliberately silent across multiple event-loop ticks.
+        Mono.delay(Duration.ofMillis(150)).block();
+        assertThat(probe.providerFrames).hasValue(4);
+        assertThat(probe.events).noneMatch(value -> value.contains("audio_ack"));
+        probe.ack(1L);
+        awaitReceiptCondition(() -> probe.providerFrames.get() == 5);
+        awaitReceiptCondition(() -> probe.events.contains(audioAcknowledgement(0L)));
+        assertThat(probe.events).doesNotContain(audioAcknowledgement(1L));
+        probe.handler.destroy();
+    }
+
+    @Test
+    void speechmaticsPendingDuplicateWaitsAndConfirmedDuplicateRepeatsReceiptOnly() {
+        final ReceiptProbe probe = receiptProbe();
+        probe.send(0L);
+        probe.send(0L);
+        awaitReceiptCondition(() -> probe.providerFrames.get() == 1 && meters.counter(
+                "audio_gateway_live_stream_frames_total", "outcome", "duplicate").count() == 1);
+        assertThat(probe.events).noneMatch(value -> value.contains("audio_ack"));
+        probe.ack(1L);
+        awaitReceiptCondition(() -> probe.events.contains(audioAcknowledgement(0L)));
+        probe.send(0L);
+        awaitReceiptCondition(() -> probe.events.stream().filter(audioAcknowledgement(0L)::equals).count() == 2);
+        assertThat(probe.providerFrames).hasValue(1);
+        probe.handler.destroy();
+    }
+
+    @Test
+    void speechmaticsPreviousBridgeDuplicateCannotClaimProviderReceipt() {
+        lastRelayedLiveSequence.set(0L);
+        final ReceiptProbe probe = receiptProbe();
+        probe.send(0L);
+        awaitReceiptCondition(() -> probe.closed.get() != null);
+        assertThat(probe.events).noneMatch(value -> value.contains("audio_ack"));
+        assertThat(probe.providerFrames).hasValue(0);
+        assertThat(probe.closed.get()).isEqualTo(CloseStatus.SERVER_ERROR);
+        probe.handler.destroy();
+    }
+
+    private ReceiptProbe receiptProbe() {
+        final Sinks.Many<String> providerEvents = Sinks.many().unicast().onBackpressureBuffer();
+        final AtomicInteger providerFrames = new AtomicInteger();
+        upstreamServer = HttpServer.create().host("127.0.0.1").port(0)
+                .route(routes -> routes.ws("/v2/tr", (in, out) -> Mono.when(
+                        in.receiveFrames().doOnNext(frame -> {
+                            if (frame instanceof BinaryWebSocketFrame) providerFrames.incrementAndGet();
+                            if (frame instanceof TextWebSocketFrame text && text.text().contains("StartRecognition")) {
+                                providerEvents.emitNext("{\"message\":\"RecognitionStarted\"}",
+                                        Sinks.EmitFailureHandler.FAIL_FAST);
+                            }
+                        }).then(), out.sendString(providerEvents.asFlux()).then())))
+                .bindNow();
+        final AudioGatewayProperties properties = new AudioGatewayProperties();
+        properties.getDirectStt().getStreaming().setEnabled(true);
+        properties.getDirectStt().getStreaming().setStreamUrl("ws://unused/ws/stream");
+        properties.getDirectStt().getSpeechmatics().setRealtimeUrl(
+                "ws://127.0.0.1:" + upstreamServer.port() + "/v2");
+        properties.getDirectStt().getSpeechmatics().setAllowInsecure(true);
+        properties.getDirectStt().getSpeechmatics().setApiKey("fixture-key");
+        properties.getDirectStt().getSpeechmatics().setAudioAckTimeoutMs(5000);
+        when(sessions.get("session-1")).thenReturn(Optional.of(speechmaticsStreamingSession(1L, 4L)));
+        final LiveSttWebSocketProxyHandler handler = new LiveSttWebSocketProxyHandler(
+                sessions, properties, auditSink, DirectSttTranscriptResultSink.noop(),
+                upstreamClient, upstreamClient, new ObjectMapper(), meters);
+        final NettyDataBufferFactory factory = new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
+        final Sinks.Many<WebSocketMessage> inbound = Sinks.many().unicast().onBackpressureBuffer();
+        final List<String> events = new CopyOnWriteArrayList<>();
+        final AtomicReference<CloseStatus> closed = new AtomicReference<>();
+        final WebSocketSession client = mock(WebSocketSession.class);
+        when(client.getHandshakeInfo()).thenReturn(new HandshakeInfo(
+                URI.create("ws://gateway/api/v1/audio-gateway/sessions/session-1/stream"),
+                new HttpHeaders(), Mono.just(ownerJwt()), null));
+        when(client.receive()).thenReturn(inbound.asFlux());
+        when(client.textMessage(anyString())).thenAnswer(call -> textFrame(factory, call.getArgument(0)));
+        when(client.send(any(Publisher.class))).thenAnswer(call ->
+                Flux.from(call.<Publisher<WebSocketMessage>>getArgument(0))
+                        .doOnNext(message -> events.add(message.getPayloadAsText())).then());
+        when(client.close(any(CloseStatus.class))).thenAnswer(call -> {
+            closed.set(call.getArgument(0));
+            return Mono.empty();
+        });
+        handleSubscription = handler.handle(client).subscribe();
+        return new ReceiptProbe(handler, factory, inbound, events, closed, providerFrames, providerEvents);
+    }
+
+    private record ReceiptProbe(LiveSttWebSocketProxyHandler handler, NettyDataBufferFactory factory,
+            Sinks.Many<WebSocketMessage> inbound, List<String> events, AtomicReference<CloseStatus> closed,
+            AtomicInteger providerFrames, Sinks.Many<String> providerEvents) {
+        void send(long sequence) {
+            inbound.emitNext(binaryFrame(factory, sequence), Sinks.EmitFailureHandler.FAIL_FAST);
+        }
+        void ack(long sequence) {
+            providerEvents.emitNext("{\"message\":\"AudioAdded\",\"seq_no\":" + sequence + "}",
+                    Sinks.EmitFailureHandler.FAIL_FAST);
+        }
+    }
+
+    private static void awaitReceiptCondition(java.util.function.BooleanSupplier condition) {
+        final Instant deadline = Instant.now().plus(TEST_TIMEOUT);
+        while (!condition.getAsBoolean() && Instant.now().isBefore(deadline)) sleepQuietly();
+        assertThat(condition.getAsBoolean()).as("receipt fixture condition within timeout").isTrue();
+    }
+
+    @Test
     void speechmaticsEofFlushesAndRelaysDelayedProviderTerminalWithoutCancellation() {
         final ObjectMapper mapper = new ObjectMapper();
         final AtomicLong audioSequence = new AtomicLong();
+        final AtomicBoolean providerAckProduced = new AtomicBoolean();
+        final AtomicBoolean prematureClientAck = new AtomicBoolean();
         final AtomicLong terminalSequence = new AtomicLong(-1L);
         final AtomicBoolean providerTerminalSent = new AtomicBoolean();
         final AtomicBoolean providerClosedBeforeTerminal = new AtomicBoolean();
@@ -596,7 +723,9 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                                 final long sequence = audioSequence.incrementAndGet();
                                 return Flux.just(new TextWebSocketFrame(
                                         "{\"message\":\"AudioAdded\",\"seq_no\":"
-                                                + sequence + "}"));
+                                                + sequence + "}"))
+                                        .delayElements(Duration.ofMillis(sequence == 1L ? 300L : 0L))
+                                        .doOnNext(ignored -> providerAckProduced.set(true));
                             }
                             if (!(frame instanceof TextWebSocketFrame text)) {
                                 return Flux.empty();
@@ -654,7 +783,13 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                 textFrame(clientFactory, invocation.getArgument(0)));
         when(client.send(any(Publisher.class))).thenAnswer(invocation ->
                 Flux.from(invocation.<Publisher<WebSocketMessage>>getArgument(0))
-                        .doOnNext(message -> relayedText.add(message.getPayloadAsText()))
+                        .doOnNext(message -> {
+                            String value = message.getPayloadAsText();
+                            relayedText.add(value);
+                            if (value.equals(audioAcknowledgement(0L)) && !providerAckProduced.get()) {
+                                prematureClientAck.set(true);
+                            }
+                        })
                         .then());
         when(client.close(any(CloseStatus.class))).thenAnswer(invocation -> {
             closeStatus.set(invocation.getArgument(0));
@@ -683,6 +818,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
             sleepQuietly();
         }
 
+        assertThat(prematureClientAck).as("mobile must not erase PCM before provider acknowledgement").isFalse();
         assertThat(audioSequence).hasValue(32L);
         assertThat(terminalSequence).hasValue(32L);
         assertThat(providerTerminalSent).isTrue();

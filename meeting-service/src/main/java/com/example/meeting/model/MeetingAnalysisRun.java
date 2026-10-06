@@ -1,5 +1,9 @@
 package com.example.meeting.model;
 
+import com.example.common.meeting.events.RecordingOutcome;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -79,6 +83,22 @@ public class MeetingAnalysisRun {
     /** Metadata-only replay identity. The signed capability itself is never persisted. */
     @Column(name = "job_capability_id")
     private UUID jobCapabilityId;
+
+    /** Copied from the signed immutable transcript occurrence, never from AI output. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "recording_outcome", nullable = false, length = 16, updatable = false)
+    private RecordingOutcome recordingOutcome = RecordingOutcome.UNKNOWN;
+
+    @Column(name = "recording_incomplete_reason", length = 32, updatable = false)
+    private String recordingIncompleteReason;
+
+    public RecordingOutcome getRecordingOutcome() { return recordingOutcome; }
+    public String getRecordingIncompleteReason() { return recordingIncompleteReason; }
+    public void setRecordingClosure(RecordingOutcome outcome, String reason) {
+        java.util.Objects.requireNonNull(outcome).validateReason(reason);
+        recordingOutcome = outcome;
+        recordingIncompleteReason = reason;
+    }
 
     @Column(name = "legal_hold", nullable = false)
     private boolean legalHold;

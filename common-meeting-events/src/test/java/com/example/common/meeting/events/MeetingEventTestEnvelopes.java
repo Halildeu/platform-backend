@@ -93,6 +93,25 @@ final class MeetingEventTestEnvelopes {
                 .build();
     }
 
+    static MeetingEventEnvelope recordingIncomplete() {
+        return MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.RECORDING_INCOMPLETE)
+                .producer("meeting-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .orgId(MeetingEventGoldens.ORG_ID)
+                .occurredAt(MeetingEventGoldens.GENERATED_AT)
+                .aggregateType("meeting.recording")
+                .aggregateId(MeetingEventGoldens.RECORDING_SESSION_ID)
+                .aggregateRevision(1)
+                .payload(new MeetingEventPayload.RecordingIncomplete(
+                        MeetingEventGoldens.RECORDING_SESSION_ID,
+                        MeetingEventGoldens.EXTERNAL_SESSION_ID,
+                        MeetingEventGoldens.GENERATED_AT,
+                        MeetingEventPayload.RecordingIncomplete.CLOSURE_UNCONFIRMED))
+                .build();
+    }
+
     static MeetingEventEnvelope actionReassigned() {
         return MeetingEventEnvelope.builder()
                 .eventType(MeetingEventType.ACTION_REASSIGNED)

@@ -70,6 +70,8 @@ class TranscriptFinalizationServiceTest {
         when(association.getFinalizationVersion()).thenAnswer(ignored -> currentVersion.get());
         when(association.getFinalizationCycleVersion()).thenAnswer(ignored -> currentCycleVersion.get());
         when(association.getFinalizationState()).thenAnswer(ignored -> currentState.get());
+        when(association.getRecordingOutcome()).thenReturn(
+                com.example.common.meeting.events.RecordingOutcome.UNKNOWN);
         doAnswer(invocation -> {
             currentVersion.set(invocation.getArgument(0));
             return null;
@@ -198,6 +200,29 @@ class TranscriptFinalizationServiceTest {
                 .satisfies(error -> assertThat(((ResponseStatusException) error).getStatusCode().value())
                         .isEqualTo(404));
         verify(outbox, never()).save(any());
+    }
+
+    @Test
+    void closureAfterEditorialFinalizationKeepsOldSnapshotAndActiveNewCycleOnReplay() {
+        var created = service.finalizeTranscript(context(), MEETING, SESSION, 1L);
+        var prior = storedFinalization.get();
+        when(association.getRecordingOutcome()).thenReturn(
+                com.example.common.meeting.events.RecordingOutcome.INCOMPLETE);
+        when(association.getRecordingIncompleteReason()).thenReturn("CLOSURE_UNCONFIRMED");
+        currentCycleVersion.set(2);
+        currentState.set(TranscriptFinalizationState.QUIESCING);
+        clearInvocations(association);
+
+        assertThat(service.finalizeTranscript(context(), MEETING, SESSION, 1L)).isEqualTo(created);
+        assertThat(prior.getRecordingOutcome()).isEqualTo(com.example.common.meeting.events.RecordingOutcome.UNKNOWN);
+        verify(association, never()).setFinalizationState(any());
+        verify(association, never()).setQuiescenceDueAt(any());
+        service.finalizeTranscript(context(), MEETING, SESSION, 2L);
+        assertThat(storedFinalization.get().getRecordingOutcome())
+                .isEqualTo(com.example.common.meeting.events.RecordingOutcome.INCOMPLETE);
+        assertThat(storedFinalization.get().getRecordingIncompleteReason()).isEqualTo("CLOSURE_UNCONFIRMED");
+        assertThat(storedFinalization.get().getCanonicalTranscript()).isEqualTo(prior.getCanonicalTranscript());
+        assertThat(storedFinalization.get().getId()).isNotEqualTo(prior.getId());
     }
 
     private TranscriptSegment finalSegment(String text) {

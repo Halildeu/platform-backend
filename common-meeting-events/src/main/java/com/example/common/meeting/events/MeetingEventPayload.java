@@ -21,6 +21,7 @@ import java.util.UUID;
 public sealed interface MeetingEventPayload
         permits MeetingEventPayload.SummaryReady, MeetingEventPayload.ActionAssigned,
         MeetingEventPayload.ConsentRevoked, MeetingEventPayload.RecordingFinished,
+        MeetingEventPayload.RecordingIncomplete,
         MeetingEventPayload.TranscriptReady, MeetingEventPayload.TranscriptFailed,
         MeetingEventPayload.ActionReassigned {
 
@@ -151,6 +152,26 @@ public sealed interface MeetingEventPayload
         @Override
         public MeetingEventType eventType() {
             return MeetingEventType.RECORDING_FINISHED;
+        }
+
+        @Override
+        public UUID analysisRunId() {
+            return null;
+        }
+    }
+
+    /** Metadata-only terminal closure; it does not assert successful audio delivery. */
+    record RecordingIncomplete(
+            UUID recordingSessionId,
+            String externalSessionId,
+            Instant closedAt,
+            String reasonCode) implements MeetingEventPayload {
+
+        public static final String CLOSURE_UNCONFIRMED = "CLOSURE_UNCONFIRMED";
+
+        @Override
+        public MeetingEventType eventType() {
+            return MeetingEventType.RECORDING_INCOMPLETE;
         }
 
         @Override

@@ -19,7 +19,7 @@ class RecordingFinishedEventParserTest {
 
     @Test
     void parsesFrozenWireAndDerivesContentHash() {
-        RecordingFinishedEvent event = parser.parse(validFields());
+        RecordingFinishedEvent event = (RecordingFinishedEvent) parser.parse(validFields());
 
         assertThat(event.tenantId()).isEqualTo(TENANT);
         assertThat(event.meetingId()).isEqualTo(MEETING);
@@ -82,6 +82,60 @@ class RecordingFinishedEventParserTest {
         assertThatThrownBy(() -> parser.parse(fields))
                 .isInstanceOf(RecordingFinishedEventParser.RecordingFinishedEventInvalidException.class)
                 .hasMessage("SOURCE_SESSION_FORMAT");
+    }
+
+    @Test
+    void parsesActualProducerIncompleteWireAsDistinctClosure() {
+        var event = (RecordingIncompleteEvent) parser.parse(incompleteFields());
+        assertThat(event.eventType()).isEqualTo("meeting.recording.incomplete");
+        assertThat(event.eventKey()).isEqualTo("meeting.recording|" + SESSION + "|meeting.recording.incomplete|1");
+        assertThat(event.closedAt()).isEqualTo(Instant.parse("2026-07-17T10:05:00.123456Z"));
+        assertThat(event.reasonCode()).isEqualTo("CLOSURE_UNCONFIRMED");
+        assertThat(event.recordingSessionId()).isEqualTo(SESSION);
+        assertThat(event.payloadSha256()).matches("[0-9a-f]{64}");
+    }
+
+    @Test
+    void incompleteRejectsWrongReasonSubmicrosecondTimeAndMismatchedGeneratedTime() {
+        for (String replacement : new String[]{
+                incompleteFields().get("payload").replace("CLOSURE_UNCONFIRMED", "UNKNOWN"),
+                incompleteFields().get("payload").replace(".123456Z", ".123456789Z"),
+                incompleteFields().get("payload").replaceFirst("10:05:00", "10:05:01")}) {
+            Map<String, String> fields = incompleteFields();
+            fields.put("payload", replacement);
+            assertThatThrownBy(() -> parser.parse(fields))
+                    .isInstanceOf(RecordingFinishedEventParser.RecordingFinishedEventInvalidException.class);
+        }
+    }
+
+    @Test
+    void incompleteCannotMasqueradeAsFinishedOrChangeOuterScope() {
+        Map<String, String> fields = incompleteFields();
+        fields.put("eventType", "meeting.recording.finished");
+        assertThatThrownBy(() -> parser.parse(fields))
+                .isInstanceOf(RecordingFinishedEventParser.RecordingFinishedEventInvalidException.class);
+        fields.put("eventType", "meeting.recording.incomplete");
+        fields.put("eventKey", "meeting.recording|" + SESSION + "|meeting.recording.finished|1");
+        assertThatThrownBy(() -> parser.parse(fields))
+                .isInstanceOf(RecordingFinishedEventParser.RecordingFinishedEventInvalidException.class)
+                .hasMessage("OUTER_EVENTKEY");
+    }
+
+    private Map<String, String> incompleteFields() {
+        var time = Instant.parse("2026-07-17T10:05:00.123456Z");
+        var envelope = com.example.common.meeting.events.MeetingEventEnvelope.builder()
+                .eventType(com.example.common.meeting.events.MeetingEventType.RECORDING_INCOMPLETE)
+                .producer("meeting-service").tenantId(TENANT).orgId(TENANT).meetingId(MEETING)
+                .aggregateType("meeting.recording").aggregateId(SESSION).aggregateRevision(1L)
+                .occurredAt(time)
+                .payload(new com.example.common.meeting.events.MeetingEventPayload.RecordingIncomplete(
+                        SESSION, "SES-desktop-1", time, "CLOSURE_UNCONFIRMED"))
+                .build();
+        var fields = validFields();
+        fields.put("eventType", "meeting.recording.incomplete");
+        fields.put("eventKey", envelope.eventKey());
+        fields.put("payload", com.example.common.meeting.events.MeetingEventV1Serializer.toJson(envelope));
+        return fields;
     }
 
     private Map<String, String> validFields() {

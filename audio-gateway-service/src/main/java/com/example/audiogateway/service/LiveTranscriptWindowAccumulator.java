@@ -12,11 +12,11 @@ import java.util.HexFormat;
  * <p>The producer reports absolute sample coordinates taken before final inference starts.
  * Keeping a bounded history, instead of consuming every frame visible when the final arrives,
  * preserves correct metadata when inference overlaps later audio or deliberately reuses a tail.
- * Raw PCM remains connection-local, bounded by configuration, and is never logged or persisted.
+ * Raw PCM remains provider-bridge-local, bounded by configuration, and is never logged or persisted.
  */
 final class LiveTranscriptWindowAccumulator {
 
-    /** This accumulator owns one sequence space; a reconnect creates a new one. */
+    /** One provider bridge owns this sequence space, including negotiated physical client resumes. */
     private final long epoch = SequenceEpochs.next();
 
     long epoch() {
