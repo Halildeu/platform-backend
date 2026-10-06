@@ -300,9 +300,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 new LiveTranscriptWindowAccumulator(properties.getDirectStt().getStreaming()
                         .getSourceHistoryMaxBytes());
 
-        final Flux<WebSocketMessage> admittedClientFrames = client.receive()
+        final Flux<ProviderUpload> admittedClientFrames = client.receive()
                 .limitRate(1)
-                .<WebSocketMessage>handle((message, sink) -> {
+                .<ProviderUpload>handle((message, sink) -> {
                     SessionRecord admissionRecord = sessions.get(record.sessionId()).orElse(null);
                     if (admissionRecord == null || (admissionRecord.state() != SessionState.STARTED && admissionRecord.state() != SessionState.STREAMING)) {
                         sink.error(new ClientFrameException("live stream session is terminal"));
@@ -350,15 +350,15 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             return;
                         }
                         if (speechmatics == null) {
-                            sink.next(upstream.textMessage(control.upstreamPayload(objectMapper)));
+                            sink.next(new ProviderUpload(upstream.textMessage(control.upstreamPayload(objectMapper)), -1L, 0L));
                         } else if (control.terminal()) {
                             // Emit an internal marker through the same serialized upload
                             // publisher. A side-channel sink can race Reactor Netty's
                             // currently handled EOF frame and leave client.receive() open.
                             // The transform below consumes this marker and completes without
                             // ever forwarding it to Speechmatics.
-                            sink.next(upstream.textMessage(
-                                    SPEECHMATICS_UPLOAD_TERMINAL_MARKER));
+                            sink.next(new ProviderUpload(upstream.textMessage(
+                                    SPEECHMATICS_UPLOAD_TERMINAL_MARKER), -1L, 0L));
                         }
                         return;
                     }
@@ -396,7 +396,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             current -> emitComputePlaneAudit(current, frame, correlationId));
                     if (outcome instanceof LiveFrameOutcome.Duplicate) {
                         duplicateFrames.increment();
-                        emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
+                        if (speechmatics == null || speechmatics.canonicalAudioAcknowledged(frame.chunkSeq())) {
+                            emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
+                        }
                         return;
                     }
                     if (!(outcome instanceof LiveFrameOutcome.Accepted)) {
@@ -409,14 +411,16 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     audioSent.set(true);
                     transcriptWindow.append(frame, record.sampleRateHz(), record.channels());
                     if (speechmatics == null) {
-                        sink.next(upstream.binaryMessage(factory ->
-                                factory.wrap(frame.toFloat32LittleEndian())));
+                        sink.next(new ProviderUpload(upstream.binaryMessage(factory ->
+                                factory.wrap(frame.toFloat32LittleEndian())), -1L, 0L));
+                        emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
                     } else {
                         speechmaticsFrameCount.incrementAndGet();
                         acceptedSamples.addAndGet(frame.pcm16().length / Short.BYTES);
-                        sink.next(upstream.binaryMessage(factory -> factory.wrap(frame.pcm16())));
+                        final long providerSequence = speechmatics.registerAudioFrame(frame.chunkSeq());
+                        sink.next(new ProviderUpload(upstream.binaryMessage(factory -> factory.wrap(frame.pcm16())),
+                                frame.chunkSeq(), providerSequence));
                     }
-                    emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
                 })
                 // The AI endpoint can spend minutes loading pinned models. Do not admit,
                 // account or forward any desktop audio until it proves the exact source
@@ -444,7 +448,11 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                 speechmaticsFrameCount.get()))
                         .flux();
         final Mono<Void> ingestClientFrames = admittedClientFrames
-                .concatMap(message -> {
+                // Four maximum-size PCM16 frames are below 10 seconds of audio.
+                // Admission alone is not delivery: hold each slot until AudioAdded.
+                .flatMapSequential(uploadFrame -> {
+                    final WebSocketMessage message = uploadFrame.message();
+                    final boolean terminal = speechmatics != null && isSpeechmaticsUploadTerminalMarker(message);
                     final Flux<WebSocketMessage> messages = speechmatics != null
                                     && isSpeechmaticsUploadTerminalMarker(message)
                             ? speechmaticsTerminalMessages
@@ -452,12 +460,18 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     return messages
                             .doOnNext(outboundMessage -> emitUpstreamUploadFrame(
                                     upstreamUploadFrames, outboundMessage))
+                            .then(uploadFrame.providerSequence() > 0L
+                                    ? speechmatics.audioAcknowledged(uploadFrame.providerSequence(), Duration.ofMillis(
+                                            properties.getDirectStt().getSpeechmatics().getAudioAckTimeoutMs()))
+                                        .doOnSuccess(ignored -> emitAudioAcknowledgement(
+                                                clientControlEvents, client, uploadFrame.canonicalSequence()))
+                                    : Mono.empty())
                             .then(Mono.fromRunnable(() -> {
-                                if (eofSent.get()) {
+                                if (terminal || (speechmatics == null && eofSent.get())) {
                                     completeUpstreamUpload(upstreamUploadFrames);
                                 }
                             }));
-                }, 1)
+                }, speechmatics == null ? 1 : 4, 1)
                 .then()
                 .doOnSuccess(ignored -> upstreamUploadFrames.tryEmitComplete())
                 .doOnError(upstreamUploadFrames::tryEmitError)
@@ -574,6 +588,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         // by cancelling another before the provider-authoritative terminal reached the user.
         return Mono.when(upload, download, ingestClientFrames).then();
     }
+
+    private record ProviderUpload(WebSocketMessage message, long canonicalSequence, long providerSequence) { }
 
     private static boolean isSpeechmaticsUploadTerminalMarker(
             final WebSocketMessage message) {

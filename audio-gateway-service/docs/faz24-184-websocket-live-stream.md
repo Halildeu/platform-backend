@@ -78,3 +78,17 @@ real Reactor-Netty WebSocket client/server frames.
    material.
 
 Only after these checks may `platform-ai#184` use closure language.
+
+## Speechmatics provider receipts (mobile #7 follow-up)
+
+For Speechmatics, `audio_ack` is emitted only after its matching `AudioAdded`.
+Admission into the gateway sequence registry is not a provider receipt. At most
+four bounded PCM16 frames are outstanding on that provider connection (less than
+8.2 seconds at the maximum allowed frame size). A pending duplicate receives no
+early receipt; a confirmed duplicate repeats the canonical receipt without
+resending PCM. A duplicate from an unknown previous bridge fails closed.
+Provider errors are relayed before receipt waiters are cancelled; EOF waits for
+all provider receipts and authoritative terminal output.
+
+This delivery boundary does **not** establish reconnect continuity. A retained
+provider bridge and explicit resume proof are still required for mobile #7.
