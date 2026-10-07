@@ -20,6 +20,13 @@ service-hosted call behavior, mobile/Electron behavior, or deployment is changed
   participant. Duplicate sources, lobby participants, stale or unavailable rosters,
   and transitions remain unattributed. Once a source ID is reused by another
   participant/user, it stays quarantined for that media session.
+- `SdkParticipantSnapshotAdapter` accepts actual Graph Communications
+  `IParticipant` resources and projects a fresh full SDK snapshot into that map.
+  It bounds participants and total streams, parses nonzero uint audio sources,
+  and excludes lobby/removed/unconfirmed participants and non-sending streams.
+  Missing user identity never borrows a display name from an application, device
+  or anonymous endpoint. Malformed current-call snapshots clear attribution;
+  foreign-call snapshots cannot alter the legitimate map. It performs no I/O.
 - Attribution is resolved immediately before dequeue ownership transfer, against
   the frame's original receiving timestamp and duration. A roster invalidation or
   reuse discovered while queued cannot preserve an earlier matched name. Subsequent
@@ -34,11 +41,16 @@ service-hosted call behavior, mobile/Electron behavior, or deployment is changed
    session's configuration. The existing service-hosted presence call is not an
    audio source and must not be presented as a completed media implementation.
 3. Subscribe to authoritative SDK participant changes for that exact call/session.
-   Feed full snapshots into `ApplySnapshot`, with strictly increasing revision and
+   Feed full snapshots through `SdkParticipantSnapshotAdapter.ApplyFullSnapshot`,
+   with strictly increasing revision and
    receiving-media-clock observations in 100 ns ticks. Refresh authoritative state
    within the configured roster TTL. Do not relabel a cached REST roster with a new
    timestamp or use UTC, `OriginalSenderTimestamp`, a UI highlight, or display name
    as this clock/identity proof. Invalid or out-of-order snapshots clear the map.
+   The adapter is implemented; the native host's subscription, serialized full
+   roster observation, clock sourcing and permission checks are still required.
+   Do not pass only `AddedResources`/`UpdatedResources`: these are deltas, not a
+   complete snapshot. Calling the adapter repeatedly cannot establish freshness.
 4. Confirm current tenant/meeting authorization, recording consent and Microsoft's
    required recording-status acknowledgment before `AllowProcessing`. There is no
    public HTTP toggle. Revoke on any permission/consent loss or call termination.
@@ -73,11 +85,18 @@ audio delivery. Tests cover two sources, no future-identity borrowing, source re
 queued attribution invalidation, permission revocation, late callbacks, scope
 isolation, stale/out-of-order rosters, disposal and overload. Windows CI runs the
 same suite, with dependency locks and all-transitive vulnerability auditing.
+The participant adapter tests also drive its SDK-model snapshots through receiver
+dequeue, covering two sources, queued source reuse/invalidation, removal, expiry,
+foreign scopes, lobby uncertainty, malformed sources and bounded full snapshots.
 
 SDK transitive defaults include obsolete native SQLite, regex and text-encoding
 packages. Explicit pins in this new library replace them; an in-memory SQLite
 query verifies that the effective native library is at least 3.50.2 and compatible
 with the SDK's managed dependency. These overrides do not modify the current worker.
+Graph Communications Calls is pinned to `1.2.0.18725`; its System.Text.Json
+dependency requires System.Text.Encodings.Web `10.0.5`, so this isolated library's
+direct pin is aligned with that requirement. No audit warnings are suppressed in
+the project or CI.
 
 Still required for acceptance: the host and transport integration above, approved
 infrastructure/permissions, and a two-person real Teams test with joining/leaving,
@@ -87,6 +106,8 @@ panel delivery and shutdown. CI passing cannot close that acceptance.
 ## SDK contracts
 
 - [Application-hosted media requirements](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/requirements-considerations-application-hosted-media-bots)
+- [SDK participant resource](https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/calls/Microsoft.Graph.Communications.Calls.IParticipant.html)
+- [Participant state and media streams](https://learn.microsoft.com/en-us/graph/api/resources/participant?view=graph-rest-1.0)
 - [Audio socket settings](https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/bot_media/Microsoft.Skype.Bots.Media.AudioSocketSettings.html)
 - [Native receive buffer and receiving clock](https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/bot_media/Microsoft.Skype.Bots.Media.AudioMediaBuffer.html)
 - [Unmixed source ID and sender timestamp](https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/bot_media/Microsoft.Skype.Bots.Media.UnmixedAudioBuffer.html)
