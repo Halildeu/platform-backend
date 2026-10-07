@@ -4,6 +4,8 @@ on:
     paths:
       - 'meeting-service/**'
       - 'common-auth/**'
+      - 'common-meeting-events/**'
+      - 'api-gateway/**'
       - 'auth-service/**'
       - 'teams-capture-worker/**'
       - '.github/workflows/teams-schedule-authorization.yml'
@@ -12,6 +14,8 @@ on:
     paths:
       - 'meeting-service/**'
       - 'common-auth/**'
+      - 'common-meeting-events/**'
+      - 'api-gateway/**'
       - 'auth-service/**'
       - 'teams-capture-worker/**'
       - '.github/workflows/teams-schedule-authorization.yml'
@@ -33,6 +37,6 @@ jobs:
           cache: maven
       - name: Verify fresh grants and signed service boundaries
         run: >-
-          mvn -B -q -pl meeting-service,auth-service -am
-          -Dtest=TeamsScheduleAuthorizationServiceTest,TeamsScheduleAuthorizationInternalControllerTest,MeetingInternalSignedTokenSecurityTest,MeetingInternalChainSecurityTest,MeetingInternalSecurityConverterTest,MeetingServiceRecordingAccessTest,TeamsCalendarControllerTest,HttpTeamsCalendarTransportTest,OpenFgaAuthzServiceNoCacheTest,TeamsWorkerTokenMintTest
+          mvn -B -q -pl meeting-service,auth-service,api-gateway -am
+          -Dtest=TeamsScheduleAuthorizationServiceTest,TeamsScheduleAuthorizationInternalControllerTest,MeetingInternalSignedTokenSecurityTest,MeetingInternalChainSecurityTest,MeetingInternalSecurityConverterTest,MeetingServiceRecordingAccessTest,TeamsCalendarControllerTest,HttpTeamsCalendarTransportTest,OpenFgaAuthzServiceNoCacheTest,TeamsWorkerTokenMintTest,BotRecordingServiceTest,HttpBotRecordingTransportTest,BotRecordingControllerTest,BotRecordingInternalControllerTest,BotRecordingTokenMintTest,BotRecordingRouteContractTest
           -Dsurefire.failIfNoSpecifiedTests=false test

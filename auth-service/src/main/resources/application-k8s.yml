@@ -199,6 +199,9 @@ security:
           - meeting-service
         allowed-permissions:
           - meeting:teams-schedule:authorize
+          - meeting:bot-recording:admit
+        allowed-permissions-by-audience:
+          meeting-service: meeting:teams-schedule:authorize,meeting:bot-recording:admit
         require-explicit-permissions: true
       transcript-service:
         # Blank by default: Vault/ESO provisioning is the activation gate.
@@ -215,11 +218,13 @@ security:
           - transcript-service
           - user-service
           - notification-orchestrator
+          - audit-event-consumer-service
         allowed-permissions:
           - transcript:session:erase
           - transcript:canonical:read
           - users:internal
           - notify:intents:system
+          - audit:bot-recording:manage
         # gitops#3507 Görevler assignee resolution: the user-service audience
         # may only mint the narrow internal-directory permission, and the
         # transcript permissions stay pinned to the transcript audience.
@@ -229,13 +234,14 @@ security:
           transcript-service: transcript:session:erase,transcript:canonical:read
           user-service: users:internal
           notification-orchestrator: notify:intents:system
+          audit-event-consumer-service: audit:bot-recording:manage
         require-explicit-permissions: true
   service-mint:
     # #734: notification-orchestrator + notify:intents:system added to the
     # defaults so the user-service admin-email mint works even before the gitops
     # env override; gitops sets the canonical list explicitly.
-    allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service,user-service,notification-orchestrator,meeting-service,transcript-service}
-    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:meeting:teams-schedule:authorize,permissions:read,permissions:write,users:internal,users:display-names:read,notify:intents:system,meeting:analysis-result:write,meeting:session:resolve,transcript:canonical:read,transcript:analysis-job-capability:issue,transcript:session:erase}
+    allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service,user-service,notification-orchestrator,meeting-service,transcript-service,audit-event-consumer-service}
+    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:meeting:teams-schedule:authorize,meeting:bot-recording:admit,audit:bot-recording:manage,permissions:read,permissions:write,users:internal,users:display-names:read,notify:intents:system,meeting:analysis-result:write,meeting:session:resolve,transcript:canonical:read,transcript:analysis-job-capability:issue,transcript:session:erase}
     rate-limit-per-minute: ${SECURITY_SERVICE_MINT_RATE_LIMIT:120}
     failed-auth-rate-limit-per-minute: ${SECURITY_SERVICE_MINT_FAILED_AUTH_RATE_LIMIT:30}
   admin-fallback:

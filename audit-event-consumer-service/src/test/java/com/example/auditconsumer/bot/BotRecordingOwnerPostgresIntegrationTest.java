@@ -1,6 +1,6 @@
 package com.example.auditconsumer.bot;
 
-import static com.example.auditconsumer.bot.BotRecordingContract.*;
+import static com.example.common.meeting.bot.BotRecordingContract.*;
 import static org.assertj.core.api.Assertions.*;
 import com.example.auditconsumer.audit.AuditIntegrityVerifier;
 import com.example.auditconsumer.repository.AuditEventRepository;
@@ -69,6 +69,20 @@ class BotRecordingOwnerPostgresIntegrationTest {
         @Override public Instant instant() { return value; }
     }
     @BeforeEach void resetTime() { TIME.value = Instant.parse("2026-10-07T10:00:00Z"); }
+
+    @Test void privateRecoveryChecksMeetingAndStableOwnerAndReturnsHistoricalState() {
+        var first = service.grant(grant()); var g = first.grant();
+        var ref = new RequestRef(g.requestKey(), g.meetingId(), g.owner().issuer(), g.owner().subject());
+        assertThat(service.inspect(new IntentRef(first.intentId(), g.meetingId()))).isEqualTo(first);
+        assertThat(service.findRequest(ref)).isEqualTo(first);
+        assertThatThrownBy(() -> service.inspect(new IntentRef(first.intentId(), UUID.randomUUID()))).isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> service.findRequest(new RequestRef(g.requestKey(), UUID.randomUUID(), g.owner().issuer(), g.owner().subject())))
+                .isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> service.findRequest(new RequestRef(g.requestKey(), g.meetingId(), g.owner().issuer(), "other")))
+                .isInstanceOf(ResponseStatusException.class);
+        var revoked = service.revoke(lookup(first)); TIME.value = TIME.value.plusSeconds(90000);
+        assertThat(service.findRequest(ref)).isEqualTo(revoked);
+    }
 
     @Test void grantBindWithdrawAndExactRetriesAreDurableAndAudited() throws Exception {
         Grant command = grant();

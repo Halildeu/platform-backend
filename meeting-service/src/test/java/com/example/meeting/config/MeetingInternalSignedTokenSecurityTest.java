@@ -48,7 +48,8 @@ import org.springframework.test.web.servlet.MockMvc;
 @WebMvcTest(controllers = {
         MeetingAnalysisResultInternalController.class,
         MeetingSessionResolutionInternalController.class,
-        com.example.meeting.controller.TeamsScheduleAuthorizationInternalController.class
+        com.example.meeting.controller.TeamsScheduleAuthorizationInternalController.class,
+        com.example.meeting.controller.BotRecordingInternalController.class
 })
 @ActiveProfiles("test")
 @Import({
@@ -92,6 +93,33 @@ class MeetingInternalSignedTokenSecurityTest {
 
     @MockitoBean
     private com.example.meeting.service.TeamsScheduleAuthorizationService scheduleAuthorization;
+    @MockitoBean private com.example.meeting.service.BotRecordingService botRecording;
+
+    @Test void signedBotAdmissionHasSeparatePermissionAndWorkerIdentity() throws Exception {
+        String path = "/api/v1/internal/meetings/{id}/bot-recording/admit";
+        mockMvc.perform(post(path, MEETING_ID).header(AUTHORIZATION, bearer("teams-capture-worker", "meeting:bot-recording:admit"))
+                .contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isOk());
+        mockMvc.perform(post(path, MEETING_ID).header(AUTHORIZATION, bearer("teams-capture-worker", "meeting:teams-schedule:authorize"))
+                .contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isForbidden());
+        mockMvc.perform(post(path, MEETING_ID).header(AUTHORIZATION, bearer("meeting-ai", "meeting:bot-recording:admit"))
+                .contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isForbidden());
+        org.mockito.Mockito.verify(botRecording).admit(eq(MEETING_ID), any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"issuer", "audience", "subject", "expired"})
+    void botAdmissionRejectsWrongSignedTrustClaims(String fault) throws Exception {
+        var claims = new JWTClaimsSet.Builder().issuer(fault.equals("issuer") ? "foreign" : ISSUER)
+                .subject(fault.equals("subject") ? "someone-else" : "teams-capture-worker")
+                .audience(fault.equals("audience") ? "audit-event-consumer-service" : AUDIENCE)
+                .claim("client_id", "teams-capture-worker").claim("perm", List.of("meeting:bot-recording:admit"))
+                .issueTime(new Date(System.currentTimeMillis() - 600_000))
+                .expirationTime(new Date(System.currentTimeMillis() + (fault.equals("expired") ? -300_000 : 300_000))).build();
+        var signed = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims); signed.sign(new RSASSASigner(SERVICE_KEYS.getPrivate()));
+        mockMvc.perform(post("/api/v1/internal/meetings/{id}/bot-recording/admit", MEETING_ID)
+                .header(AUTHORIZATION, "Bearer " + signed.serialize()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized()); verifyNoInteractions(botRecording);
+    }
 
     @Autowired
     private MockMvc mockMvc;

@@ -104,6 +104,15 @@ meeting:
     connect-timeout-millis: ${MEETING_TRANSCRIPT_READ_CONNECT_TIMEOUT_MS:2000}
     response-timeout-millis: ${MEETING_TRANSCRIPT_READ_RESPONSE_TIMEOUT_MS:10000}
   # Faz 24 Görevler (gitops#3507): server-side assignee resolution.
+  bot-recording:
+    enabled: ${MEETING_BOT_RECORDING_ENABLED:false}
+    owner-base-url: ${MEETING_BOT_RECORDING_OWNER_BASE_URL:http://audit-event-consumer-service:8099}
+    token-url: ${MEETING_BOT_RECORDING_TOKEN_URL:http://auth-service:8088/oauth2/token}
+    client-secret: ${MEETING_BOT_RECORDING_CLIENT_SECRET:}
+    # Approved operator-supplied terms only; blank prevents new consent grants.
+    consent-version: ${MEETING_BOT_RECORDING_CONSENT_VERSION:}
+    consent-text: ${MEETING_BOT_RECORDING_CONSENT_TEXT:}
+    locale: ${MEETING_BOT_RECORDING_LOCALE:tr-TR}
   assignee-directory:
     enabled: false
     user-service-base-url: http://user-service:8089

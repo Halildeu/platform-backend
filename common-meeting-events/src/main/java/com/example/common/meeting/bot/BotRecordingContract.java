@@ -1,4 +1,4 @@
-package com.example.auditconsumer.bot;
+package com.example.common.meeting.bot;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -19,6 +19,8 @@ public final class BotRecordingContract {
         public static OwnerKey of(Owner owner) { return new OwnerKey(owner.companyId(), owner.issuer(), owner.subject()); }
     }
     public record Lookup(UUID intentId, OwnerKey owner, UUID meetingId) {}
+    public record IntentRef(UUID intentId, UUID meetingId) {}
+    public record RequestRef(UUID requestKey, UUID meetingId, String issuer, String subject) {}
     public record Snapshot(int schemaVersion, String purpose, UUID intentId, Grant grant, String state, long revision,
                            Instant createdAt, Binding binding, Instant revokedAt) {}
 }

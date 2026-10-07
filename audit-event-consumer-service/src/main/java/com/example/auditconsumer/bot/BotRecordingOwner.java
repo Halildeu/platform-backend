@@ -1,6 +1,6 @@
 package com.example.auditconsumer.bot;
 
-import static com.example.auditconsumer.bot.BotRecordingContract.*;
+import static com.example.common.meeting.bot.BotRecordingContract.*;
 import com.example.auditconsumer.audit.AuditChainLock;
 import com.example.auditconsumer.audit.AuditChainSupport;
 import com.example.auditconsumer.model.AuditEvent;
@@ -69,6 +69,28 @@ public class BotRecordingOwner {
 
     public Snapshot lookup(Lookup command) {
         return snapshot(owned(command));
+    }
+
+    /** Private meeting-service read, before user ownership or worker dispatch checks. Never exposed directly to clients. */
+    public Snapshot inspect(IntentRef reference) {
+        if (reference == null) throw invalid();
+        uuid(reference.intentId()); uuid(reference.meetingId());
+        var row = em.find(BotRecordingIntent.class, reference.intentId());
+        if (row == null || !decode(row.grantJson, Grant.class).meetingId().equals(reference.meetingId())) throw missing();
+        return snapshot(row);
+    }
+
+    /** Recover an uncertain grant without relying on a subsequently changed directory link or consent configuration. */
+    public Snapshot findRequest(RequestRef reference) {
+        if (reference == null) throw invalid();
+        uuid(reference.requestKey()); uuid(reference.meetingId()); text(reference.issuer(), 512); text(reference.subject(), 255);
+        var rows = em.createQuery("select i from BotRecordingIntent i where i.ownerIssuer = :issuer "
+                        + "and i.ownerSubject = :subject and i.requestKey = :key", BotRecordingIntent.class)
+                .setParameter("issuer", reference.issuer()).setParameter("subject", reference.subject())
+                .setParameter("key", reference.requestKey()).getResultList();
+        if (rows.isEmpty()) throw missing();
+        if (rows.size() != 1 || !decode(rows.getFirst().grantJson, Grant.class).meetingId().equals(reference.meetingId())) throw conflict();
+        return snapshot(rows.getFirst());
     }
 
     public Snapshot bind(Bind command) {

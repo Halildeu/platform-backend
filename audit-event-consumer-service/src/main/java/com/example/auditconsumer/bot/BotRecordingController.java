@@ -1,6 +1,6 @@
 package com.example.auditconsumer.bot;
 
-import static com.example.auditconsumer.bot.BotRecordingContract.*;
+import static com.example.common.meeting.bot.BotRecordingContract.*;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
@@ -15,6 +15,8 @@ public class BotRecordingController {
     public BotRecordingController(BotRecordingOwner owner) { this.owner = owner; }
     @PostMapping("/grant") public ResponseEntity<Snapshot> grant(@RequestBody Grant value) { return ok(owner.grant(value)); }
     @PostMapping("/lookup") public ResponseEntity<Snapshot> lookup(@RequestBody Lookup value) { return ok(owner.lookup(value)); }
+    @PostMapping("/inspect") public ResponseEntity<Snapshot> inspect(@RequestBody IntentRef value) { return ok(owner.inspect(value)); }
+    @PostMapping("/find-request") public ResponseEntity<Snapshot> findRequest(@RequestBody RequestRef value) { return ok(owner.findRequest(value)); }
     @PostMapping("/bind") public ResponseEntity<Snapshot> bind(@RequestBody Bind value) { return ok(owner.bind(value)); }
     @PostMapping("/revoke") public ResponseEntity<Snapshot> revoke(@RequestBody Lookup value) { return ok(owner.revoke(value)); }
     private static ResponseEntity<Snapshot> ok(Snapshot snapshot) {
