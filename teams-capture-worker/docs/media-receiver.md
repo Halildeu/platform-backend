@@ -33,6 +33,32 @@ service-hosted call behavior, mobile/Electron behavior, or deployment is changed
   observations cannot revise already delivered frames; downstream evidence must
   retain scope, source ID and timestamps and support later attribution correction.
 
+## Recording approach prerequisite (verified 2026-10-07)
+
+Microsoft's [updateRecordingStatus contract](https://learn.microsoft.com/en-us/graph/api/call-updaterecordingstatus?view=graph-rest-1.0)
+requires Teams policy-based recording. Its success acknowledgement is required
+before persisting media **or data derived from that media**. The pinned Calls
+SDK also documents this method as applicable to compliance recording bots.
+An approved organizer, a join permission and an Azure Bot registration alone do
+not prove that this recording path is available to the institution.
+
+This is a platform/approach prerequisite, not a missing `AllowProcessing` call.
+Before committing to the native recording rollout, verify the institution's
+recording policy and deployment suitability. Compare an approved live-capture
+provider if that route is unsuitable. Teams-native post-meeting transcript
+ingestion is another option, but does not satisfy the live analysis requirement.
+No alternative has been selected, no service purchased and no recording policy
+changed by this library. Processing remains closed without all required grants.
+
+The existing backend does not yet provide native bot capture admission: the
+worker's service credential authorizes scheduling only; public audio endpoints
+require user identity. A new capture contract must bind current authorization
+and persisted, revocation-aware consent to tenant, canonical meeting, capture,
+call and media session before sending any PCM. Do not substitute a caller's
+`consent=true`, a scheduling token or an invented user JWT. The downstream
+speaker contract currently accepts anonymous labels only; named participant
+evidence needs an explicit versioned contract, not renaming a provider label.
+
 ## Required host integration (not implemented by this library)
 
 1. Start and configure a supported native Windows media runtime using the approved
@@ -49,6 +75,11 @@ service-hosted call behavior, mobile/Electron behavior, or deployment is changed
    as this clock/identity proof. Invalid or out-of-order snapshots clear the map.
    The adapter is implemented; the native host's subscription, serialized full
    roster observation, clock sourcing and permission checks are still required.
+   `MediaPlatform.GetCurrentTimestamp()` supplies the receiving clock, not proof
+   that cached participant data is fresh. With event-only observations, the map
+   expires even in an unchanged meeting. Keep attribution unknown after expiry;
+   a timer must not silently renew evidence. A continuity-based redesign needs
+   its own supported SDK contract and tests.
    Do not pass only `AddedResources`/`UpdatedResources`: these are deltas, not a
    complete snapshot. Calling the adapter repeatedly cannot establish freshness.
 4. Confirm current tenant/meeting authorization, recording consent and Microsoft's
