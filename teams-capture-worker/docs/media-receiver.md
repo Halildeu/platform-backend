@@ -1,0 +1,144 @@
+# Teams SDK audio receiver: source readiness and integration boundary
+
+This is an isolated library for an eventual Windows media host. It references the
+actual `Microsoft.Skype.Bots.Media` SDK, copies and owns incoming unmixed PCM, and
+maps source IDs against a bounded history of participant observations. The current
+`TeamsCapture.Worker` does **not** reference it. No live-audio readiness flag,
+service-hosted call behavior, mobile/Electron behavior, or deployment is changed.
+
+## What is implemented
+
+- Receive-only PCM16, 16 kHz, mono, with `ReceiveUnmixedMeetingAudio = true`.
+- An `IAudioSocket.AudioMediaReceived` subscription; native buffers are disposed on
+  every callback path. Unmixed slices are copied before their owner is disposed.
+- A bounded, nonblocking callback queue. Invalid format, clock discontinuity,
+  missing unmixed data and overflow terminate processing and clear pending audio.
+  A host must observe `Failure`; queue completion is not proof of successful capture.
+- Processing starts closed. Terminal revocation detaches the event, zeroes queued
+  PCM and clears identity history. Consumers own and must dispose delivered frames.
+- Exact tenant/meeting/call/media-session scope. Names alone never identify a
+  participant. Duplicate sources, lobby participants, stale or unavailable rosters,
+  and transitions remain unattributed. Once a source ID is reused by another
+  participant/user, it stays quarantined for that media session.
+- `SdkParticipantSnapshotAdapter` accepts actual Graph Communications
+  `IParticipant` resources and projects a fresh full SDK snapshot into that map.
+  It bounds participants and total streams, parses nonzero uint audio sources,
+  and excludes lobby/removed/unconfirmed participants and non-sending streams.
+  Missing user identity never borrows a display name from an application, device
+  or anonymous endpoint. Malformed current-call snapshots clear attribution;
+  foreign-call snapshots cannot alter the legitimate map. It performs no I/O.
+- Attribution is resolved immediately before dequeue ownership transfer, against
+  the frame's original receiving timestamp and duration. A roster invalidation or
+  reuse discovered while queued cannot preserve an earlier matched name. Subsequent
+  observations cannot revise already delivered frames; downstream evidence must
+  retain scope, source ID and timestamps and support later attribution correction.
+
+## Recording approach prerequisite (verified 2026-10-07)
+
+Microsoft's [updateRecordingStatus contract](https://learn.microsoft.com/en-us/graph/api/call-updaterecordingstatus?view=graph-rest-1.0)
+requires Teams policy-based recording. Its success acknowledgement is required
+before persisting media **or data derived from that media**. The pinned Calls
+SDK also documents this method as applicable to compliance recording bots.
+An approved organizer, a join permission and an Azure Bot registration alone do
+not prove that this recording path is available to the institution.
+
+This is a platform/approach prerequisite, not a missing `AllowProcessing` call.
+Before committing to the native recording rollout, verify the institution's
+recording policy and deployment suitability. Compare an approved live-capture
+provider if that route is unsuitable. Teams-native post-meeting transcript
+ingestion is another option, but does not satisfy the live analysis requirement.
+No alternative has been selected, no service purchased and no recording policy
+changed by this library. Processing remains closed without all required grants.
+
+The existing backend does not yet provide native bot capture admission: the
+worker's service credential authorizes scheduling only; public audio endpoints
+require user identity. A new capture contract must bind current authorization
+and persisted, revocation-aware consent to tenant, canonical meeting, capture,
+call and media session before sending any PCM. Do not substitute a caller's
+`consent=true`, a scheduling token or an invented user JWT. The downstream
+speaker contract currently accepts anonymous labels only; named participant
+evidence needs an explicit versioned contract, not renaming a provider label.
+
+## Required host integration (not implemented by this library)
+
+1. Start and configure a supported native Windows media runtime using the approved
+   host, certificate and networking. Validate Azure Bot/Entra calling configuration.
+2. Join with **application-hosted media from call creation**, using the local media
+   session's configuration. The existing service-hosted presence call is not an
+   audio source and must not be presented as a completed media implementation.
+3. Subscribe to authoritative SDK participant changes for that exact call/session.
+   Feed full snapshots through `SdkParticipantSnapshotAdapter.ApplyFullSnapshot`,
+   with strictly increasing revision and
+   receiving-media-clock observations in 100 ns ticks. Refresh authoritative state
+   within the configured roster TTL. Do not relabel a cached REST roster with a new
+   timestamp or use UTC, `OriginalSenderTimestamp`, a UI highlight, or display name
+   as this clock/identity proof. Invalid or out-of-order snapshots clear the map.
+   The adapter is implemented; the native host's subscription, serialized full
+   roster observation, clock sourcing and permission checks are still required.
+   `MediaPlatform.GetCurrentTimestamp()` supplies the receiving clock, not proof
+   that cached participant data is fresh. With event-only observations, the map
+   expires even in an unchanged meeting. Keep attribution unknown after expiry;
+   a timer must not silently renew evidence. A continuity-based redesign needs
+   its own supported SDK contract and tests.
+   Do not pass only `AddedResources`/`UpdatedResources`: these are deltas, not a
+   complete snapshot. Calling the adapter repeatedly cannot establish freshness.
+4. Confirm current tenant/meeting authorization, recording consent and Microsoft's
+   required recording-status acknowledgment before `AllowProcessing`. There is no
+   public HTTP toggle. Revoke on any permission/consent loss or call termination.
+   A caller-provided key is a scope check, **not authentication**.
+5. Deliver each owned frame only over an authenticated, meeting-scoped STT ingest
+   path, with a fresh permission check before downstream I/O. Dispose it even on
+   cancellation/failure. Frames already transferred are the consumer's responsibility.
+   Existing user-JWT audio endpoints must not be called with an unrelated worker
+   token. This transport and downstream authorization are still to be implemented.
+6. Reconcile terminal failures and roster/clock discontinuities through a new
+   receiver/session; do not silently resume an old queue or infer an identity.
+
+Receiving time is not source capture time. Roster/audio network reordering remains
+a real integration limitation, and the host must report uncertainty rather than
+claiming every frame is identity-verified. The SDK provides up to four dominant
+unmixed speakers, not an unlimited recording track for every attendee. A shared
+room microphone identifies its endpoint, not the individual people in that room.
+
+## Verification without tenant credentials
+
+Run on Windows x64 with .NET 8:
+
+```powershell
+dotnet restore teams-capture-worker/tests/TeamsCapture.Media.Tests/TeamsCapture.Media.Tests.csproj --locked-mode --configfile teams-capture-worker/NuGet.Config -p:NuGetAuditMode=all
+dotnet test teams-capture-worker/tests/TeamsCapture.Media.Tests/TeamsCapture.Media.Tests.csproj --no-restore --configuration Release
+dotnet list teams-capture-worker/tests/TeamsCapture.Media.Tests/TeamsCapture.Media.Tests.csproj package --vulnerable --include-transitive
+```
+
+The suite exercises actual SDK types/event signatures with a simulated socket and
+owned unmanaged test buffers. It does not load a live media platform or prove Teams
+audio delivery. Tests cover two sources, no future-identity borrowing, source reuse,
+queued attribution invalidation, permission revocation, late callbacks, scope
+isolation, stale/out-of-order rosters, disposal and overload. Windows CI runs the
+same suite, with dependency locks and all-transitive vulnerability auditing.
+The participant adapter tests also drive its SDK-model snapshots through receiver
+dequeue, covering two sources, queued source reuse/invalidation, removal, expiry,
+foreign scopes, lobby uncertainty, malformed sources and bounded full snapshots.
+
+SDK transitive defaults include obsolete native SQLite, regex and text-encoding
+packages. Explicit pins in this new library replace them; an in-memory SQLite
+query verifies that the effective native library is at least 3.50.2 and compatible
+with the SDK's managed dependency. These overrides do not modify the current worker.
+Graph Communications Calls is pinned to `1.2.0.18725`; its System.Text.Json
+dependency requires System.Text.Encodings.Web `10.0.5`, so this isolated library's
+direct pin is aligned with that requirement. No audit warnings are suppressed in
+the project or CI.
+
+Still required for acceptance: the host and transport integration above, approved
+infrastructure/permissions, and a two-person real Teams test with joining/leaving,
+overlapping speech, revoked consent, name/source mapping, live actions/decisions,
+panel delivery and shutdown. CI passing cannot close that acceptance.
+
+## SDK contracts
+
+- [Application-hosted media requirements](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/calls-and-meetings/requirements-considerations-application-hosted-media-bots)
+- [SDK participant resource](https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/calls/Microsoft.Graph.Communications.Calls.IParticipant.html)
+- [Participant state and media streams](https://learn.microsoft.com/en-us/graph/api/resources/participant?view=graph-rest-1.0)
+- [Audio socket settings](https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/bot_media/Microsoft.Skype.Bots.Media.AudioSocketSettings.html)
+- [Native receive buffer and receiving clock](https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/bot_media/Microsoft.Skype.Bots.Media.AudioMediaBuffer.html)
+- [Unmixed source ID and sender timestamp](https://microsoftgraph.github.io/microsoft-graph-comms-samples/docs/bot_media/Microsoft.Skype.Bots.Media.UnmixedAudioBuffer.html)

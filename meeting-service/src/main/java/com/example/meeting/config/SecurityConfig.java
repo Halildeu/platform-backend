@@ -65,6 +65,7 @@ public class SecurityConfig {
     static final String SVC_ANALYSIS_RESULT_WRITE = "SVC_meeting:analysis-result:write";
     static final String SVC_SESSION_RESOLVE = "SVC_meeting:session:resolve";
     static final String SVC_TEAMS_SCHEDULE_AUTHORIZE = "SVC_meeting:teams-schedule:authorize";
+    static final String SVC_BOT_RECORDING_ADMIT = "SVC_meeting:bot-recording:admit";
 
     private final Environment environment;
 
@@ -105,7 +106,7 @@ public class SecurityConfig {
                         // gate. The chain admits only the meeting-service service
                         // permissions; unrelated authenticated service tokens stay out.
                         .anyRequest().hasAnyAuthority(
-                                SVC_ANALYSIS_RESULT_WRITE, SVC_SESSION_RESOLVE, SVC_TEAMS_SCHEDULE_AUTHORIZE))
+                                SVC_ANALYSIS_RESULT_WRITE, SVC_SESSION_RESOLVE, SVC_TEAMS_SCHEDULE_AUTHORIZE, SVC_BOT_RECORDING_ADMIT))
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
                         .decoder(jwtDecoder)
                         .jwtAuthenticationConverter(jwtAuthenticationConverter)))

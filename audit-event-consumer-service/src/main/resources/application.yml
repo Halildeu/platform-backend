@@ -50,6 +50,11 @@ eureka:
 
 # Faz 24 KVKK audit pipeline consumer (gitops#1249)
 audit:
+  # Remains closed until the meeting-service caller and exact SERVICE grant are deployed together.
+  bot-recording:
+    enabled: ${AUDIT_BOT_RECORDING_ENABLED:false}
+    service-issuer: ${AUDIT_BOT_RECORDING_SERVICE_ISSUER:}
+    service-jwks-uri: ${AUDIT_BOT_RECORDING_SERVICE_JWKS_URI:}
   consent-events:
     redis:
       enabled: ${AUDIT_CONSENT_EVENTS_REDIS_ENABLED:false}

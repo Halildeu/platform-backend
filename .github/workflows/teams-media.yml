@@ -1,0 +1,44 @@
+name: Teams media receiver tests
+
+on:
+  pull_request:
+    paths:
+      - 'teams-capture-worker/src/TeamsCapture.Media/**'
+      - 'teams-capture-worker/tests/TeamsCapture.Media.Tests/**'
+      - 'teams-capture-worker/NuGet.Config'
+      - '.github/workflows/teams-media.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'teams-capture-worker/src/TeamsCapture.Media/**'
+      - 'teams-capture-worker/tests/TeamsCapture.Media.Tests/**'
+      - 'teams-capture-worker/NuGet.Config'
+      - '.github/workflows/teams-media.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: teams-media-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  receiver-tests:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore locked SDK dependencies and audit transitives
+        run: dotnet restore teams-capture-worker/tests/TeamsCapture.Media.Tests/TeamsCapture.Media.Tests.csproj --locked-mode --configfile teams-capture-worker/NuGet.Config -p:NuGetAuditMode=all
+      - name: Test isolated receiver (no native host or live meeting)
+        run: dotnet test teams-capture-worker/tests/TeamsCapture.Media.Tests/TeamsCapture.Media.Tests.csproj --no-restore --configuration Release --logger trx --results-directory media-test-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teams-media-tests-${{ github.sha }}
+          path: media-test-results/
+          if-no-files-found: error
+          retention-days: 7
