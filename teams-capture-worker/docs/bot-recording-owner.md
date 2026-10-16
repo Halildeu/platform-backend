@@ -60,8 +60,12 @@ state/audit/evidence rollback, actual legacy grant/withdrawal isolation, non-pub
 Signed-token and HTTP tests cover the exact identity boundary, disabled surface and actual actuator endpoints.
 No test uses `disabledWithoutDocker`; PostgreSQL execution is a required result, not inferred from unit tests.
 
+V5 enforces uniqueness of both call ID and native media-session ID across intents and companies, including
+withdrawn records. A duplicate binding fails with conflict and rolls back its state/evidence/audit transaction.
+An exact retry of the already-bound intent remains idempotent; rejoining requires new call/session identifiers.
+
 Before activation: connect the dashboard/worker callers and finish the ongoing dispatch/revocation
-fence. Define call/media-session uniqueness across intents. Require current consent at queued-frame dispatch; withdrawal
+fence. Require current consent at queued-frame dispatch; withdrawal
 must discard buffered audio, not flush it. Wire the real Windows SDK host and satisfy Microsoft's recording policy.
 Publish through TEST GitOps and verify real meeting live/saved behavior. This service-boundary change does not close those tasks.
 

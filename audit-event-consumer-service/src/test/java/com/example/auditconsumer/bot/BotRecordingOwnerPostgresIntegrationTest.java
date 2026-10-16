@@ -112,7 +112,7 @@ class BotRecordingOwnerPostgresIntegrationTest {
         var g = grant(); var own = g.owner();
         var expected = new java.util.HashSet<UUID>();
         for (int n = 0; n < 23; n++) {
-            var changedCompany = new Owner(own.companyId() + n, own.userId(), own.issuer(), own.subject(), own.tenantId(),
+            var changedCompany = new Owner(COMPANY.incrementAndGet(), own.userId(), own.issuer(), own.subject(), own.tenantId(),
                     own.orgId(), own.authzPrincipal(), own.microsoftTenantId(), own.organizerId());
             var item = service.grant(new Grant(UUID.randomUUID(), g.meetingId(), changedCompany,
                     g.consentVersion(), g.consentTextHash(), g.locale(), g.expiresAt()));
@@ -147,6 +147,41 @@ class BotRecordingOwnerPostgresIntegrationTest {
                 new Binding("teams-capture-worker", "different-call", "media-1"));
         assertThatThrownBy(() -> service.bind(replacement)).isInstanceOf(ResponseStatusException.class);
         assertThat(service.lookup(lookup(first))).isEqualTo(bound);
+    }
+    @Test void aCallAndMediaSessionRemainExclusiveAfterWithdrawalAcrossCompanies() {
+        var first = service.grant(grant()); var bound = service.bind(bind(first));
+        service.revoke(lookup(first));
+        for (var reuse : java.util.List.of(
+                new Binding("teams-capture-worker", bound.binding().callId(), "other-media"),
+                new Binding("teams-capture-worker", "other-call", bound.binding().mediaSessionId()))) {
+            var other = service.grant(grant());
+            assertThatThrownBy(() -> service.bind(new Bind(other.intentId(), other.grant().owner(), other.grant().meetingId(), 1, reuse)))
+                    .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getStatusCode().value()).isEqualTo(409));
+            assertThat(service.lookup(lookup(other)).state()).isEqualTo("GRANTED");
+            assertThat(audit.findByTenantIdOrderBySeqAsc(other.grant().owner().companyId())).hasSize(1);
+            assertThat(jdbc.queryForObject("select count(*) from audit_event.bot_recording_evidence where intent_id=?", Long.class, other.intentId())).isEqualTo(1);
+        }
+    }
+
+    @Test void concurrentCrossCompanyBindsOfOneMediaSessionHaveExactlyOneWinner() throws Exception {
+        var first = service.grant(grant()); var second = service.grant(grant());
+        var shared = new Binding("teams-capture-worker", "shared-call-" + first.intentId(), "shared-media-" + first.intentId());
+        var start = new CountDownLatch(1);
+        try (var threads = Executors.newFixedThreadPool(2)) {
+            var tasks = new java.util.ArrayList<java.util.concurrent.Future<Boolean>>();
+            for (var item : java.util.List.of(first, second)) tasks.add(threads.submit(() -> {
+                if (!start.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("start timeout");
+                try { service.bind(new Bind(item.intentId(), item.grant().owner(), item.grant().meetingId(), 1, shared)); return true; }
+                catch (ResponseStatusException e) { assertThat(e.getStatusCode().value()).isEqualTo(409); return false; }
+            }));
+            start.countDown();
+            assertThat(java.util.List.of(tasks.get(0).get(10, TimeUnit.SECONDS), tasks.get(1).get(10, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder(true, false);
+        }
+        assertThat(java.util.List.of(service.lookup(lookup(first)).state(), service.lookup(lookup(second)).state()))
+                .containsExactlyInAnyOrder("BOUND", "GRANTED");
+        assertThat(audit.findByTenantIdOrderBySeqAsc(first.grant().owner().companyId()).size()
+                + audit.findByTenantIdOrderBySeqAsc(second.grant().owner().companyId()).size()).isEqualTo(3);
     }
 
     @Test void crossTenantSubjectScopeAndMeetingCannotReadBindOrWithdraw() {
@@ -311,5 +346,5 @@ class BotRecordingOwnerPostgresIntegrationTest {
     }
     private static Lookup lookup(Snapshot first) { return new Lookup(first.intentId(), OwnerKey.of(first.grant().owner()), first.grant().meetingId()); }
     private static Bind bind(Snapshot first) { return new Bind(first.intentId(), first.grant().owner(), first.grant().meetingId(), 1,
-            new Binding("teams-capture-worker", "call-1", "media-1")); }
+            new Binding("teams-capture-worker", "call-" + first.intentId(), "media-" + first.intentId())); }
 }

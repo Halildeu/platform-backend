@@ -131,6 +131,18 @@ public class BotRecordingOwner {
         }
         if (!row.state.equals("GRANTED") || row.revision != command.expectedRevision()) throw conflict();
         row.bindingJson = encode(command.binding()); row.state = "BOUND"; row.revision++;
+        try { em.flush(); }
+        catch (jakarta.persistence.PersistenceException error) {
+            // Database uniqueness also serializes conflicting binds under different company locks.
+            // Roll back the whole transaction; never append evidence for a rejected binding.
+            for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+                if (cause instanceof org.hibernate.exception.ConstraintViolationException constraint
+                        && ("uq_bot_recording_call".equals(constraint.getConstraintName())
+                            || "uq_bot_recording_media_session".equals(constraint.getConstraintName())))
+                    throw conflict();
+            }
+            throw error;
+        }
         append(row, "BOT_RECORDING_BOUND");
         return snapshot(row);
     }
