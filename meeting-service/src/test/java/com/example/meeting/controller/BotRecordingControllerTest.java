@@ -91,7 +91,32 @@ class BotRecordingControllerTest {
     @Test void missingUserTokenCannotReadTerms() throws Exception {
         mvc.perform(get(path() + "/terms")).andExpect(status().isUnauthorized()); verifyNoInteractions(owner, tenants, authz);
     }
+    @Test void lostGrantResponseCanBeRecoveredReadOnlyWithCurrentGrantsDisabled() throws Exception {
+        properties.setEnabled(false); calendar.setEnabled(false);
+        var requestKey = UUID.randomUUID();
+        var actor = new Owner(35, 42, "https://user.example", "owner", org, org, "42", ms, organizer);
+        var grant = new Grant(requestKey, meeting, actor, "old", "a".repeat(64), "tr-TR", Instant.now().minusSeconds(5));
+        doReturn(new Snapshot(1, "TEAMS_LIVE_TRANSCRIPTION", intent, grant, "GRANTED", 1, Instant.now().minusSeconds(60), null, null))
+                .when(owner).findRequest(new RequestRef(requestKey, meeting, "https://user.example", "owner"));
+        mvc.perform(get(path() + "/requests/" + requestKey).with(user())).andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store")).andExpect(jsonPath("$.requestKey").value(requestKey.toString()))
+                .andExpect(jsonPath("$.owner").doesNotExist());
+        mvc.perform(get(path() + "/requests/" + requestKey)).andExpect(status().isUnauthorized());
+        verify(owner, never()).grant(any()); verifyNoInteractions(authz, tenants, meetings, directory, dispatch);
+    }
     private String path() { return "/api/v1/meetings/" + meeting + "/bot-recording-intents"; }
+    @Test void ownerHistoryIsReadOnlyAuthenticatedAndNoStoreEvenWithGrantsDisabled() throws Exception {
+        properties.setEnabled(false);
+        var cursor = UUID.randomUUID();
+        when(owner.history(new HistoryRef(meeting, "https://user.example", "owner", cursor)))
+                .thenReturn(new History(List.of(), null));
+        mvc.perform(get(path()).param("beforeIntentId", cursor.toString()).with(user()))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.items").isEmpty());
+        mvc.perform(get(path())).andExpect(status().isUnauthorized());
+        verifyNoInteractions(authz, tenants, meetings, directory, dispatch);
+        verify(owner, never()).grant(any());
+    }
     private org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.JwtRequestPostProcessor user() {
         return jwt().jwt(j -> j.issuer("https://user.example").subject("owner"));
     }

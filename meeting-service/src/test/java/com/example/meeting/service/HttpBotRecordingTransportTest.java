@@ -54,6 +54,17 @@ class HttpBotRecordingTransportTest {
             assertThat(error.getMessage()).doesNotContain("secret-record", "untrusted");
         }); server.verify();
     }
+    @Test void historyUsesPrivateServiceTransportAndPreservesBoundedPageContract() throws Exception {
+        token();
+        var ref = new HistoryRef(reference.meetingId(), "https://user.example", "owner", null);
+        var page = new History(java.util.List.of(snapshot()), null);
+        server.expect(requestTo(properties.getOwnerBaseUrl() + "/api/v1/internal/bot-recording/history"))
+                .andExpect(method(HttpMethod.POST)).andExpect(header("Authorization", "Bearer synthetic-token"))
+                .andExpect(jsonPath("$.meetingId").value(reference.meetingId().toString()))
+                .andExpect(jsonPath("$.subject").value("owner"))
+                .andRespond(withSuccess(mapper.writeValueAsString(page), MediaType.APPLICATION_JSON));
+        assertThat(client.history(ref)).isEqualTo(page); server.verify();
+    }
     @ParameterizedTest @ValueSource(strings = {"broken", "{} {}", "oversized"})
     void malformedOrOversizeOwnerBodyFailsClosed(String body) {
         token(); server.expect(requestTo(properties.getOwnerBaseUrl() + "/api/v1/internal/bot-recording/inspect"))

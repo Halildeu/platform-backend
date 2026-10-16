@@ -14,6 +14,10 @@ import org.springframework.web.bind.annotation.*;
 public class BotRecordingController {
     private final BotRecordingService service;
     public BotRecordingController(BotRecordingService service) { this.service = service; }
+    @GetMapping public ResponseEntity<BotRecordingService.HistoryView> history(@PathVariable UUID meetingId,
+            @RequestParam(required = false) UUID beforeIntentId, @AuthenticationPrincipal Jwt jwt) {
+        return ok(service.history(meetingId, beforeIntentId, jwt));
+    }
     @GetMapping("/terms") public ResponseEntity<BotRecordingService.Terms> terms(@PathVariable UUID meetingId, @AuthenticationPrincipal Jwt jwt) {
         return ok(service.terms(meetingId, jwt));
     }
@@ -21,6 +25,8 @@ public class BotRecordingController {
             @RequestBody BotRecordingService.Request request) { return ok(service.grant(meetingId, jwt, request)); }
     @GetMapping("/{intentId}") public ResponseEntity<BotRecordingService.View> status(@PathVariable UUID meetingId, @PathVariable UUID intentId,
             @AuthenticationPrincipal Jwt jwt) { return ok(service.status(meetingId, intentId, jwt)); }
+    @GetMapping("/requests/{requestKey}") public ResponseEntity<BotRecordingService.View> requestStatus(@PathVariable UUID meetingId, @PathVariable UUID requestKey,
+            @AuthenticationPrincipal Jwt jwt) { return ok(service.requestStatus(meetingId, requestKey, jwt)); }
     @DeleteMapping("/{intentId}") public ResponseEntity<BotRecordingService.View> revoke(@PathVariable UUID meetingId, @PathVariable UUID intentId,
             @AuthenticationPrincipal Jwt jwt) { return ok(service.revoke(meetingId, intentId, jwt)); }
     private static <T> ResponseEntity<T> ok(T value) { return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(value); }

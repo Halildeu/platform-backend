@@ -59,6 +59,7 @@ public class BotRecordingService {
     public record View(UUID intentId, UUID meetingId, UUID requestKey, String state, long revision,
                        Instant createdAt, Instant expiresAt, Instant revokedAt, String consentVersion, String consentTextHash) {}
     public record AdmissionRequest(UUID intentId, String callId, String mediaSessionId) {}
+    public record HistoryView(java.util.List<View> items, UUID nextBeforeIntentId) {}
     public record Admission(UUID intentId, UUID meetingId, long revision, Instant expiresAt, Binding binding,
                             boolean ongoingAudioAuthorized) {}
 
@@ -97,6 +98,33 @@ public class BotRecordingService {
     }
 
     public View status(UUID meetingId, UUID intentId, Jwt jwt) { return view(owned(meetingId, intentId, jwt)); }
+    public HistoryView history(UUID meetingId, UUID beforeIntentId, Jwt jwt) {
+        user(jwt);
+        if (!uuid(meetingId) || beforeIntentId != null && !uuid(beforeIntentId)) throw invalid();
+        var result = owner.history(new HistoryRef(meetingId, jwt.getIssuer().toString(), jwt.getSubject(), beforeIntentId));
+        if (result == null || result.items() == null || result.items().size() > 10) throw unavailable();
+        var ids = new java.util.HashSet<UUID>();
+        var items = result.items().stream().map(item -> {
+            var snapshot = checked(item, meetingId, null);
+            if (!jwt.getIssuer().toString().equals(snapshot.grant().owner().issuer())
+                    || !jwt.getSubject().equals(snapshot.grant().owner().subject())
+                    || !ids.add(snapshot.intentId()) || snapshot.intentId().equals(beforeIntentId)) throw unavailable();
+            return view(snapshot);
+        }).toList();
+        if (result.nextBeforeIntentId() != null && (items.size() != 10
+                || !result.nextBeforeIntentId().equals(items.getLast().intentId()))) throw unavailable();
+        return new HistoryView(items, result.nextBeforeIntentId());
+    }
+    /** Read-only recovery after a lost grant response; never creates or renews consent. */
+    public View requestStatus(UUID meetingId, UUID requestKey, Jwt jwt) {
+        user(jwt);
+        if (!uuid(meetingId) || !uuid(requestKey)) throw invalid();
+        var snapshot = checked(owner.findRequest(new RequestRef(requestKey, meetingId, jwt.getIssuer().toString(), jwt.getSubject())), meetingId, null);
+        var original = snapshot.grant();
+        if (!jwt.getIssuer().toString().equals(original.owner().issuer()) || !jwt.getSubject().equals(original.owner().subject())) throw missing();
+        if (!requestKey.equals(original.requestKey())) throw unavailable();
+        return view(snapshot);
+    }
     public View revoke(UUID meetingId, UUID intentId, Jwt jwt) {
         var prior = owned(meetingId, intentId, jwt);
         var result = checked(owner.revoke(new Lookup(intentId, OwnerKey.of(prior.grant().owner()), meetingId)), meetingId, intentId);

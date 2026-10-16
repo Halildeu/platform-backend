@@ -21,6 +21,8 @@ public final class BotRecordingContract {
     public record Lookup(UUID intentId, OwnerKey owner, UUID meetingId) {}
     public record IntentRef(UUID intentId, UUID meetingId) {}
     public record RequestRef(UUID requestKey, UUID meetingId, String issuer, String subject) {}
+    public record HistoryRef(UUID meetingId, String issuer, String subject, UUID beforeIntentId) {}
+    public record History(java.util.List<Snapshot> items, UUID nextBeforeIntentId) {}
     public record Snapshot(int schemaVersion, String purpose, UUID intentId, Grant grant, String state, long revision,
                            Instant createdAt, Binding binding, Instant revokedAt) {}
 }

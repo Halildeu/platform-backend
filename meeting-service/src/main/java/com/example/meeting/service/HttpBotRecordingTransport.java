@@ -47,10 +47,14 @@ public class HttpBotRecordingTransport implements BotRecordingTransport {
     @Override public Snapshot grant(Grant value) { return command("grant", value); }
     @Override public Snapshot inspect(IntentRef value) { return command("inspect", value); }
     @Override public Snapshot findRequest(RequestRef value) { return command("find-request", value); }
+    @Override public History history(HistoryRef value) { return command("history", value, History.class); }
     @Override public Snapshot bind(Bind value) { return command("bind", value); }
     @Override public Snapshot revoke(Lookup value) { return command("revoke", value); }
 
     private Snapshot command(String operation, Object body) {
+        return command(operation, body, Snapshot.class);
+    }
+    private <T> T command(String operation, Object body, Class<T> type) {
         if (!properties.transportConfigured()) throw unavailable();
         String token = token();
         try {
@@ -62,7 +66,7 @@ public class HttpBotRecordingTransport implements BotRecordingTransport {
                         if (status == 409) throw new ResponseStatusException(HttpStatus.CONFLICT, "bot_recording_conflict");
                         if (status == 401 || status == 403) invalidate();
                         if (status != 200) throw unavailable();
-                        return read(response.getBody().readNBytes(65537), Snapshot.class);
+                        return read(response.getBody().readNBytes(65537), type);
                     });
         } catch (ResponseStatusException failure) { throw failure; }
         catch (RuntimeException failure) { throw unavailable(); }

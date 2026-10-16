@@ -76,6 +76,42 @@ class BotRecordingServiceTest {
         service.grant(meeting, user(), request);
         verify(permissions, times(2)).checkPrincipalFreshResult("user:42", "can_manage", "module", "MEETING");
     }
+    @Test void historyUsesStableOwnerWithoutDirectoryOrCurrentGrantPermissions() {
+        properties.setEnabled(false); calendar.setEnabled(false);
+        when(transport.history(any())).thenReturn(new History(List.of(snapshot(grant, "GRANTED")), null));
+        var result = service.history(meeting, null, user());
+        assertEquals(intent, result.items().getFirst().intentId());
+        verify(transport).history(new HistoryRef(meeting, issuer, "subject", null));
+        verifyNoInteractions(tenants, permissions, meetings, directory, dispatch);
+        verify(transport, never()).grant(any());
+    }
+    @Test void historyRejectsForeignScopeDuplicatesAndInvalidCursorFromOwner() {
+        when(transport.history(any())).thenReturn(new History(List.of(snapshot(grant, "GRANTED")), null));
+        var foreign = Jwt.withTokenValue("x").header("alg", "RS256").issuer(issuer).subject("other").build();
+        assertStatus(503, () -> service.history(meeting, null, foreign));
+        assertStatus(503, () -> service.history(UUID.randomUUID(), null, user()));
+        assertStatus(503, () -> service.history(meeting, intent, user()));
+        when(transport.history(any())).thenReturn(new History(List.of(snapshot(grant, "GRANTED"), snapshot(grant, "GRANTED")), null));
+        assertStatus(503, () -> service.history(meeting, null, user()));
+        when(transport.history(any())).thenReturn(new History(List.of(), intent));
+        assertStatus(503, () -> service.history(meeting, null, user()));
+    }
+    @Test void lostResponseRecoveryIsReadOnlyAndSurvivesPermissionLossAndDisabledGrants() {
+        properties.setEnabled(false); properties.setConsentText(""); calendar.setEnabled(false);
+        doReturn(snapshot(grant, "REVOKED")).when(transport).findRequest(any());
+        assertEquals("REVOKED", service.requestStatus(meeting, key, user()).state());
+        verify(transport).findRequest(new RequestRef(key, meeting, issuer, "subject"));
+        verifyNoInteractions(tenants, permissions, meetings, directory, dispatch);
+        verify(transport, never()).grant(any()); verify(transport, never()).bind(any());
+    }
+    @Test void recoveryRejectsForeignOwnerOrWrongRequestAndNeverCreatesWhenMissing() {
+        assertStatus(404, () -> service.requestStatus(meeting, key, user()));
+        doReturn(snapshot(grant, "GRANTED")).when(transport).findRequest(any());
+        var foreign = Jwt.withTokenValue("x").header("alg", "RS256").issuer(issuer).subject("other").build();
+        assertStatus(404, () -> service.requestStatus(meeting, key, foreign));
+        assertStatus(503, () -> service.requestStatus(meeting, UUID.randomUUID(), user()));
+        verify(transport, never()).grant(any()); verifyNoInteractions(tenants, permissions, meetings, directory, dispatch);
+    }
     @Test void moduleEnforcementDoesNotDependOnAdminInterceptorOrFailOpenConfiguration() {
         when(permissions.isEnabled()).thenReturn(false);
         assertStatus(503, () -> service.grant(meeting, user(), request));

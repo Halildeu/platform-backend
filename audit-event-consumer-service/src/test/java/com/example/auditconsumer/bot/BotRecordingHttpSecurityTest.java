@@ -47,7 +47,7 @@ class BotRecordingHttpSecurityTest {
         verifyNoInteractions(owner);
     }
     @Test void inspectionAndRecoveryNeverAcceptWorkerIdentity() throws Exception {
-        for (String path : java.util.List.of("inspect", "find-request")) {
+        for (String path : java.util.List.of("inspect", "find-request", "history")) {
             mvc.perform(post("/api/v1/internal/bot-recording/" + path).contentType("application/json").content("{}")
                     .header("Authorization", "Bearer " + BotRecordingSecurityTest.token(b -> b.subject("teams-capture-worker").claim("client_id", "teams-capture-worker"))))
                     .andExpect(status().isUnauthorized());

@@ -73,6 +73,17 @@ User bearer routes: `/api/v1/meetings/{meetingId}/bot-recording-intents` (gatewa
 - `POST` collection: `{requestKey,consentVersion,consentTextHash,locale,expiresAt}`. Retain the exact key and absolute expiry
   across response loss/retries. Do not regenerate a new key automatically. The server generates the returned intent ID.
 - `GET /{intentId}`: redacted historical state. `DELETE /{intentId}`: terminal withdrawal.
+- `GET /requests/{requestKey}`: read-only recovery of a lost grant response; never grants or renews.
+- `GET` collection, optional `beforeIntentId`: owner history with ten entries per page and `nextBeforeIntentId`.
+  Browser storage is not required. Each cursor is scoped to the same signed issuer, subject and meeting;
+  revoked and expired records remain discoverable, including after company/directory changes. The browser
+  must keep history/withdrawal independent from local receipt parsing and from permission to create new grants.
+
+V4 adds a generated meeting ID from immutable grant evidence and an owner/meeting/keyset index. History
+orders by creation time and UUID, so equal timestamps cannot hide older active grants. It is a historical read,
+not an ongoing media permission. The private `/history` command is restricted to the existing meeting-service
+identity, and its public response contains only redacted views. Deployment must retain this history and
+withdrawal surface when new-grant configuration is disabled.
 
 These endpoints require the configured USER issuer, not the SERVICE issuer or an impersonation token. Returned views expose no
 Microsoft organizer, authz principal, company or worker token. Status/withdrawal use stored issuer+subject and remain available after

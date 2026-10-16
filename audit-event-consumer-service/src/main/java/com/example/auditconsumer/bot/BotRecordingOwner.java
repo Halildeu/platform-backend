@@ -93,6 +93,31 @@ public class BotRecordingOwner {
         return snapshot(rows.getFirst());
     }
 
+    /** Stable owner discovery, including terminal records. No directory or browser receipt needed. */
+    @Transactional(readOnly = true)
+    public History history(HistoryRef reference) {
+        if (reference == null) throw invalid();
+        uuid(reference.meetingId()); text(reference.issuer(), 512); text(reference.subject(), 255);
+        BotRecordingIntent before = null;
+        if (reference.beforeIntentId() != null) {
+            uuid(reference.beforeIntentId());
+            before = em.find(BotRecordingIntent.class, reference.beforeIntentId());
+            if (before == null || !reference.issuer().equals(before.ownerIssuer)
+                    || !reference.subject().equals(before.ownerSubject)
+                    || !reference.meetingId().equals(before.meetingId)) throw missing();
+        }
+        var query = em.createQuery("select i from BotRecordingIntent i where i.ownerIssuer = :issuer "
+                + "and i.ownerSubject = :subject and i.meetingId = :meeting "
+                + (before == null ? "" : "and (i.createdAt < :created or (i.createdAt = :created and i.id < :id)) ")
+                + "order by i.createdAt desc, i.id desc", BotRecordingIntent.class)
+                .setParameter("issuer", reference.issuer()).setParameter("subject", reference.subject())
+                .setParameter("meeting", reference.meetingId()).setMaxResults(11);
+        if (before != null) query.setParameter("created", before.createdAt).setParameter("id", before.id);
+        var rows = query.getResultList();
+        var page = rows.stream().limit(10).map(this::snapshot).toList();
+        return new History(page, rows.size() > 10 ? page.getLast().intentId() : null);
+    }
+
     public Snapshot bind(Bind command) {
         if (command == null || command.expectedRevision() != 1 || command.binding() == null) throw invalid();
         validate(command.binding());

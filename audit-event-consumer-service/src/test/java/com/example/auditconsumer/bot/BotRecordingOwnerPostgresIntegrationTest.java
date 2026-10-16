@@ -108,6 +108,34 @@ class BotRecordingOwnerPostgresIntegrationTest {
             assertThat(json.readValue(bytes, Snapshot.class).revision()).isEqualTo(event.getChunkSeq());
         }
     }
+    @Test void historyPagesEveryRecordWithTimestampTiesAndStableOwnerAcrossCompanyChanges() {
+        var g = grant(); var own = g.owner();
+        var expected = new java.util.HashSet<UUID>();
+        for (int n = 0; n < 23; n++) {
+            var changedCompany = new Owner(own.companyId() + n, own.userId(), own.issuer(), own.subject(), own.tenantId(),
+                    own.orgId(), own.authzPrincipal(), own.microsoftTenantId(), own.organizerId());
+            var item = service.grant(new Grant(UUID.randomUUID(), g.meetingId(), changedCompany,
+                    g.consentVersion(), g.consentTextHash(), g.locale(), g.expiresAt()));
+            expected.add(item.intentId());
+            if (n % 3 == 0) service.revoke(lookup(item));
+        }
+        var unrelated = service.grant(grant());
+        var seen = new java.util.HashSet<UUID>(); UUID cursor = null;
+        do {
+            var page = service.history(new HistoryRef(g.meetingId(), own.issuer(), own.subject(), cursor));
+            assertThat(page.items()).hasSizeLessThanOrEqualTo(10);
+            for (var item : page.items()) assertThat(seen.add(item.intentId())).isTrue();
+            cursor = page.nextBeforeIntentId();
+        } while (cursor != null);
+        assertThat(seen).isEqualTo(expected);
+        assertThat(service.history(new HistoryRef(g.meetingId(), own.issuer(), "stranger", null)).items()).isEmpty();
+        assertThat(service.history(new HistoryRef(g.meetingId(), "https://other.test", own.subject(), null)).items()).isEmpty();
+        assertThat(service.history(new HistoryRef(UUID.randomUUID(), own.issuer(), own.subject(), null)).items()).isEmpty();
+        assertThatThrownBy(() -> service.history(new HistoryRef(g.meetingId(), own.issuer(), own.subject(), unrelated.intentId())))
+                .isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> jdbc.update("update audit_event.bot_recording_intent set meeting_id=? where id=?", UUID.randomUUID(), seen.iterator().next()))
+                .isInstanceOf(RuntimeException.class);
+    }
 
     @Test void changedIdempotentCommandAndChangedBindingDoNotReplaceEvidence() {
         var command = grant(); var first = service.grant(command);

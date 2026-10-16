@@ -17,6 +17,9 @@ public class BotRecordingController {
     @PostMapping("/lookup") public ResponseEntity<Snapshot> lookup(@RequestBody Lookup value) { return ok(owner.lookup(value)); }
     @PostMapping("/inspect") public ResponseEntity<Snapshot> inspect(@RequestBody IntentRef value) { return ok(owner.inspect(value)); }
     @PostMapping("/find-request") public ResponseEntity<Snapshot> findRequest(@RequestBody RequestRef value) { return ok(owner.findRequest(value)); }
+    @PostMapping("/history") public ResponseEntity<History> history(@RequestBody HistoryRef value) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(owner.history(value));
+    }
     @PostMapping("/bind") public ResponseEntity<Snapshot> bind(@RequestBody Bind value) { return ok(owner.bind(value)); }
     @PostMapping("/revoke") public ResponseEntity<Snapshot> revoke(@RequestBody Lookup value) { return ok(owner.revoke(value)); }
     private static ResponseEntity<Snapshot> ok(Snapshot snapshot) {

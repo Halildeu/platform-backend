@@ -8,6 +8,7 @@ import java.util.UUID;
 @Table(name = "bot_recording_intent")
 class BotRecordingIntent {
     @Id UUID id;
+    @Column(name = "meeting_id", insertable = false, updatable = false) UUID meetingId;
     @Column(name = "company_id", nullable = false, updatable = false) long companyId;
     @Column(name = "request_key", nullable = false, updatable = false) UUID requestKey;
     @Column(name = "owner_issuer", nullable = false, updatable = false, length = 512) String ownerIssuer;
