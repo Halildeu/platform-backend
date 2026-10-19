@@ -50,14 +50,56 @@ ingestion is another option, but does not satisfy the live analysis requirement.
 No alternative has been selected, no service purchased and no recording policy
 changed by this library. Processing remains closed without all required grants.
 
-The existing backend does not yet provide native bot capture admission: the
-worker's service credential authorizes scheduling only; public audio endpoints
-require user identity. A new capture contract must bind current authorization
-and persisted, revocation-aware consent to tenant, canonical meeting, capture,
-call and media session before sending any PCM. Do not substitute a caller's
-`consent=true`, a scheduling token or an invented user JWT. The downstream
+The backend now provides durable intent binding and a separate read-only fresh
+processing check (see [owner contract](bot-recording-owner.md)). Public audio endpoints
+still require user identity; they are not the native bot's ingest interface.
+Do not substitute a caller's `consent=true`, a scheduling token or an invented user JWT. The downstream
 speaker contract currently accepts anonymous labels only; named participant
 evidence needs an explicit versioned contract, not renaming a provider label.
+
+## Authorization consumer added 2026-10-16
+
+`AuthorizedAudioDispatcher` consumes the actual receiver's bounded queue. It requires
+a fresh processing check, an exact Microsoft recording-status success receipt,
+and another processing check before arming the receiver. `AllowProcessing` is now
+internal; the host uses this dispatcher instead of opening the receiver directly.
+Every nonempty dispatch batch gets a new authorization check; while silent the
+check runs at least once a second. Checks are **point-in-time observations**, not
+leases or an atomic cross-service revocation barrier. Already transmitted network
+data cannot be recalled. The gateway must also check at provider dispatch and at
+durable output, including clearing any delayed sentence assembly on denial.
+
+The HTTP client uses `teams-capture-media` SERVICE identity, never a user token.
+Only the service token is cached briefly; positive processing decisions are never
+cached. Responses are bounded to 32 KiB and checked against exact intent, call,
+media-session, Microsoft tenant, canonical scope, revision and freshness. HTTP
+redirects are disabled. Configuration is disabled by default; enabled configuration
+requires HTTPS endpoints and a separately provisioned credential.
+
+The Microsoft client requires HTTP 200, the expected operation type, completed
+status, matching client context and a matching call/operation Location. An SDK
+request task completing alone is insufficient. These requests require the policy
+and permissions described above; this code does not create or approve them.
+
+Any denial, timeout, receiver overflow or send failure is terminal for that
+dispatcher. It detaches the receiver, zeroes pending/transferred PCM, cancels work
+and aborts the transport before requesting `notRecording`. A delayed successful
+check cannot reopen it. Stop also zeroes a batch already dequeued while an
+authorization request is still pending. Attribution is refreshed after that
+request, immediately before transport transfer, so roster invalidation or source
+reuse during the wait cannot send an earlier matched name. A send has a maximum
+three-second deadline, shortened to the consent expiry when necessary. Unmixed
+slices retain separate source IDs and receiving
+timestamps; the transport must not concatenate simultaneous sources into one mono
+timeline. The `IAuthorizedUnmixedAudioTransport` interface is not yet backed by a
+production gateway implementation. This source addition does not create the
+executable host, connect live Teams audio, or change presence-only readiness.
+
+Source validation: 101 native SDK/receiver/authorization tests passed locally on
+2026-10-19, including attribution changes and stop during an unresolved authorization
+request. Separate review found no remaining blocking findings for this library slice.
+Network tests use bounded synthetic HTTP handlers, not real tenant
+credentials or real Microsoft calls. A real Windows/Teams acceptance remains required.
 
 ## Required host integration (not implemented by this library)
 

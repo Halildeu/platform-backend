@@ -50,6 +50,28 @@ class BotRecordingInternalControllerTest {
         if (bearer) request.header("Authorization", "Bearer verified");
         mvc.perform(request).andExpect(status().is(expected));
     }
+    @ParameterizedTest @ValueSource(strings = {"teams-capture-media", "audio-gateway-service"})
+    void exactProcessingClientCanReadButCannotBind(String client) throws Exception {
+        token("auth-service", client, client, "meeting:bot-recording:check");
+        mvc.perform(post("/api/v1/internal/meetings/" + meeting + "/bot-recording/check-processing")
+                .header("Authorization", "Bearer verified").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"));
+        verify(service).checkProcessing(eq(meeting), any());
+        send(true, 403); verify(service, never()).admit(any(), any());
+    }
+    @Test void schedulingAdmissionUserAndMismatchedClientCannotCheckProcessing() throws Exception {
+        for (String[] claims : new String[][] {
+                {"auth-service", "teams-capture-worker", "teams-capture-worker", "meeting:bot-recording:admit"},
+                {"auth-service", "teams-capture-worker", "teams-capture-worker", "meeting:bot-recording:check"},
+                {"auth-service", "teams-capture-media", "audio-gateway-service", "meeting:bot-recording:check"},
+                {"https://user.example", "teams-capture-media", "teams-capture-media", "meeting:bot-recording:check"}}) {
+            token(claims[0], claims[1], claims[2], claims[3]);
+            mvc.perform(post("/api/v1/internal/meetings/" + meeting + "/bot-recording/check-processing")
+                    .header("Authorization", "Bearer verified").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isForbidden());
+        }
+        verifyNoInteractions(service);
+    }
     private void token(String issuer, String subject, String client, String permission) {
         when(jwtDecoder.decode("verified")).thenReturn(Jwt.withTokenValue("verified").header("alg", "RS256").issuer(issuer).subject(subject)
                 .claim("client_id", client).issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(60)).claim("perm", List.of(permission)).build());

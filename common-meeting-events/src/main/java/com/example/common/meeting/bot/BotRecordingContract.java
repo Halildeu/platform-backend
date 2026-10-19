@@ -13,6 +13,12 @@ public final class BotRecordingContract {
     public record Grant(UUID requestKey, UUID meetingId, Owner owner, String consentVersion,
                         String consentTextHash, String locale, Instant expiresAt) {}
     public record Binding(String workerClientId, String callId, String mediaSessionId) {}
+    public record ProcessingRequest(UUID intentId, long revision, Binding binding) {}
+    /** A read-only observation, NOT a lease or permission to retain/process future media. */
+    public record ProcessingCheck(int schemaVersion, String purpose, UUID intentId, UUID meetingId,
+                                  long revision, Binding binding, UUID tenantId, UUID orgId,
+                                  long companyId, long userId, UUID microsoftTenantId, UUID organizerId,
+                                  Instant checkedAt, Instant expiresAt) {}
     public record Bind(UUID intentId, Owner owner, UUID meetingId, long expectedRevision, Binding binding) {}
     /** Stable user ownership survives changes to Microsoft links and recording privileges. */
     public record OwnerKey(long companyId, String issuer, String subject) {

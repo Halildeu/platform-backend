@@ -54,6 +54,8 @@ public sealed class UnmixedAudioReceiver : IDisposable
     private bool stopped;
     private long lastReceivedAt = -1;
     public string? Failure { get; private set; }
+    public MediaCallKey Call => speakers.Key;
+    internal bool IsStopped { get { lock (sync) return stopped; } }
 
     public UnmixedAudioReceiver(TemporalSpeakerMap speakers, int queueCapacity = 256)
     {
@@ -92,7 +94,7 @@ public sealed class UnmixedAudioReceiver : IDisposable
     /// HTTP switch is provided. Revocation is terminal; re-authorize with a new
     /// receiver/session, never replay queued audio across a permission gap.
     /// </summary>
-    public void AllowProcessing(MediaCallKey key)
+    internal void AllowProcessing(MediaCallKey key)
     {
         lock (sync)
         {
@@ -102,6 +104,31 @@ public sealed class UnmixedAudioReceiver : IDisposable
     }
 
     public void RevokeProcessing() { lock (sync) Stop("processing_revoked"); }
+
+    internal IReadOnlyList<OwnedAudioFrame> TakeBatch(int maximum)
+    {
+        lock (sync)
+        {
+            var batch = new List<OwnedAudioFrame>();
+            if (stopped || !processingAllowed) return batch;
+            while (batch.Count < maximum && frames.Reader.TryRead(out var frame))
+            {
+                frame.ResolveAtDelivery(speakers);
+                batch.Add(frame);
+            }
+            return batch;
+        }
+    }
+
+    internal void RefreshAttribution(IReadOnlyList<OwnedAudioFrame> batch)
+    {
+        lock (sync)
+        {
+            if (stopped || !processingAllowed || batch.Any(frame => frame.Call != speakers.Key))
+                throw new InvalidOperationException("Receiver is no longer authorized.");
+            foreach (var frame in batch) frame.ResolveAtDelivery(speakers);
+        }
+    }
 
     public async IAsyncEnumerable<OwnedAudioFrame> ReadAllAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)

@@ -24,6 +24,11 @@ public class TeamsScheduleAuthorizationService {
     }
 
     public void authorize(UUID meetingId, UUID organizerId, TeamsScheduleActor actor) {
+        authorizeScope(meetingId, organizerId, actor);
+    }
+
+    /** Current canonical scope, not the historical scope supplied by a scheduler. */
+    public com.example.meeting.dto.MeetingRecordingAccessResponse authorizeScope(UUID meetingId, UUID organizerId, TeamsScheduleActor actor) {
         if (meetingId == null || meetingId.equals(new UUID(0, 0)) || organizerId == null || organizerId.equals(new UUID(0, 0))
                 || actor == null || !actor.isValid()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_schedule_actor");
         if (!properties.isConfigured()) throw unavailable();
@@ -42,7 +47,9 @@ public class TeamsScheduleAuthorizationService {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "schedule_permission_revoked");
         // Canonical org scope, stable subject CAN_RECORD and active meeting lifecycle are checked again.
         var access = meetings.requireTeamsDispatchAccess(new AdminTenantContext(actor.organizationId(), actor.subject(), actor.authzPrincipal()), meetingId);
-        if (access == null || !meetingId.equals(access.meetingId()) || !actor.organizationId().equals(access.orgId())) throw unavailable();
+        if (access == null || !meetingId.equals(access.meetingId()) || !actor.organizationId().equals(access.orgId())
+                || access.tenantId() == null || access.tenantId().equals(new UUID(0, 0))) throw unavailable();
+        return access;
     }
     private static ResponseStatusException unavailable() {
         return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "schedule_authorization_unavailable");

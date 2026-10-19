@@ -101,6 +101,35 @@ consent. A changed payload conflicts; ambiguous cross-company key reuse conflict
 `POST /api/v1/internal/meetings/{meetingId}/bot-recording/admit` accepts `{intentId,callId,mediaSessionId}` only with the exact
 SERVICE permission `meeting:bot-recording:admit` and `sub=client_id=teams-capture-worker`. It returns binding/revision/expiry and
 `ongoingAudioAuthorized=false`. The binding is a trusted worker assertion, not Microsoft proof that the call belongs to the meeting.
+
+### Fresh processing observation
+
+`POST /api/v1/internal/meetings/{meetingId}/bot-recording/check-processing` accepts
+`{intentId, revision:2, binding:{workerClientId:"teams-capture-worker",callId,mediaSessionId}}`.
+Only SERVICE `sub=client_id=teams-capture-media` or `audio-gateway-service`, audience
+`meeting-service`, and the separate `meeting:bot-recording:check` permission pass.
+Scheduling/admission permissions and USER tokens do not pass. These readers cannot
+grant, bind, renew, reopen or revoke an intent.
+
+The service requires exact BOUND revision 2, current expiry and binding, rechecks
+current directory identity, manager/CAN_RECORD and meeting lifecycle, compares the
+current canonical tenant/org with the bound owner, then rereads the durable owner.
+Revocation during those checks or any changed grant/scope/binding denies the result.
+The response contains server-derived canonical tenant/org UUIDs, separately named
+numeric company/user IDs, Microsoft tenant/organizer, exact binding and `checkedAt`/
+`expiresAt`. `Cache-Control: no-store` applies. This is a point-in-time observation,
+not a lease, Microsoft recording receipt or proof of native call ownership.
+
+Runtime activation additions (values will be supplied later):
+- Provision distinct `SERVICE_CLIENT_TEAMS_CAPTURE_MEDIA_SECRET` and
+  `SERVICE_CLIENT_AUDIO_GATEWAY_SECRET` through the institution's secret store.
+  Blank defaults disable minting; neither client may mint admit/manage permissions.
+- Include `teams-capture-media,audio-gateway-service` in the existing
+  `MEETING_INTERNAL_SERVICE_JWT_CLIENT_IDS` allowlist without removing existing clients.
+- If deployment sets `SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS` explicitly, add
+  `meeting:bot-recording:check` there. Source defaults cannot expand an override.
+- Retain `MEETING_BOT_RECORDING_ENABLED=false` until runtime dependencies and actual
+  host/gateway integration are verified. No GitOps/runtime change accompanies this source.
 A concurrent revoke wins under the owner's transaction lock; admission cannot reopen it.
 
 Configure `meeting.bot-recording` via `MEETING_BOT_RECORDING_ENABLED` (default false), `MEETING_BOT_RECORDING_CLIENT_SECRET`

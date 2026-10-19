@@ -187,6 +187,37 @@ public class BotRecordingService {
         return new Owner(identity.companyId(), identity.userId(), actor.issuer(), actor.subject(), access.tenantId(), access.orgId(),
                 actor.authzPrincipal(), actor.microsoftTenantId(), identity.organizerId());
     }
+
+    /** Recheck at every processing boundary; a successful response never authorizes later work. */
+    public ProcessingCheck checkProcessing(UUID meetingId, ProcessingRequest request) {
+        if (!properties.isEnabled()) throw unavailable();
+        if (!uuid(meetingId) || request == null || !uuid(request.intentId()) || request.revision() != 2
+                || request.binding() == null || !"teams-capture-worker".equals(request.binding().workerClientId())
+                || !identifier(request.binding().callId()) || !identifier(request.binding().mediaSessionId())) throw invalid();
+        var reference = new IntentRef(request.intentId(), meetingId);
+        var before = checked(owner.inspect(reference), meetingId, request.intentId());
+        requireProcessingBinding(before, request);
+        var actor = before.grant().owner();
+        var scope = dispatch.authorizeScope(meetingId, actor.organizerId(), new TeamsScheduleActor(1, actor.issuer(), actor.subject(),
+                actor.orgId(), actor.microsoftTenantId(), actor.authzPrincipal(), actor.userId(), actor.companyId()));
+        if (scope == null || !meetingId.equals(scope.meetingId()) || !uuid(scope.tenantId()) || !uuid(scope.orgId())
+                || !scope.tenantId().equals(actor.tenantId()) || !scope.orgId().equals(actor.orgId())
+                || actor.companyId() <= 0 || actor.userId() <= 0 || !uuid(actor.microsoftTenantId()) || !uuid(actor.organizerId())) throw unavailable();
+        // Directory/FGA calls may take time. Never return the earlier consent after an intervening revoke.
+        var after = checked(owner.inspect(reference), meetingId, request.intentId());
+        requireProcessingBinding(after, request);
+        if (!before.equals(after)) throw conflict();
+        Instant checkedAt = clock.instant();
+        if (!after.grant().expiresAt().isAfter(checkedAt)) throw conflict();
+        return new ProcessingCheck(1, "TEAMS_LIVE_TRANSCRIPTION", after.intentId(), meetingId, after.revision(), after.binding(),
+                scope.tenantId(), scope.orgId(), actor.companyId(), actor.userId(), actor.microsoftTenantId(), actor.organizerId(),
+                checkedAt, after.grant().expiresAt());
+    }
+
+    private void requireProcessingBinding(Snapshot snapshot, ProcessingRequest request) {
+        if (!"BOUND".equals(snapshot.state()) || snapshot.revision() != request.revision()
+                || !request.binding().equals(snapshot.binding()) || !snapshot.grant().expiresAt().isAfter(clock.instant())) throw conflict();
+    }
     private void user(Jwt jwt) {
         // The default resource-server chain also accepts SERVICE tokens; restrict this facade to the configured USER issuer.
         String issuer = environment.getProperty("spring.security.oauth2.resourceserver.jwt.issuer-uri",

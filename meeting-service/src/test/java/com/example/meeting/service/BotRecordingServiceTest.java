@@ -220,6 +220,70 @@ class BotRecordingServiceTest {
         return new Snapshot(1, "TEAMS_LIVE_TRANSCRIPTION", intent, g, state, "GRANTED".equals(state) ? 1 : 2, now,
                 "BOUND".equals(state) ? binding() : null, "REVOKED".equals(state) ? now : null);
     }
+    @Test void processingCheckIsFreshReadOnlyExactBindingAndReturnsVerifiedCanonicalScope() {
+        boundProcessing();
+        var result = service.checkProcessing(meeting, processingRequest());
+        assertEquals(tenant, result.tenantId()); assertEquals(org, result.orgId());
+        assertEquals(35, result.companyId()); assertEquals(42, result.userId());
+        assertEquals(now, result.checkedAt()); assertEquals(binding(), result.binding());
+        var order = inOrder(transport, dispatch);
+        order.verify(transport).inspect(new IntentRef(intent, meeting));
+        order.verify(dispatch).authorizeScope(eq(meeting), eq(organizer), any());
+        order.verify(transport).inspect(new IntentRef(intent, meeting));
+        verify(transport, never()).bind(any()); verify(transport, never()).grant(any()); verify(transport, never()).revoke(any());
+    }
+    @Test void processingDeniesRevokeBetweenOwnerReads() {
+        boundProcessing();
+        when(transport.inspect(any())).thenReturn(snapshot(grant, "BOUND"),
+                new Snapshot(1, "TEAMS_LIVE_TRANSCRIPTION", intent, grant, "REVOKED", 3, now, binding(), now));
+        assertStatus(409, () -> service.checkProcessing(meeting, processingRequest()));
+    }
+    @Test void processingDeniesUnboundExpiredWrongBindingAndDisabled() {
+        assertStatus(409, () -> service.checkProcessing(meeting, processingRequest()));
+        boundProcessing();
+        assertStatus(409, () -> service.checkProcessing(meeting, new ProcessingRequest(intent, 2,
+                new Binding("teams-capture-worker", "call-1", "other-media"))));
+        var expired = new Grant(key, meeting, actor, grant.consentVersion(), grant.consentTextHash(), grant.locale(), now);
+        when(transport.inspect(any())).thenReturn(snapshot(expired, "BOUND"));
+        assertStatus(409, () -> service.checkProcessing(meeting, processingRequest()));
+        properties.setEnabled(false); assertStatus(503, () -> service.checkProcessing(meeting, processingRequest()));
+        verifyNoInteractions(dispatch);
+    }
+    @Test void processingNeverAcceptsHistoricalTenantAfterMeetingScopeChange() {
+        boundProcessing();
+        when(dispatch.authorizeScope(any(), any(), any())).thenReturn(new MeetingRecordingAccessResponse(meeting, UUID.randomUUID(), org, List.of()));
+        assertStatus(503, () -> service.checkProcessing(meeting, processingRequest()));
+        when(dispatch.authorizeScope(any(), any(), any())).thenReturn(new MeetingRecordingAccessResponse(meeting, tenant, UUID.randomUUID(), List.of()));
+        assertStatus(503, () -> service.checkProcessing(meeting, processingRequest()));
+    }
+    @ParameterizedTest @ValueSource(ints = {403, 404, 409, 503})
+    void processingCannotUsePriorConsentDuringCurrentPermissionOrOwnerFailure(int status) {
+        boundProcessing();
+        when(dispatch.authorizeScope(any(), any(), any())).thenThrow(new ResponseStatusException(HttpStatus.valueOf(status)));
+        assertStatus(status, () -> service.checkProcessing(meeting, processingRequest()));
+        verify(transport, times(1)).inspect(any());
+        verify(transport, never()).bind(any());
+    }
+    @Test void processingRechecksExpiryAfterSlowAuthorization() {
+        var moving = mock(Clock.class);
+        when(moving.instant()).thenReturn(now, now, now.plusSeconds(3600));
+        @SuppressWarnings("unchecked") ObjectProvider<OpenFgaAuthzService> provider = mock(ObjectProvider.class);
+        service = new BotRecordingService(properties, calendar, tenants, meetings, directory, provider, dispatch, transport,
+                new MockEnvironment(), moving);
+        boundProcessing();
+        assertStatus(409, () -> service.checkProcessing(meeting, processingRequest()));
+    }
+    @Test void processingRejectsInvalidRevisionWorkerAndOwnerPayload() {
+        assertStatus(400, () -> service.checkProcessing(meeting, new ProcessingRequest(intent, 1, binding())));
+        assertStatus(400, () -> service.checkProcessing(meeting, new ProcessingRequest(intent, 2, new Binding("other", "call-1", "media-1"))));
+        boundProcessing(); when(transport.inspect(any())).thenReturn(null);
+        assertStatus(503, () -> service.checkProcessing(meeting, processingRequest()));
+    }
+    private void boundProcessing() {
+        when(transport.inspect(new IntentRef(intent, meeting))).thenReturn(snapshot(grant, "BOUND"));
+        when(dispatch.authorizeScope(eq(meeting), eq(organizer), any())).thenReturn(new MeetingRecordingAccessResponse(meeting, tenant, org, List.of()));
+    }
+    private ProcessingRequest processingRequest() { return new ProcessingRequest(intent, 2, binding()); }
     private Binding binding() { return new Binding("teams-capture-worker", "call-1", "media-1"); }
     private BotRecordingService.AdmissionRequest admissionRequest() { return new BotRecordingService.AdmissionRequest(intent, "call-1", "media-1"); }
     private Jwt user() { return Jwt.withTokenValue("verified").header("alg", "RS256").issuer(issuer).subject("subject").build(); }

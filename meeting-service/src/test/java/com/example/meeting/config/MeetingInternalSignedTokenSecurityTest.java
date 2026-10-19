@@ -124,6 +124,35 @@ class MeetingInternalSignedTokenSecurityTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"teams-capture-media", "audio-gateway-service"})
+    void signedProcessingIdentityCannotMutateAdmission(String client) throws Exception {
+        mockMvc.perform(post("/api/v1/internal/meetings/{id}/bot-recording/check-processing", MEETING_ID)
+                .header(AUTHORIZATION, bearer(client, "meeting:bot-recording:check"))
+                .contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/internal/meetings/{id}/bot-recording/admit", MEETING_ID)
+                .header(AUTHORIZATION, bearer(client, "meeting:bot-recording:check"))
+                .contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isForbidden());
+        org.mockito.Mockito.verify(botRecording).checkProcessing(eq(MEETING_ID), any());
+        org.mockito.Mockito.verify(botRecording, org.mockito.Mockito.never()).admit(any(), any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"issuer", "audience", "subject", "expired", "signature"})
+    void processingRejectsWrongSignedTrustClaims(String fault) throws Exception {
+        var claims = new JWTClaimsSet.Builder().issuer(fault.equals("issuer") ? "https://user.example" : ISSUER)
+                .subject(fault.equals("subject") ? "teams-capture-worker" : "teams-capture-media")
+                .audience(fault.equals("audience") ? "audio-gateway-service" : AUDIENCE)
+                .claim("client_id", "teams-capture-media").claim("perm", List.of("meeting:bot-recording:check"))
+                .issueTime(new Date(System.currentTimeMillis() - 600_000))
+                .expirationTime(new Date(System.currentTimeMillis() + (fault.equals("expired") ? -300_000 : 300_000))).build();
+        var signed = new SignedJWT(new JWSHeader(JWSAlgorithm.RS256), claims);
+        signed.sign(new RSASSASigner((fault.equals("signature") ? rsa() : SERVICE_KEYS).getPrivate()));
+        mockMvc.perform(post("/api/v1/internal/meetings/{id}/bot-recording/check-processing", MEETING_ID)
+                .header(AUTHORIZATION, "Bearer " + signed.serialize()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized()); verifyNoInteractions(botRecording);
+    }
+
     @MockitoBean
     private MeetingService meetingService;
 
@@ -276,7 +305,7 @@ class MeetingInternalSignedTokenSecurityTest {
             decoder.setJwtValidator(SecurityConfig.buildInternalServiceValidator(
                     ISSUER,
                     List.of(AUDIENCE),
-                    List.of(MEETING_AI, TRANSCRIPT_SERVICE, "teams-capture-worker")));
+                    List.of(MEETING_AI, TRANSCRIPT_SERVICE, "teams-capture-worker", "teams-capture-media", "audio-gateway-service")));
             return decoder;
         }
     }

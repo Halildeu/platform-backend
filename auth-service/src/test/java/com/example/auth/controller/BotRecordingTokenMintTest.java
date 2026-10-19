@@ -26,7 +26,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "security.service-mint.allowed-audiences=meeting-service,audit-event-consumer-service,user-service,transcript-service,notification-orchestrator",
-        "security.service-mint.allowed-permissions=meeting:bot-recording:admit,audit:bot-recording:manage,users:internal,transcript:canonical:read,notify:intents:system",
+        "security.service-mint.allowed-permissions=meeting:bot-recording:admit,meeting:bot-recording:check,audit:bot-recording:manage,users:internal,transcript:canonical:read,notify:intents:system",
         "security.service-mint.rate-limit-per-minute=1000", "security.service-mint.failed-auth-rate-limit-per-minute=1000",
         "auth.impersonation.keycloak-token-url=http://localhost:9999/token", "auth.impersonation.keycloak-broker-url=http://localhost:9999/broker",
         "spring.datasource.url=jdbc:h2:mem:botmint;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE",
@@ -48,6 +48,17 @@ class BotRecordingTokenMintTest {
         clients.getClients().get("meeting-service").setSecret("synthetic-bot");
         clients.getClients().get("teams-capture-worker").setSecret("synthetic-bot");
         try {
+            for (String client : new String[] {"teams-capture-media", "audio-gateway-service"}) {
+                clients.getClients().get(client).setSecret("synthetic-bot");
+                successful(client, "meeting-service", "meeting:bot-recording:check");
+                rejected(client, "meeting-service", "meeting:bot-recording:admit");
+                rejected(client, "audit-event-consumer-service", "audit:bot-recording:manage");
+                rejected(client, "user-service", "meeting:bot-recording:check");
+                rejected(client, "meeting-service", null);
+                clients.getClients().get(client).setSecret("");
+                mvc.perform(request(client, "meeting-service", "meeting:bot-recording:check")).andExpect(status().isUnauthorized());
+            }
+            rejected("teams-capture-worker", "meeting-service", "meeting:bot-recording:check");
             successful("meeting-service", "audit-event-consumer-service", "audit:bot-recording:manage");
             successful("teams-capture-worker", "meeting-service", "meeting:bot-recording:admit");
             for (String audience : new String[] {"user-service", "transcript-service", "notification-orchestrator", "meeting-service"})
