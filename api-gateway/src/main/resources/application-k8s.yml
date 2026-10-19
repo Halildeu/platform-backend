@@ -95,7 +95,7 @@ spring:
         - id: meeting-service-admin
           uri: ${MEETING_SERVICE_URL:http://meeting-service:8097}
           predicates:
-            - Path=/api/v1/admin/meetings/**,/api/v1/admin/my/**
+            - Path=/api/v1/admin/meetings/**,/api/v1/admin/my/**,/api/v1/meetings/*/bot-recording-intents,/api/v1/meetings/*/bot-recording-intents/**
         # Faz 35 ES-007/ES-204: authenticated Etik Speak staff surface.
         # Public reporter routes deliberately bypass the suite gateway and use
         # ethics-service's disjoint public filter chain.

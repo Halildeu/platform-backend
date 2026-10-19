@@ -14,9 +14,9 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -51,10 +51,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Testcontainers
 class ArchiveServiceIntegrationTest {
 
-    // Same release, pinned multi-platform manifest; Docker Hub no longer serves the fixture.
-    private static final DockerImageName MINIO_IMAGE = DockerImageName.parse(
-            "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
-                    + "@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e");
+    // The upstream image is no longer publicly pullable. Both local Maven and CI
+    // build the same verified official source; no preloaded image or registry override.
+    private static final ImageFromDockerfile MINIO_IMAGE = new ImageFromDockerfile()
+            .withFileFromClasspath("Dockerfile", "minio-fixture/Dockerfile");
     private static final String MINIO_USER = "minioadmin";
     private static final String MINIO_PASS = "minioadmin";
 
