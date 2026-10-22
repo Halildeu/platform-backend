@@ -102,6 +102,8 @@ public class DirectSttForwardingDispatcher
     private final long unavailableRetryAfterSeconds;
     private final Scheduler forwardScheduler;
     private final Scheduler transcriptSinkScheduler;
+    /** #3746: null when the attribution finish handshake is not wired (tests, legacy). */
+    private final DirectSttAttributionFinishNotifier attributionFinishNotifier;
 
     public DirectSttForwardingDispatcher(
             final AudioChunkDispatcher delegate,
@@ -110,12 +112,25 @@ public class DirectSttForwardingDispatcher
             final DirectSttProviderRegistry providerRegistry,
             final AudioGatewayProperties properties,
             final MeterRegistry meters) {
+        this(delegate, auditSink, transcriptResultSink, providerRegistry, properties, meters,
+                null);
+    }
+
+    public DirectSttForwardingDispatcher(
+            final AudioChunkDispatcher delegate,
+            final AudioGatewayAuditSink auditSink,
+            final DirectSttTranscriptResultSink transcriptResultSink,
+            final DirectSttProviderRegistry providerRegistry,
+            final AudioGatewayProperties properties,
+            final MeterRegistry meters,
+            final DirectSttAttributionFinishNotifier attributionFinishNotifier) {
         this.delegate = delegate;
         this.auditSink = auditSink;
         this.transcriptResultSink = transcriptResultSink;
         this.providerRegistry = providerRegistry;
         this.cfg = properties.getDirectStt();
         this.meters = meters;
+        this.attributionFinishNotifier = attributionFinishNotifier;
         this.inFlight = new Semaphore(cfg.getMaxInFlight());
         this.aggregator = new DirectSttAudioWindowAggregator(
                 cfg.getAggregation().getWindowSeconds(),
@@ -302,6 +317,11 @@ public class DirectSttForwardingDispatcher
                 scheduleForward(windowTask(window, "finish"));
             });
         }
+        if (attributionFinishNotifier != null) {
+            // AFTER the tail flush was scheduled: the notifier fires only when the
+            // outstanding forward count for the session drains to zero.
+            attributionFinishNotifier.onSessionFinished(cmd);
+        }
         delegate.finishSession(cmd);
     }
 
@@ -325,6 +345,9 @@ public class DirectSttForwardingDispatcher
                         throw new IllegalStateException(
                                 "Direct-STT session discard owner mismatch for " + cmd.sessionId());
             }
+        }
+        if (attributionFinishNotifier != null) {
+            attributionFinishNotifier.onSessionDiscarded(cmd);
         }
         delegate.discardSession(cmd);
     }
@@ -485,6 +508,9 @@ public class DirectSttForwardingDispatcher
                 return;
             }
             counter("attempted").increment();
+            if (attributionFinishNotifier != null) {
+                attributionFinishNotifier.onForwardStart(task);
+            }
 
             final AudioFormat audioFormat = AudioFormat.valueOf(task.audioFormat());
             final DirectSttTranscriptionRequest request = new DirectSttTranscriptionRequest(
@@ -496,7 +522,11 @@ public class DirectSttForwardingDispatcher
                     task.sessionId(),
                     task.deviceId(),
                     task.language(),
-                    task.audioDurationMs());
+                    task.audioDurationMs(),
+                    // #3746: live-stt's transient session store re-joins out-of-order
+                    // window forwards by session+epoch+seq for post-session attribution.
+                    Math.toIntExact(task.windowSeq()),
+                    task.epoch());
 
             transcriptionClient.transcribe(request)
                     .timeout(Duration.ofMillis(cfg.getResponseTimeoutMs()))
@@ -510,10 +540,23 @@ public class DirectSttForwardingDispatcher
                         releaseOnce(released);
                     })
                     .subscribe(
-                            result -> onSuccess(result, task),
-                            error -> onError(error, task));
+                            result -> {
+                                if (attributionFinishNotifier != null) {
+                                    attributionFinishNotifier.onForwardComplete(task, true);
+                                }
+                                onSuccess(result, task);
+                            },
+                            error -> {
+                                if (attributionFinishNotifier != null) {
+                                    attributionFinishNotifier.onForwardComplete(task, false);
+                                }
+                                onError(error, task);
+                            });
         } catch (final RuntimeException ex) {
             // Synchronous build/subscribe failure — release here (doFinally never ran).
+            if (attributionFinishNotifier != null) {
+                attributionFinishNotifier.onForwardComplete(task, false);
+            }
             task.refund().release();
             clearAudio(task);
             releaseOnce(released);

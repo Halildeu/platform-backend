@@ -45,13 +45,18 @@ public final class InternalDirectSttTranscriptionClient implements DirectSttTran
         body.part(AUDIO_PART, new NamedByteArrayResource(partBytes, audioFilename(partFormat)))
                 .contentType(MediaType.parseMediaType(partFormat.mediaType()));
 
-        final String uri = UriComponentsBuilder.fromUriString(transcribeUri)
+        final UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(transcribeUri)
                 .queryParam("meeting_id", nullSafe(request.meetingId()))
                 .queryParam("session_id", nullSafe(request.sessionId()))
                 .queryParam("device_id", nullSafe(request.deviceId()))
-                .queryParam("language", nullSafe(request.language()))
-                .build()
-                .toUriString();
+                .queryParam("language", nullSafe(request.language()));
+        if (request.windowSeq() != null && request.transportEpoch() != null) {
+            // #3746: lets live-stt's transient session store re-join out-of-order
+            // window forwards (keyed by session+epoch) for post-session attribution.
+            uriBuilder.queryParam("window_seq", request.windowSeq());
+            uriBuilder.queryParam("transport_epoch", request.transportEpoch());
+        }
+        final String uri = uriBuilder.build().toUriString();
 
         return webClient.post()
                 .uri(uri)
