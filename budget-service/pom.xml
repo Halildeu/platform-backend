@@ -18,6 +18,9 @@
     <description>Versioned budget planning and cost-control service</description>
 
     <properties>
+        <!-- Docker Engine 29 (GitHub ubuntu-latest) rejects API < 1.40; Testcontainers
+             < 1.21.4 negotiates 1.32 -> "Could not find a valid Docker environment". -->
+        <testcontainers.version>1.21.4</testcontainers.version>
         <java.version>21</java.version>
         <flyway.version>11.7.2</flyway.version>
     </properties>

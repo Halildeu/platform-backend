@@ -342,6 +342,24 @@ jobs:
           java-version: '21'
           cache: 'maven'
 
+      # gitops#3888: MinIO community images are no longer served anywhere, so the
+      # Object Lock fixture is built from pinned upstream source and cached.
+      - name: Restore MinIO CI fixture image
+        id: minio-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/minio-ci-image.tar
+          key: minio-ci-image-${{ hashFiles('.github/test-images/minio/Dockerfile') }}
+
+      - name: Build MinIO CI fixture from pinned source (cache miss)
+        if: steps.minio-cache.outputs.cache-hit != 'true'
+        run: |
+          docker build -t platform-ci/minio:RELEASE.2025-09-07T16-13-09Z-src07c3a42 .github/test-images/minio
+          docker save platform-ci/minio:RELEASE.2025-09-07T16-13-09Z-src07c3a42 -o /tmp/minio-ci-image.tar
+
+      - name: Load MinIO CI fixture image
+        run: docker load -i /tmp/minio-ci-image.tar
+
       - name: Run audit-retention-worker tests
         run: ./mvnw -pl audit-retention-worker test
 

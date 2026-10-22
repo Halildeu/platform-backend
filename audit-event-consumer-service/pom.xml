@@ -24,6 +24,9 @@
     </description>
 
     <properties>
+        <!-- Docker Engine 29 (GitHub ubuntu-latest) rejects API < 1.40; Testcontainers
+             < 1.21.4 negotiates 1.32 -> "Could not find a valid Docker environment". -->
+        <testcontainers.version>1.21.4</testcontainers.version>
         <java.version>21</java.version>
         <spring-cloud.version>2025.0.1</spring-cloud.version>
     </properties>
@@ -107,19 +110,19 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
-            <version>1.20.4</version>
+            <version>1.21.4</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>
-            <version>1.20.4</version>
+            <version>1.21.4</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
-            <version>1.20.4</version>
+            <version>1.21.4</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
