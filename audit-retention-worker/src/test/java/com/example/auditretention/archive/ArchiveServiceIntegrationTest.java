@@ -51,10 +51,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Testcontainers
 class ArchiveServiceIntegrationTest {
 
-    // Same release, pinned multi-platform manifest; Docker Hub no longer serves the fixture.
+    // MinIO community images are no longer served (quay.io 401, Docker Hub repo
+    // removed, dl.min.io 410). CI builds the same release from pinned source
+    // (.github/test-images/minio/Dockerfile) and loads it under this local tag;
+    // override with -Daudit.retention.test.minio-image=<image> to use another.
     private static final DockerImageName MINIO_IMAGE = DockerImageName.parse(
-            "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
-                    + "@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e");
+            System.getProperty("audit.retention.test.minio-image",
+                    "platform-ci/minio:RELEASE.2025-09-07T16-13-09Z-src07c3a42"));
     private static final String MINIO_USER = "minioadmin";
     private static final String MINIO_PASS = "minioadmin";
 
