@@ -78,12 +78,22 @@ public class EndpointDisplayPolicyService {
     /** Heartbeat payload key under which the agent advertises capabilities. */
     private static final String HEARTBEAT_CAPABILITIES_KEY = "capabilities";
 
+    /**
+     * Advertised by agents that can download and verify an uploaded wallpaper
+     * (platform-backend#1203). An older agent that only knows SET_DISPLAY_POLICY
+     * would treat {@code asset:sha256:...} as a local path, fail its os.Stat
+     * preflight and report FAILED — so a managed-asset proposal is refused up
+     * front instead of being dispatched to a device that cannot apply it.
+     */
+    static final String MANAGED_ASSET_CAPABILITY = "SET_DISPLAY_POLICY_MANAGED_ASSET";
+
     private final EndpointDisplayPolicyRepository policyRepository;
     private final EndpointDisplayPolicyRevisionRepository revisionRepository;
     private final EndpointCommandRepository commandRepository;
     private final EndpointDeviceRepository deviceRepository;
     private final EndpointHeartbeatRepository heartbeatRepository;
     private final EndpointAuditService auditService;
+    private final DisplayPolicyAssetService assetService;
     private final Clock clock;
 
     private final boolean featureEnabled;
@@ -97,6 +107,7 @@ public class EndpointDisplayPolicyService {
             EndpointDeviceRepository deviceRepository,
             EndpointHeartbeatRepository heartbeatRepository,
             EndpointAuditService auditService,
+            DisplayPolicyAssetService assetService,
             Clock clock,
             @Value("${endpoint-admin.display-policy.enabled:false}") boolean featureEnabled,
             @Value("${endpoint-admin.display-policy.heartbeat-freshness-ttl:PT5M}")
@@ -109,6 +120,7 @@ public class EndpointDisplayPolicyService {
         this.deviceRepository = deviceRepository;
         this.heartbeatRepository = heartbeatRepository;
         this.auditService = auditService;
+        this.assetService = assetService;
         this.clock = clock;
         this.featureEnabled = featureEnabled;
         this.heartbeatFreshnessTtl = heartbeatFreshnessTtl == null
@@ -142,6 +154,14 @@ public class EndpointDisplayPolicyService {
 
         UUID tenantId = context.tenantId();
         String subject = resolveSubject(context);
+        boolean managedAsset = request.wallpaper() != null
+                && DisplayPolicyValidator.isManagedAssetRef(request.wallpaper().assetRef());
+        if (managedAsset) {
+            // The validator pinned the ref's shape; this pins that the image is
+            // really there and is the type the proposal claims.
+            assetService.requireManagedAsset(tenantId,
+                    request.wallpaper().assetSha256(), request.wallpaper().contentType());
+        }
         // Serialise all per-device policy mutations + fail-close decommissioned.
         EndpointDevice device =
                 EndpointDeviceWriteGuard.loadActiveForUpdate(deviceRepository, tenantId, deviceId);
@@ -191,7 +211,7 @@ public class EndpointDisplayPolicyService {
         // Best-effort early operator feedback (NOT an authoritative dispatch
         // gate) — only when we are about to create a NEW proposal, so a replay /
         // idempotent no-op never fails on a transiently-stale agent.
-        assertHeartbeatFreshAndCapable(device, now);
+        assertHeartbeatFreshAndCapable(device, now, managedAsset);
 
         EndpointCommand command = persistProposal(tenantId, device, revision, subject, now,
                 buildEnforcePayload(revision));
@@ -254,7 +274,7 @@ public class EndpointDisplayPolicyService {
             return AdminDisplayPolicyResponse.of(deviceId, current, null, null);
         }
 
-        assertHeartbeatFreshAndCapable(device, now);
+        assertHeartbeatFreshAndCapable(device, now, false);
 
         EndpointDisplayPolicyRevision revision = buildClearRevision(tenantId, deviceId, reason, subject, now);
         EndpointCommand command = persistProposal(tenantId, device, revision, subject, now,
@@ -503,7 +523,7 @@ public class EndpointDisplayPolicyService {
     // ─────────────────────────────────────────────────────────────
     // Capability + heartbeat (best-effort early feedback)
 
-    private void assertHeartbeatFreshAndCapable(EndpointDevice device, Instant now) {
+    private void assertHeartbeatFreshAndCapable(EndpointDevice device, Instant now, boolean managedAsset) {
         Optional<EndpointHeartbeat> latest = heartbeatRepository
                 .findFirstByDevice_IdOrderByReceivedAtDesc(device.getId());
         Instant receivedAt = latest.map(EndpointHeartbeat::getReceivedAt).orElse(null);
@@ -514,29 +534,35 @@ public class EndpointDisplayPolicyService {
                     "Agent heartbeat is stale (receivedAt=" + receivedAt + ", ttl="
                             + heartbeatFreshnessTtl + "). Retry after the agent reconnects.");
         }
-        boolean advertised = latest
+        Object capabilities = latest
                 .map(EndpointHeartbeat::getPayload)
                 .map(payload -> payload.get(HEARTBEAT_CAPABILITIES_KEY))
-                .map(this::containsRequiredCapability)
-                .orElse(false);
-        if (!advertised) {
+                .orElse(null);
+        requireCapability(capabilities, requiredCapability);
+        if (managedAsset) {
+            requireCapability(capabilities, MANAGED_ASSET_CAPABILITY);
+        }
+    }
+
+    private static void requireCapability(Object capabilitiesNode, String capability) {
+        if (!containsCapability(capabilitiesNode, capability)) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
-                    "Agent does not advertise the '" + requiredCapability
+                    "Agent does not advertise the '" + capability
                             + "' capability on the most recent heartbeat. Upgrade the agent and retry.");
         }
     }
 
-    private boolean containsRequiredCapability(Object capabilitiesNode) {
+    private static boolean containsCapability(Object capabilitiesNode, String capability) {
         if (capabilitiesNode instanceof Iterable<?> iterable) {
             for (Object item : iterable) {
-                if (item != null && requiredCapability.equalsIgnoreCase(String.valueOf(item).trim())) {
+                if (item != null && capability.equalsIgnoreCase(String.valueOf(item).trim())) {
                     return true;
                 }
             }
             return false;
         }
         if (capabilitiesNode instanceof Map<?, ?> map) {
-            Object val = map.get(requiredCapability);
+            Object val = map.get(capability);
             return val instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(val));
         }
         return false;

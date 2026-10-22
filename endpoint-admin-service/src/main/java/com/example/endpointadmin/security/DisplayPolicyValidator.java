@@ -2,6 +2,7 @@ package com.example.endpointadmin.security;
 
 import com.example.endpointadmin.dto.v1.admin.SetDisplayPolicyRequest;
 import com.example.endpointadmin.model.DisplayPolicyOperation;
+import com.example.endpointadmin.model.EndpointDisplayPolicyAsset;
 import com.example.endpointadmin.model.WallpaperStyle;
 import java.util.List;
 import java.util.Locale;
@@ -45,6 +46,7 @@ public final class DisplayPolicyValidator {
             "image/png", "image/jpeg", "image/bmp");
 
     private static final int MAX_ASSET_REF_LEN = 512;
+    private static final String MANAGED_REF_PREFIX = EndpointDisplayPolicyAsset.MANAGED_REF_PREFIX;
 
     private static final int MAX_REASON_LEN = 512;
 
@@ -191,6 +193,41 @@ public final class DisplayPolicyValidator {
                 && !ALLOWED_CONTENT_TYPES.contains(w.contentType().toLowerCase(Locale.ROOT))) {
             throw new IllegalArgumentException(
                     "wallpaper.contentType must be one of " + ALLOWED_CONTENT_TYPES + ".");
+        }
+        if (isManagedAssetRef(w.assetRef())) {
+            validateManagedRef(w);
+        }
+    }
+
+    /**
+     * True when {@code assetRef} points at a managed (uploaded) asset rather than
+     * a path already on the endpoint (platform-backend#1203).
+     */
+    public static boolean isManagedAssetRef(String assetRef) {
+        return assetRef != null && assetRef.startsWith(MANAGED_REF_PREFIX);
+    }
+
+    /**
+     * A managed ref is the agent's instruction to download and verify, so it must
+     * be unambiguous: exactly {@code asset:sha256:<64 lowercase hex>}, with
+     * {@code assetSha256} present and naming the same hash and a
+     * {@code contentType} present. Otherwise the ref and the hash the agent
+     * verifies against could disagree, and the device would either refuse a
+     * correct image or trust the wrong one.
+     */
+    private static void validateManagedRef(SetDisplayPolicyRequest.Wallpaper w) {
+        String hex = w.assetRef().substring(MANAGED_REF_PREFIX.length());
+        if (!SHA256.matcher(hex).matches()) {
+            throw new IllegalArgumentException(
+                    "wallpaper.assetRef must be '" + MANAGED_REF_PREFIX + "<64-char lowercase hex>'.");
+        }
+        if (w.assetSha256() == null || !w.assetSha256().equals(hex)) {
+            throw new IllegalArgumentException(
+                    "wallpaper.assetSha256 must be present and equal the hash in assetRef.");
+        }
+        if (w.contentType() == null) {
+            throw new IllegalArgumentException(
+                    "wallpaper.contentType is required for an uploaded asset.");
         }
     }
 

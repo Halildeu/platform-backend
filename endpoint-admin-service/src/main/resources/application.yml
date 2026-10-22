@@ -4,6 +4,13 @@ spring:
       enabled: true
   application:
     name: endpoint-admin-service
+  servlet:
+    multipart:
+      # Display-policy wallpaper upload (#1203). The service enforces 10 MiB
+      # with an explicit 413; these sit just above it so that check is the one
+      # an admin sees. Spring's 1MB default would reject most real wallpapers.
+      max-file-size: 11MB
+      max-request-size: 12MB
   datasource:
     url: ${SPRING_DATASOURCE_URL:${ENDPOINT_ADMIN_DB_URL:jdbc:postgresql://localhost:5432/endpoint_admin}}
     username: ${SPRING_DATASOURCE_USERNAME:${ENDPOINT_ADMIN_DB_USERNAME:postgres}}
