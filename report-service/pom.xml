@@ -84,6 +84,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- #3888: exposes /actuator/prometheus; without it the endpoint does not
+             exist, EndpointRequest.to("prometheus") never matches and the scrape
+             falls through to anyRequest().authenticated() -> 401 (TargetDown). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
 
         <!-- Cache (Caffeine) -->
         <dependency>
