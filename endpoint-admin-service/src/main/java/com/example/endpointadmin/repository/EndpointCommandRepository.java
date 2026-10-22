@@ -28,6 +28,10 @@ public interface EndpointCommandRepository extends JpaRepository<EndpointCommand
 
     List<EndpointCommand> findByTenantIdAndDevice_IdOrderByIssuedAtDesc(UUID tenantId, UUID deviceId);
 
+    /** platform-backend#1206 — every command of one type for a device, newest first. */
+    List<EndpointCommand> findByDevice_IdAndCommandTypeOrderByIssuedAtDesc(UUID deviceId,
+                                                                        CommandType commandType);
+
     List<EndpointCommand> findByTenantIdOrderByIssuedAtDesc(UUID tenantId);
 
     long countByTenantIdAndCommandTypeAndStatusInAndLockedUntilAfter(UUID tenantId,

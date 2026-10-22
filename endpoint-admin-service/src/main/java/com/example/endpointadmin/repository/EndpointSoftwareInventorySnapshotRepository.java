@@ -25,6 +25,13 @@ public interface EndpointSoftwareInventorySnapshotRepository
         findByTenantIdAndDevice_Id(UUID tenantId, UUID deviceId);
 
     /**
+     * platform-backend#1206 — has any inventory reached the drawer for this
+     * device yet? Called on every heartbeat, so it stays an indexed existence
+     * check ({@code idx_endpoint_software_inventory_snapshots_device}).
+     */
+    boolean existsByDevice_Id(UUID deviceId);
+
+    /**
      * Tenant-scoped paged snapshot list with optional case-insensitive
      * {@code softwareName} exists-query + publisher + winget-ready +
      * truncated filters. {@code softwareName == null} skips the

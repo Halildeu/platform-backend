@@ -1434,10 +1434,11 @@ public class EndpointAdminCommandService {
      * the operator-initiated full collect, so running the heavier health +
      * outdated probes is appropriate and is what the views' empty-state
      * promises. The lightweight heartbeat / auto-enroll path stays opt-out for
-     * cost (AG-025H) — and it does NOT flow through here: no backend code
-     * constructs a {@code COLLECT_INVENTORY} command other than this admin
-     * command-creation path, so opting in here cannot leak into the
-     * heartbeat default.
+     * cost (AG-025H): a heartbeat never collects by itself. The only other
+     * backend-constructed {@code COLLECT_INVENTORY} is
+     * {@link InitialInventoryAutoCollectService} (platform-backend#1206), which
+     * queues this same full collect once per device until its first snapshot
+     * lands, and deliberately reuses this method so both paths send one payload.
      *
      * <p>An explicit caller-supplied value for either key is respected (not
      * overwritten): a future lightweight caller that sends
@@ -1447,7 +1448,7 @@ public class EndpointAdminCommandService {
      * manual collect-now without depending on every client to remember the
      * bits.
      */
-    private static void applyCollectInventoryOptIns(Map<String, Object> payload) {
+    static void applyCollectInventoryOptIns(Map<String, Object> payload) {
         payload.putIfAbsent("includeSoftware", true);
         payload.putIfAbsent("includeWinGetEgress", true);
         payload.putIfAbsent("includeHardware", true);
