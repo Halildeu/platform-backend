@@ -32,7 +32,7 @@
         <!-- AWS SDK v2 (S3-compatible client for MinIO): first-class Object Lock,
              versioning, x-amz-version-id, x-amz-checksum-sha256 (ADR-0042 D4.7). -->
         <awssdk.version>2.28.16</awssdk.version>
-        <testcontainers.version>1.20.4</testcontainers.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
     <dependencyManagement>
