@@ -42,11 +42,14 @@ public class PermissionServiceAuthzClient {
      * "match" the cached one and a revoked grant would keep answering 200. The cache turns this
      * exception into "refuse to reuse a cached grant" → 503.
      */
-    public long getAuthzVersion() {
+    public long getAuthzVersion(String bearerToken) {
         try {
-            java.util.Map<?, ?> body = webClient.get()
-                    .uri("/api/v1/authz/version")
-                    .retrieve()
+            WebClient.RequestHeadersSpec<?> request = webClient.get()
+                    .uri("/api/v1/authz/version");
+            if (bearerToken != null && !bearerToken.isBlank()) {
+                request = request.header(HttpHeaders.AUTHORIZATION, "Bearer " + bearerToken);
+            }
+            java.util.Map<?, ?> body = request.retrieve()
                     .bodyToMono(java.util.Map.class)
                     .block();
             Object value = body == null ? null : body.get("authzVersion");

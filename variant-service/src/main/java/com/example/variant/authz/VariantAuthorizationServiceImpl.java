@@ -68,7 +68,7 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
         String finalEmail = email;
         Long finalUserId = userId;
         return cache.get(cacheKey,
-                permissionServiceAuthzClient::getAuthzVersion,
+                () -> permissionServiceAuthzClient.getAuthzVersion(jwt.getTokenValue()),
                 () -> fetchContext(finalUserId, finalEmail, roles, permissions, jwt.getTokenValue()));
     }
 

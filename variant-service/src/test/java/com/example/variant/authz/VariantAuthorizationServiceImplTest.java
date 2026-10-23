@@ -214,7 +214,7 @@ class VariantAuthorizationServiceImplTest {
          * decision while it is unchanged.
          */
         @Override
-        public long getAuthzVersion() {
+        public long getAuthzVersion(String bearerToken) {
             return authzVersion.get();
         }
 
