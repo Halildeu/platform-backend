@@ -66,6 +66,8 @@ public class ErasureService {
     private final AuditEventPublisher audit;
     private final ErasureRequestLedgerService ledgerService;
     private final PiiRedactor piiRedactor;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.serban.notify.push.NativePushRegistry nativePushRegistry;
 
     public ErasureService(
         NotificationIntentRepository intentRepo,
@@ -273,6 +275,7 @@ public class ErasureService {
         int inboxRowsDeleted = inboxRepo.deleteByOrgIdAndSubscriberId(
             request.orgId(), request.subscriberId()
         );
+        if (nativePushRegistry != null) nativePushRegistry.eraseOwner(request.orgId(), request.subscriberId());
 
         // Codex iter-2 P1 absorb: standalone audit (no source intent) — avoids
         // NPE on intent.getTemplateId() / .getTopicKey() in publish() and

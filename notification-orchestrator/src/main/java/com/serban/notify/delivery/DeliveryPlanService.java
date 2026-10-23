@@ -44,6 +44,8 @@ public class DeliveryPlanService {
     private final ChannelAdapterRegistry adapterRegistry;
     private final SubscriberPreferenceService preferenceService;
     private final SubscriberPushEndpointRepository pushEndpointRepo;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.serban.notify.push.NativePushPlanner nativePushPlanner;
 
     /**
      * Default Slack webhook URL (PR3 dev/test). Production Faz 23.2'da
@@ -338,7 +340,10 @@ public class DeliveryPlanService {
             }
             List<SubscriberPushEndpoint> endpoints =
                 pushEndpointRepo.findActiveBySubscriber(intent.getOrgId(), ref.subscriberId());
-            if (endpoints.isEmpty()) {
+            List<DeliveryTarget> nativeTargets = nativePushPlanner == null ? List.of()
+                : nativePushPlanner.plan(intent, ref.subscriberId());
+            result.addAll(nativeTargets);
+            if (endpoints.isEmpty() && nativeTargets.isEmpty()) {
                 // Codex 019e4a3d P1 absorb: marker target ile zombie
                 // state'i önle. Eligibility guard
                 // BLOCKED_NO_PUSH_ENDPOINT'e çevirir + audit row.
