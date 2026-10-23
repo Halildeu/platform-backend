@@ -137,6 +137,24 @@ class SpeechmaticsLiveProtocolAdapterTest {
     }
 
     @Test
+    void punctuationTuningIsOptInAndDoesNotRewriteProviderText() throws Exception {
+        var config = config();
+        var adapter = new SpeechmaticsLiveProtocolAdapter(objectMapper, config);
+        assertThat(objectMapper.readTree(adapter.startMessage(16000))
+                .path("transcription_config").has("punctuation_overrides")).isFalse();
+        config.setPunctuationSensitivity(0.25);
+        var start = objectMapper.readTree(adapter.startMessage(16000));
+        assertThat(start.path("transcription_config").path("punctuation_overrides")
+                .path("sensitivity").doubleValue()).isEqualTo(0.25);
+        assertThat(start.path("transcription_config").path("punctuation_overrides")
+                .has("permitted_marks")).isFalse();
+        var result = objectMapper.readTree(adapter.translate("""
+                {"message":"AddTranscript","metadata":{"transcript":"Zeynep. Sunum hazır.","end_time":1}}
+                """, 16000).getFirst());
+        assertThat(result.path("text").asText()).isEqualTo("Zeynep. Sunum hazır.");
+    }
+
+    @Test
     void mapsIncrementalAndFinalEventsToOneStableSequence() throws Exception {
         final SpeechmaticsLiveProtocolAdapter adapter = adapter();
 

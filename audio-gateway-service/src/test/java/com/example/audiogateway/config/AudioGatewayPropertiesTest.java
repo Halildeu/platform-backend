@@ -106,6 +106,22 @@ class AudioGatewayPropertiesTest {
     }
 
     @Test
+    void speechmaticsPunctuationTuningAcceptsOnlyFiniteUnitInterval() {
+        final AudioGatewayProperties props = speechmaticsProps();
+        props.getDirectStt().getSpeechmatics().setApiKey("test-key-not-a-secret");
+        for (Double value : new Double[] {null, 0.0, 0.25, 0.5, 1.0}) {
+            props.getDirectStt().getSpeechmatics().setPunctuationSensitivity(value);
+            assertThatCode(props::validate).doesNotThrowAnyException();
+        }
+        for (double value : new double[] {-0.1, 1.1, Double.NaN, Double.POSITIVE_INFINITY,
+                Double.NEGATIVE_INFINITY}) {
+            props.getDirectStt().getSpeechmatics().setPunctuationSensitivity(value);
+            assertThatThrownBy(props::validate).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("punctuation-sensitivity");
+        }
+    }
+
+    @Test
     void speechmaticsProviderRejectsUnboundedAudioAcknowledgementWait() {
         final AudioGatewayProperties props = speechmaticsProps();
         props.getDirectStt().getSpeechmatics().setApiKey("test-key-not-a-secret");
