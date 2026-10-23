@@ -22,10 +22,14 @@ Gerekli Microsoft tarafı: tenant ve application kimlikleri, HTTPS callback,
 
 ## Kaynak uygulama durumu
 
+Güncel kaynak/paket kanıtları, kalan geliştirmeler ve Halil Bey / IT'den
+beklenenler: [25 Eylül TEST teslim durumu](docs/test-delivery-status-20260925.md).
+
 Seçilen Outlook etkinliğine zamanlı katılım için kapalı başlayan kalıcı
 zamanlayıcı ve gerçek Graph okuma istemcisi eklendi. İptal/saat değişikliği
 katılımdan önce yeniden doğrulanır. Kurum izinleri ve gerçek TEST kabulü açık;
-yan panelden seçim henüz bağlı değildir. [Kurulum ve API](docs/calendar-scheduling.md).
+yan panelden seçim köprüsü backend #1195 ve web #1198 ile kaynakta bağlandı,
+ancak TEST'e kurulmadı. [Kurulum ve API](docs/calendar-scheduling.md).
 
 EntraTeamsAccessTokenProvider, kurum secret yönetiminden sağlanan
 `TeamsCapture__ClientSecret` ile tenant-specific client_credentials akışını
